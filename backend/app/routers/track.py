@@ -70,10 +70,13 @@ def list_applications(
     stage: str | None = None,
     job_category: str | None = None,
     q: str | None = None,
+    url: str | None = None,
     user_id: str = Depends(current_user_id),
     db: Session = Depends(get_db),
 ):
     stmt = select(Application).where(Application.user_id == user_id)
+    if url:
+        stmt = stmt.where(Application.url == url)
     if status:
         stmt = stmt.where(Application.status == status)
     if stage:

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>JobSeeker 설정</title>
+    <link rel="stylesheet" href="popup.css" />
+    <style>body { width: auto; max-width: 480px; margin: 24px auto; }</style>
+  </head>
+  <body>
+    <header><strong>JobSeeker 설정</strong></header>
+    <form id="form">
+      <label>백엔드 API 주소<input id="apiUrl" type="url" required /></label>
+      <label>웹 대시보드 주소<input id="webUrl" type="url" required /></label>
+      <p class="small muted">배포한 주소로 바꾸면 manifest.json의 host_permissions에도 그 주소를 추가해야 해요.</p>
+      <button type="submit" class="primary">저장</button>
+      <p id="saved" class="small muted" hidden>저장했어요.</p>
+    </form>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

@@ -6,8 +6,9 @@
 ```
 jobseeker/
 ├─ supabase/schema.sql   Supabase에 붙여 넣을 테이블·RLS·Storage 버킷
-├─ backend/              FastAPI (Practice·Track API, 테스트 10개)
+├─ backend/              FastAPI (Practice·Track API, 테스트 11개)
 ├─ web/                  React + TypeScript (Vite) 웹 화면
+├─ extension-track/      크롬 확장 팝업 (공고 저장, 최근 지원 현황, 대시보드 열기)
 └─ docs/screenshots/     실제 실행 화면
 ```
 
@@ -45,7 +46,10 @@ npm install
 npm run dev                 # http://localhost:5173
 ```
 
-### 3) Supabase 연결(배포 시)
+### 3) 크롬 확장 팝업
+`chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드 → `extension-track` 폴더. 자세한 내용은 [extension-track/README.md](extension-track/README.md).
+
+### 4) Supabase 연결(배포 시)
 1. Supabase SQL Editor에서 `supabase/schema.sql` 실행
 2. `backend/.env`에 `DATABASE_URL`(Connection string), `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` 입력, `AUTH_DISABLED=false`
 3. `OPENAI_API_KEY`를 넣으면 맞춤 질문(LLM), 전사(STT), AI 피드백이 켜집니다. 모델은 `OPENAI_CHAT_MODEL`, `OPENAI_STT_MODEL`로 바꿀 수 있어요.
@@ -74,7 +78,7 @@ npm run dev                 # http://localhost:5173
 | POST | `/practice/answers/{id}/audio` | 녹음 업로드 + 전사 |
 | PATCH | `/practice/answers/{id}` | 자기평가·회고·전사문 수정 |
 | POST | `/practice/answers/{id}/feedback` | AI 피드백 |
-| GET/POST | `/track/applications` | 지원 건 목록 / 추가 |
+| GET/POST | `/track/applications` | 지원 건 목록(`url`로 찾기 가능) / 추가 |
 | POST | `/track/applications/{id}/events` | 단계 결과 기록 |
 | POST | `/track/applications/{id}/essays` | 자소서 문항 추가 |
 | POST | `/track/essays/{id}/versions` | 새 답변 버전 |
@@ -84,6 +88,7 @@ npm run dev                 # http://localhost:5173
 
 ## 검증한 것
 
-- 백엔드 pytest 10개 통과(사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, OpenAI 경로는 모의 응답으로 확인)
+- 백엔드 pytest 11개 통과(사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, OpenAI 경로는 모의 응답으로 확인)
 - Chromium + 가짜 마이크로 지원 건 추가 → 자소서 2개 버전·비교 → 단계 기록 → 맞춤 질문 생성 → 모의시험 녹음 2건 → 회고 저장 → 통계까지 실제 화면에서 확인. 콘솔 에러 없고 모바일 폭(390px)에서 가로 스크롤 없음
+- 크롬에 확장을 올려 공고 저장 → 같은 공고 재인식 → 대시보드 열기까지 확인(테스트용 가짜 공고 페이지 사용, 실제 채용 사이트에서는 아직 시험 전)
 - 실제 OpenAI 키와 Supabase 프로젝트로는 아직 시험하지 않았습니다
