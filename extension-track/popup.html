@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <title>JobSeeker</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <strong>JobSeeker</strong>
+      <a href="options.html" target="_blank" class="muted small" id="settings">설정</a>
+    </header>
+
+    <p id="error" class="err" hidden></p>
+
+    <section id="posting">
+      <h2>이 공고 저장</h2>
+      <div id="existing" hidden>
+        <p class="small" id="ex-msg"></p>
+        <div class="app-line">
+          <span id="ex-name"></span>
+          <span id="ex-status" class="chip"></span>
+        </div>
+        <div class="row">
+          <button id="ex-open">상세 보기</button>
+          <button id="ex-practice">면접 질문 만들기</button>
+        </div>
+      </div>
+      <form id="save-form" hidden>
+        <label>회사<input id="company" required maxlength="100" /></label>
+        <label>직무(포지션)<input id="position" required maxlength="100" /></label>
+        <div class="row">
+          <label class="grow">직무 분류
+            <select id="job_category">
+              <option>개발</option><option>기획</option><option>마케팅</option>
+              <option>데이터</option><option>디자인</option><option>기타</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="submitted" />지원 완료</label>
+        </div>
+        <p class="small muted">회사와 직무는 페이지 제목으로 추정한 값이에요. 맞는지 확인해 주세요.</p>
+        <button type="submit" class="primary" id="save">지원 관리에 저장</button>
+      </form>
+      <p id="not-web" class="small muted" hidden>웹 페이지에서만 공고를 저장할 수 있어요.</p>
+    </section>
+
+    <section>
+      <div class="row">
+        <h2 class="grow">최근 지원 현황</h2>
+        <span id="summary" class="small muted"></span>
+      </div>
+      <ul id="recent"></ul>
+    </section>
+
+    <footer class="row">
+      <button id="open-track" class="grow">대시보드 열기</button>
+      <button id="open-practice" class="grow">면접 연습</button>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

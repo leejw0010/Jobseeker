@@ -64,3 +64,15 @@ def test_stats_funnel(client):
     assert (doc["reached"], doc["passed"], doc["failed"], doc["pending"], doc["pass_rate"]) == (3, 1, 1, 1, 0.5)
     dev = next(c for c in s["by_job_category"] if c["job_category"] == "개발")
     assert dev["total"] == 2
+
+
+def test_posting_saved_from_popup_then_found_by_url(client):
+    """확장 팝업: 공고만 저장(submitted=false)하면 지원일은 비워 두고, URL로 다시 찾을 수 있다."""
+    h = {"X-User-Id": "user-popup"}
+    url = "https://www.saramin.co.kr/zf_user/jobs/view?rec_idx=1"
+    r = client.post("/track/sync", json={"company": "당근", "position": "iOS 개발자", "job_category": "개발",
+                                         "url": url, "essays": [], "submitted": False}, headers=h).json()
+    assert r["created"] and r["new_versions"] == 0
+    found = client.get("/track/applications", params={"url": url}, headers=h).json()
+    assert len(found) == 1 and found[0]["applied_at"] is None and found[0]["source"] == "extension"
+    assert client.get("/track/applications", params={"url": url + "&x=1"}, headers=h).json() == []
