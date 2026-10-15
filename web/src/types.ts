@@ -27,6 +27,36 @@ export interface PracticeAnswer {
   self_rating: number | null;
   reflection_note: string | null;
   ai_feedback: string | null;
+  coaching_report: CoachingReport | null;
+  parent_answer_id: string | null;
+  followup_reason: string | null;
+}
+
+export interface CoachingReport {
+  method: "basic" | "ai";
+  rubric_version: string;
+  summary: string;
+  next_action: string;
+  criteria: {
+    key: "specificity" | "relevance" | "consistency";
+    label: string;
+    status: "충분" | "보완" | "판단유보";
+    reason: string;
+    answer_quote: string;
+    source_quote: string;
+    source_version_id: string | null;
+  }[];
+  followup: { text: string; focus: string; reason: string; answer_quote: string; source_quote: string; source_version_id: string | null };
+}
+
+export interface InterviewContext {
+  company?: string;
+  position?: string;
+  essay_basis?: "submitted" | "latest";
+  job_description?: string;
+  essays?: { item_id: string; question_text: string; version_id: string; version_no: number; content: string; selection: "submitted" | "latest"; is_submitted: boolean }[];
+  origin_session_id?: string;
+  drill_targets?: { answer_id: string; question_id: string; focus: string[]; next_action: string }[];
 }
 
 export interface PracticeSession {
@@ -39,6 +69,8 @@ export interface PracticeSession {
   created_at: string;
   finished_at: string | null;
   answers: PracticeAnswer[];
+  context_snapshot: InterviewContext | null;
+  followups_enabled: boolean;
 }
 
 export interface SessionSummary {

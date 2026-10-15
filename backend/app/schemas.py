@@ -34,7 +34,8 @@ class GenerateIn(BaseModel):
     company: str | None = None
     position: str | None = None
     job_category: str | None = None
-    essay_text: str | None = Field(default=None, description="자소서 내용. 비우면 지원 건의 최신 버전을 사용")
+    essay_text: str | None = Field(default=None, description="비우면 선택한 지원 건의 제출본 우선 사용")
+    essay_basis: Literal["submitted", "latest"] = "submitted"
     count: int = Field(default=5, ge=1, le=10)
 
 
@@ -48,6 +49,40 @@ class SessionIn(BaseModel):
     job_category: str | None = None
     prep_sec: int = Field(default=30, ge=0, le=300)
     answer_sec: int = Field(default=90, ge=10, le=600)
+    essay_basis: Literal["submitted", "latest"] = "submitted"
+    job_description: str = Field(default="", max_length=12000)
+    followups_enabled: bool = False
+
+
+Focus = Literal["specificity", "relevance", "consistency"]
+
+
+class CoachingCriterion(BaseModel):
+    key: Focus
+    label: str = Field(max_length=50)
+    status: Literal["충분", "보완", "판단유보"]
+    reason: str = Field(min_length=1, max_length=1000)
+    answer_quote: str = Field(default="", max_length=1000)
+    source_quote: str = Field(default="", max_length=1000)
+    source_version_id: str | None = None
+
+
+class FollowupSuggestion(BaseModel):
+    text: str = Field(min_length=5, max_length=1000)
+    focus: Focus
+    reason: str = Field(min_length=1, max_length=1000)
+    answer_quote: str = Field(min_length=1, max_length=1000)
+    source_quote: str = Field(default="", max_length=1000)
+    source_version_id: str | None = None
+
+
+class CoachingReport(BaseModel):
+    method: Literal["basic", "ai"] = "basic"
+    rubric_version: str = "2026-10-15"
+    summary: str = Field(min_length=1, max_length=1000)
+    next_action: str = Field(min_length=1, max_length=1000)
+    criteria: list[CoachingCriterion] = Field(min_length=3, max_length=3)
+    followup: FollowupSuggestion
 
 
 class AnswerOut(ORM):
@@ -61,6 +96,9 @@ class AnswerOut(ORM):
     self_rating: int | None
     reflection_note: str | None
     ai_feedback: str | None
+    coaching_report: CoachingReport | None = None
+    parent_answer_id: str | None = None
+    followup_reason: str | None = None
 
 
 class SessionOut(ORM):
@@ -73,6 +111,8 @@ class SessionOut(ORM):
     created_at: datetime
     finished_at: datetime | None
     answers: list[AnswerOut]
+    context_snapshot: dict | None = None
+    followups_enabled: bool = False
 
 
 class SessionSummary(ORM):

@@ -1,12 +1,48 @@
 # JobSeeker: ② Practice · ③ Track
 
+## 제출본 기반 면접 코칭 (2026-10-15)
+
+- 면접 설정에서 **제출본 우선 / 최신본**을 선택합니다. 제출 표시가 없는 문항은 최신본을 사용하며 화면에 표시합니다. 면접을 시작하면 회사·직무·자소서 버전과 본문·입력한 채용 요건을 별도로 보관합니다.
+- 녹음 또는 **글로 답변**할 수 있습니다. 답변을 확인한 뒤 **꼬리질문 받기** 또는 다음 질문을 선택합니다. 꼬리질문은 원 질문당 한 번이며 이전 답변에 따른 질문이 다른 면접의 질문은행에 섞이지 않습니다.
+- 회고의 **답변 점검**에서 구체성·질문 적합성·제출본 연결을 확인합니다. AI가 제시한 답변/자소서 인용은 실제 원문과 대조합니다. API 키가 없거나 호출/인용 검증에 실패하면 **기본 점검**으로 표시하며 의미·진위를 판정하지 않습니다.
+- **보완 항목 다시 연습**은 같은 기준 자료와 질문으로 새 세션을 만듭니다. 기존 녹음·답변·회고는 보존합니다.
+- 기존 SQLite DB는 서버를 다시 시작하면 새 테이블이 추가됩니다. 기존 Supabase 프로젝트는 [증분 마이그레이션](supabase/migrations/20261015_interview_coaching.sql)을 SQL Editor에서 실행해야 합니다(기존 데이터 삭제 없음).
+
+추가 API: `POST /practice/answers/{id}/coach`, `POST /practice/answers/{id}/followup`, `POST /practice/sessions/{id}/redrill`.
+
+### 음성 인식·자동 전사
+
+원래 ② Practice의 `Recording & Transcription`에 해당합니다. 브라우저에서 녹음한 답변을 저장한 뒤, 서버가 OpenAI 음성 인식 API로 보내 한국어 전사문을 받아 옵니다. 인식한 문장을 사용자가 확인·수정한 다음 꼬리질문과 답변 점검에 사용합니다.
+
+서버의 `backend/.env`에 `OPENAI_API_KEY`를 설정하고 재시작하면 자동 전사가 활성화됩니다. 기본 모델은 `OPENAI_STT_MODEL=whisper-1`이며 키는 프런트엔드에 넣지 않습니다. 키가 없으면 녹음 저장·재생과 글 답변·기본 점검은 사용할 수 있습니다.
+
+- WebM/MP4 등 파일 형식에 맞는 메타데이터를 전송하고, 재시도에서도 원래 형식을 유지합니다.
+- 음성을 인식하지 못하거나 잘못된 응답이 오면 완료로 처리하지 않으며, 녹음을 보관해 다시 시도할 수 있습니다.
+- 재시도가 실패하면 사용자가 고친 전사문을 유지합니다.
+- 음성 인식 서버의 응답을 기다리는 동안 다른 API 요청을 막지 않습니다.
+
+음성 인식 응답을 대체한 테스트로 요청 형식·저장·재시도·오류 처리를 검증합니다. 실제 녹음에 대한 인식 정확도는 실제 API 키를 연결한 후 별도 확인해야 합니다.
+
+[서비스 동작 조사 및 REA 실행 기록](docs/research/interview-products-2026-10-15.md)에는 공개 자료에서 확인한 기능, 실제 분석 명령, 분석이 중단된 환경 조건을 구분해 두었습니다.
+
+브라우저 통합 테스트(백엔드 Python 의존성이 설치된 가상환경에서):
+
+```bash
+cd web
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+테스트는 임시 SQLite DB와 전용 포트(8011, 5179)의 서버를 실행하며 기존 개발 서버를 재사용하지 않습니다. `CHROMIUM_EXECUTABLE_PATH`로 기존 Chromium을 지정할 수도 있습니다. 실제 OpenAI 코칭 품질 및 운영 Supabase 연결은 별도 검증이 필요합니다.
+
 캡스톤 설계(26-2) JobSeeker 중 **② AI 인적성·면접 연습**과 **③ 지원 이력·버전 관리** 부분입니다.
 발표자료의 스택(React+TS, FastAPI, Supabase, OpenAI)을 그대로 따랐습니다.
 
 ```
 jobseeker/
 ├─ supabase/schema.sql   Supabase에 붙여 넣을 테이블·RLS·Storage 버킷
-├─ backend/              FastAPI (Practice·Track API, 테스트 11개)
+├─ backend/              FastAPI (Practice·Track API, 테스트 40개)
 ├─ web/                  React + TypeScript (Vite) 웹 화면
 ├─ extension-track/      크롬 확장 팝업 (공고 저장, 최근 지원 현황, 대시보드 열기)
 └─ docs/screenshots/     실제 실행 화면
@@ -16,7 +52,7 @@ jobseeker/
 
 | 발표자료 항목 | 구현 내용 |
 |---|---|
-| ② Question Bank & Tailored Questions | 공용 질문은행 30문항(인성·직무·기업·상황·인적성, 직무별), 직접 추가, 지원 건(회사·직무·최신 자소서)으로 맞춤 꼬리질문 생성, 같은 질문 중복 저장 방지 |
+| ② Question Bank & Tailored Questions | 공용 질문은행 30문항(인성·직무·기업·상황·인적성, 직무별), 직접 추가, 지원 건(회사·직무·선택한 기준 자소서)으로 맞춤 질문 생성, 같은 질문 중복 저장 방지 |
 | ② Mock Test Mode | 질문 수·준비 시간·답변 제한 시간 설정. 자기소개로 시작하고, 준비 시간이 끝나면 자동 녹음, 제한 시간이 되면 자동 종료 |
 | ② Recording & Transcription | 브라우저 MediaRecorder 녹음(마이크 입력 레벨 표시), Supabase Storage(또는 로컬) 저장, OpenAI STT 전사, 실패 시 재시도 |
 | ② Review & Reflection | 녹음 다시 듣기, 전사문 수정, 별점 자기평가, 회고 메모, AI 피드백(잘한 점·보완할 점), 분당 발화 글자 수, 연습 기록 목록 |
@@ -88,7 +124,7 @@ npm run dev                 # http://localhost:5173
 
 ## 검증한 것
 
-- 백엔드 pytest 11개 통과(사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, OpenAI 경로는 모의 응답으로 확인)
+- 백엔드 pytest 40개 통과(사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, OpenAI 경로는 모의 응답으로 확인)
 - Chromium + 가짜 마이크로 지원 건 추가 → 자소서 2개 버전·비교 → 단계 기록 → 맞춤 질문 생성 → 모의시험 녹음 2건 → 회고 저장 → 통계까지 실제 화면에서 확인. 콘솔 에러 없고 모바일 폭(390px)에서 가로 스크롤 없음
 - 크롬에 확장을 올려 공고 저장 → 같은 공고 재인식 → 대시보드 열기까지 확인(테스트용 가짜 공고 페이지 사용, 실제 채용 사이트에서는 아직 시험 전)
 - 실제 OpenAI 키와 Supabase 프로젝트로는 아직 시험하지 않았습니다

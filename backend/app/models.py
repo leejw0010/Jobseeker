@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -31,6 +31,13 @@ class Question(Base):
     source: Mapped[str] = mapped_column(String(10), default="bank")
     application_id: Mapped[str | None] = mapped_column(String(36))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    private_scope: Mapped["PracticePrivateQuestion | None"] = relationship(cascade="all, delete-orphan")
+
+
+class PracticePrivateQuestion(Base):
+    """An answer-dependent question never becomes reusable after its session is deleted."""
+    __tablename__ = "practice_private_questions"
+    question_id: Mapped[str] = mapped_column(ForeignKey("questions.id", ondelete="CASCADE"), primary_key=True)
 
 
 class PracticeSession(Base):
@@ -47,6 +54,15 @@ class PracticeSession(Base):
     answers: Mapped[list["PracticeAnswer"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="PracticeAnswer.order_no"
     )
+    context: Mapped["PracticeContext | None"] = relationship(cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def context_snapshot(self) -> dict | None:
+        return self.context.snapshot if self.context else None
+
+    @property
+    def followups_enabled(self) -> bool:
+        return bool(self.context and self.context.followups_enabled)
 
 
 class PracticeAnswer(Base):
@@ -65,6 +81,39 @@ class PracticeAnswer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     session: Mapped[PracticeSession] = relationship(back_populates="answers")
     question: Mapped[Question] = relationship()
+    coaching: Mapped["AnswerCoaching | None"] = relationship(
+        foreign_keys="AnswerCoaching.answer_id", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    @property
+    def coaching_report(self) -> dict | None:
+        return self.coaching.report if self.coaching else None
+
+    @property
+    def parent_answer_id(self) -> str | None:
+        return self.coaching.parent_answer_id if self.coaching else None
+
+    @property
+    def followup_reason(self) -> str | None:
+        return self.coaching.followup_reason if self.coaching else None
+
+
+class PracticeContext(Base):
+    """Separate tables also upgrade existing SQLite databases without ALTERs."""
+    __tablename__ = "practice_contexts"
+    session_id: Mapped[str] = mapped_column(ForeignKey("practice_sessions.id", ondelete="CASCADE"), primary_key=True)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    followups_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AnswerCoaching(Base):
+    __tablename__ = "answer_coaching"
+    answer_id: Mapped[str] = mapped_column(ForeignKey("practice_answers.id", ondelete="CASCADE"), primary_key=True)
+    parent_answer_id: Mapped[str | None] = mapped_column(
+        ForeignKey("practice_answers.id", ondelete="SET NULL"), unique=True
+    )
+    followup_reason: Mapped[str | None] = mapped_column(Text)
+    report: Mapped[dict | None] = mapped_column(JSON)
 
 
 # ───────────── ③ Track ─────────────

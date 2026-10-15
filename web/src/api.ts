@@ -70,6 +70,7 @@ export const api = {
     position?: string;
     job_category?: string;
     essay_text?: string;
+    essay_basis?: "submitted" | "latest";
     count: number;
   }) => req<Question[]>("POST", "/practice/questions/generate", b),
   createSession: (b: {
@@ -82,6 +83,9 @@ export const api = {
     job_category?: string;
     prep_sec?: number;
     answer_sec?: number;
+    essay_basis?: "submitted" | "latest";
+    job_description?: string;
+    followups_enabled?: boolean;
   }) => req<PracticeSession>("POST", "/practice/sessions", b),
   sessions: () => req<SessionSummary[]>("GET", "/practice/sessions"),
   session: (id: string) => req<PracticeSession>("GET", `/practice/sessions/${id}`),
@@ -103,6 +107,9 @@ export const api = {
   reflect: (answerId: string, b: { self_rating?: number | null; reflection_note?: string | null; transcript?: string | null }) =>
     req<PracticeAnswer>("PATCH", `/practice/answers/${answerId}`, b),
   feedback: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/feedback`),
+  coach: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/coach`),
+  followup: (answerId: string) => req<PracticeSession>("POST", `/practice/answers/${answerId}/followup`),
+  redrill: (sessionId: string) => req<PracticeSession>("POST", `/practice/sessions/${sessionId}/redrill`),
 
   // ③ Track
   applications: (f: { status?: string; stage?: string; job_category?: string; q?: string } = {}) =>
