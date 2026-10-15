@@ -1,7 +1,8 @@
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, false
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -9,6 +10,10 @@ from .db import Base
 STAGES = ["서류", "인적성", "1차면접", "2차면접", "최종"]
 STATUSES = ["진행중", "합격", "불합격", "보류"]
 QUESTION_CATEGORIES = ["인성", "직무", "기업", "상황", "인적성"]
+DEBRIEF_STATUSES = ["none", "pending", "done", "failed", "unavailable"]
+
+# SQLite에서는 JSON, Supabase(Postgres)에서는 jsonb
+JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
 def _uuid() -> str:
@@ -44,6 +49,11 @@ class PracticeSession(Base):
     answer_sec: Mapped[int] = mapped_column(Integer, default=90)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 세션 종료 후 자동 디브리프(핵심 교훈·다음 행동·주목할 순간)
+    debrief: Mapped[dict | None] = mapped_column(JSONType)
+    debrief_status: Mapped[str] = mapped_column(String(12), default="none", server_default="none")
+    # 약점 재연습 세션이면 원래 세션 id
+    redrill_of: Mapped[str | None] = mapped_column(String(36))
     answers: Mapped[list["PracticeAnswer"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="PracticeAnswer.order_no"
     )
@@ -61,10 +71,25 @@ class PracticeAnswer(Base):
     stt_status: Mapped[str] = mapped_column(String(12), default="none")
     self_rating: Mapped[int | None] = mapped_column(Integer)
     reflection_note: Mapped[str | None] = mapped_column(Text)
-    ai_feedback: Mapped[str | None] = mapped_column(Text)
+    ai_feedback: Mapped[str | None] = mapped_column(Text)  # 예전 자유 서술 피드백(새 채점은 feedback에 저장)
+    feedback: Mapped[dict | None] = mapped_column(JSONType)  # 루브릭 피드백(rubric.py)
+    # 녹음한 시각. "이 질문에 답했다"는 audio_path가 아니라 이 값으로 판단한다(원본은 지워질 수 있음)
+    recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    audio_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    audio_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     session: Mapped[PracticeSession] = relationship(back_populates="answers")
     question: Mapped[Question] = relationship()
+
+
+class UserSettings(Base):
+    """사용자별 녹음 동의·원본 보관 설정. 행이 없으면 미동의·보관 안 함."""
+
+    __tablename__ = "user_settings"
+    user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    consented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    keep_audio: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
 # ───────────── ③ Track ─────────────

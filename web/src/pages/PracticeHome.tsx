@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { CATEGORIES, JOB_CATEGORIES, type Application, type Category, type Question } from "../types";
 
@@ -110,6 +110,9 @@ export default function PracticeHome() {
   return (
     <>
       <h1>면접 연습</h1>
+      <p className="small muted">
+        JobSeeker는 면접 연습 전용이에요. 실제 면접 중에는 쓰지 마세요. <Link to="/practice/settings">녹음·개인정보 설정</Link>
+      </p>
       {err && <p className="err">{err}</p>}
       <div className="grid2">
         <section className="card">

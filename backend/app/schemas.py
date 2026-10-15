@@ -1,7 +1,7 @@
-from datetime import date, datetime
-from typing import Literal
+from datetime import date, datetime, timezone
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 
 Stage = Literal["서류", "인적성", "1차면접", "2차면접", "최종"]
 Status = Literal["진행중", "합격", "불합격", "보류"]
@@ -10,6 +10,14 @@ Category = Literal["인성", "직무", "기업", "상황", "인적성"]
 
 class ORM(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+def _as_utc(v: datetime) -> datetime:
+    # SQLite는 시간대 없는 값을 돌려준다. 저장은 항상 UTC라 UTC로 붙여 내보낸다
+    return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
+
+
+UTCDatetime = Annotated[datetime, AfterValidator(_as_utc)]
 
 
 # ───────────── ② Practice ─────────────
@@ -60,7 +68,26 @@ class AnswerOut(ORM):
     stt_status: str
     self_rating: int | None
     reflection_note: str | None
-    ai_feedback: str | None
+    ai_feedback: str | None  # 예전 자유 서술 피드백(새 채점은 feedback)
+    feedback: dict | None  # 루브릭 피드백
+    recorded_at: UTCDatetime | None
+    audio_expires_at: UTCDatetime | None
+    audio_deleted_at: UTCDatetime | None
+
+    @computed_field
+    @property
+    def audio_available(self) -> bool:
+        return self.audio_path is not None
+
+
+class WeakAnswerOut(BaseModel):
+    """다시 연습할 약점 질문과 그 이유."""
+
+    answer_id: str
+    question_id: str
+    order_no: int
+    question_text: str
+    reasons: list[str]
 
 
 class SessionOut(ORM):
@@ -72,7 +99,11 @@ class SessionOut(ORM):
     answer_sec: int
     created_at: datetime
     finished_at: datetime | None
+    debrief: dict | None
+    debrief_status: str
+    redrill_of: str | None
     answers: list[AnswerOut]
+    redrill: list[WeakAnswerOut] = Field(default=[], description="약점 재연습 후보(응답마다 다시 계산)")
 
 
 class SessionSummary(ORM):
@@ -84,12 +115,32 @@ class SessionSummary(ORM):
     answer_count: int
     recorded_count: int
     avg_rating: float | None
+    redrill_of: str | None
 
 
 class ReflectionIn(BaseModel):
     self_rating: int | None = Field(default=None, ge=1, le=5)
     reflection_note: str | None = None
     transcript: str | None = Field(default=None, description="전사문 수동 수정")
+
+
+class RedrillIn(BaseModel):
+    answer_ids: list[str] | None = Field(default=None, description="비우면 약점 목록 전체")
+
+
+class PracticeSettingsIn(BaseModel):
+    consent: bool | None = Field(default=None, description="true=녹음 동의, false=동의 철회(원본 녹음 삭제)")
+    keep_audio: bool | None = Field(default=None, description="원본 녹음 보관(새 녹음부터 적용)")
+
+
+class PracticeSettingsOut(BaseModel):
+    consented_at: UTCDatetime | None
+    keep_audio: bool
+    retention_days: int
+
+
+class DeletedOut(BaseModel):
+    deleted: int
 
 
 # ───────────── ③ Track ─────────────

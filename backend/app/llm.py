@@ -1,16 +1,20 @@
-"""OpenAI 호출(맞춤 질문 생성, 음성 전사, 답변 피드백).
+"""OpenAI 호출(맞춤 질문 생성, 음성 전사, 루브릭 채점, 세션 디브리프).
 
-OPENAI_API_KEY가 없으면 생성은 템플릿 기반으로 대체하고, 전사·피드백은 None을 돌려준다.
+OPENAI_API_KEY가 없으면 생성은 템플릿 기반으로 대체하고, 전사·채점·디브리프는 쓰지 않는다.
 SDK 버전 차이를 피하려고 REST 엔드포인트를 httpx로 직접 호출한다.
 """
 import json
 import re
+from datetime import datetime, timezone
 
 import httpx
 
 from .config import settings
+from .rubric import BANDS, CRITERIA, LABELS, NA_ALLOWED, RUBRIC
 
-API = "https://api.openai.com/v1"
+
+class AIResponseError(ValueError):
+    """모델 응답이 약속한 JSON 형식이 아닐 때."""
 
 
 def available() -> bool:
@@ -21,17 +25,30 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.openai_api_key}"}
 
 
-def _chat(system: str, user: str, json_mode: bool = False) -> str:
+def _chat(system: str, user: str, json_mode: bool = False, temperature: float = 0.7, model: str | None = None) -> str:
     body: dict = {
-        "model": settings.openai_chat_model,
+        "model": model or settings.openai_chat_model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "temperature": 0.7,
+        "temperature": temperature,
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    r = httpx.post(f"{API}/chat/completions", headers=_headers(), json=body, timeout=60)
+    r = httpx.post(f"{settings.openai_base_url}/chat/completions", headers=_headers(), json=body, timeout=60)
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]
+
+
+def _chat_json(system: str, user: str) -> dict:
+    """채점·디브리프용 호출: 피드백 모델, 낮은 temperature, JSON 응답."""
+    try:
+        raw = _chat(system, user, json_mode=True, temperature=0.2, model=settings.openai_feedback_model)
+        raw = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", raw or "")
+        data = json.loads(raw)
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        raise AIResponseError("AI 응답을 해석하지 못했습니다") from e
+    if not isinstance(data, dict):
+        raise AIResponseError("AI 응답을 해석하지 못했습니다")
+    return data
 
 
 # ───────── 맞춤 질문 생성 ─────────
@@ -95,7 +112,7 @@ def transcribe(audio: bytes, filename: str, content_type: str) -> str | None:
     if not available():
         return None
     r = httpx.post(
-        f"{API}/audio/transcriptions",
+        f"{settings.openai_base_url}/audio/transcriptions",
         headers=_headers(),
         data={"model": settings.openai_stt_model, "language": "ko", "response_format": "json"},
         files={"file": (filename, audio, content_type or "audio/webm")},
@@ -105,17 +122,151 @@ def transcribe(audio: bytes, filename: str, content_type: str) -> str | None:
     return r.json().get("text", "").strip()
 
 
-# ───────── 답변 피드백 ─────────
 
-_FEEDBACK_SYSTEM = (
-    "너는 면접 코치다. 면접 질문과 지원자의 답변 전사문을 보고 한국어로 간결하게 피드백한다. "
-    "형식: '잘한 점' 2개, '보완할 점' 2개, '한 줄 개선 예시' 1개. 각 항목은 한 문장. "
-    "말버릇(음, 어 등)이나 답변 길이 문제가 있으면 보완할 점에 포함한다."
+
+# ───────── 루브릭 채점 ─────────
+
+def _grade_system() -> str:
+    lines = [
+        "너는 한국어 면접 답변을 채점하는 평가자다. 아래 루브릭의 기준 문장(앵커)에만 맞춰 등급을 매긴다.",
+        "",
+        "[루브릭]",
+    ]
+    for c in CRITERIA:
+        lines.append(f"- {c['key']} ({c['label']}): {c['question']}")
+        lines += [f"  · {band}: {anchor}" for band, anchor in c["anchors"].items()]
+    lines += [
+        "",
+        f"[등급] {' | '.join(BANDS)}",
+        "- '해당 없음'은 질문이 과거 경험을 묻지 않을 때(예: 지원 동기, 지식 질문) situation·action·result에만 쓴다. "
+        "relevance는 항상 채점한다.",
+        "",
+        "[규칙]",
+        "1. 앵커에 엄격히 맞춰 채점하고 후하게 주지 마라. LLM 채점자는 사람보다 관대하다고 알려져 있다. "
+        "두 등급 사이에서 망설여지면 낮은 쪽을 준다.",
+        "2. 장점을 지어내지 마라. 잘한 점을 몇 개 말해야 한다는 규칙은 없다.",
+        "3. 모든 판단에는 전사문을 그대로 인용한다. 전사문에서 정확한 구간을 복사하고 고치거나 요약하지 마라. "
+        "인용을 비워 두는 것은 무언가가 없어서 등급이 '부족' 또는 '해당 없음'일 때뿐이다.",
+        "4. 말의 내용만 판단한다. 목소리, 감정, 성격, 외모는 추정하지도 평가하지도 마라.",
+        "5. 말버릇·더듬음(음, 어 등)은 무시한다. 전사 과정에서 빠졌을 수 있다.",
+        "6. '본인 행동'은 팀 안에서 말하는 사람이 직접 맡은 역할과 한 일을 뜻한다. '나', '제가' 같은 단어 수로 판단하지 마라.",
+        "",
+        "JSON으로만 답한다:",
+        '{"criteria":[{"key":"situation|action|result|relevance","band":"충분|일부|부족|해당 없음",'
+        '"quote":"전사문 그대로","comment":"판단 근거 한 문장"}],'
+        '"rewrite":["개선 문장 1","개선 문장 2(선택)"],"summary":"한 문장"}',
+        "criteria에는 네 기준을 루브릭 순서대로 한 번씩 넣는다. rewrite에는 이 답변을 낫게 만들 실제 문장을 1~2개 쓴다.",
+    ]
+    return "\n".join(lines)
+
+
+_GRADE_SYSTEM = _grade_system()
+
+# 인용 앞뒤에 붙는 따옴표·말줄임표
+_QUOTE_EDGES = re.compile(r"^(?:[\s\"'“”‘’「」『』…]|\.{2,})+|(?:[\s\"'“”‘’「」『』…]|\.{2,})+$")
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _clip(value, limit: int = 200) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value.strip()[:limit] or None
+
+
+def verify_quote(quote, transcript: str) -> tuple[str | None, bool | None]:
+    """인용이 전사문의 실제 구간인지 확인한다. (인용, 확인 여부) — 비었으면 (None, None), 지어냈으면 (None, False)."""
+    if not isinstance(quote, str):
+        return None, None
+    q = _squash(_QUOTE_EDGES.sub("", quote))
+    if not q:
+        return None, None
+    if q in _squash(transcript or ""):
+        return q, True
+    return None, False
+
+
+def normalize_feedback(raw: dict, transcript: str) -> dict:
+    """모델 응답을 루브릭에 맞춰 거른다: 아는 기준만 루브릭 순서로 한 번씩, 올바른 등급만, 인용은 전사문에 있는 것만."""
+    given: dict[str, dict] = {}
+    items = raw.get("criteria") if isinstance(raw, dict) else None
+    for c in items if isinstance(items, list) else []:
+        if not isinstance(c, dict):
+            continue
+        key, band = c.get("key"), c.get("band")
+        if key not in LABELS or key in given or band not in BANDS:
+            continue
+        if band == "해당 없음" and key not in NA_ALLOWED:
+            continue
+        quote, verified = verify_quote(c.get("quote"), transcript)
+        given[key] = {"key": key, "label": LABELS[key], "band": band, "quote": quote,
+                      "quote_verified": verified, "comment": _clip(c.get("comment"))}
+    rewrite = raw.get("rewrite") if isinstance(raw, dict) else None
+    if isinstance(rewrite, str):
+        rewrite = [rewrite]
+    rewrite = [r for r in (_clip(x) for x in rewrite) if r][:2] if isinstance(rewrite, list) else []
+    return {
+        "criteria": [given[c["key"]] for c in CRITERIA if c["key"] in given],
+        "rewrite": rewrite,
+        "summary": _clip(raw.get("summary")) if isinstance(raw, dict) else None,
+    }
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def grade_answer(question: str, transcript: str, job_hint: str | None) -> dict:
+    """전사문을 루브릭으로 채점해 저장할 피드백 객체를 돌려준다. 형식이 틀리면 AIResponseError."""
+    user = f"[질문]\n{question}\n\n[지원 회사·직무]\n{job_hint or '(정보 없음)'}\n\n[답변 전사문]\n{transcript}"
+    fb = normalize_feedback(_chat_json(_GRADE_SYSTEM, user), transcript)
+    if not fb["criteria"]:
+        raise AIResponseError("AI 응답을 해석하지 못했습니다")
+    return {"rubric": RUBRIC["version"], "model": settings.openai_feedback_model, **fb,
+            "graded_at": _utc_now_iso(), "stale": False}
+
+
+# ───────── 세션 디브리프 ─────────
+
+_DEBRIEF_SYSTEM = (
+    "너는 면접 연습 세션을 돌아보는 코치다. 질문별 답변 전사문, 자기평가(1~5), 회고 메모, 루브릭 등급을 보고 "
+    "다음 연습에 바로 쓸 디브리프를 만든다.\n"
+    "규칙: 칭찬이나 격려로 채우지 마라. 근거가 있는 말만 한다. 인용은 전사문에서 정확한 구간을 그대로 복사한다. "
+    "말의 내용만 다루고 목소리·감정·성격·외모는 추정하지 마라. 말버릇·더듬음은 무시한다.\n"
+    'JSON으로만 답한다: {"lesson":"이번 세션의 핵심 교훈 한 문장","next_action":"다음 연습에서 할 구체적 행동 한 문장",'
+    '"moments":[{"order_no":1,"quote":"전사문 그대로","why":"한 문장"}]}\n'
+    "moments는 다시 들여다볼 가치가 있는 구간(가장 고칠 만한 부분)을 최대 2개 고른다."
 )
 
 
-def feedback(question: str, transcript: str, duration_sec: float | None) -> str | None:
-    if not available():
-        return None
-    dur = f"{duration_sec:.0f}초" if duration_sec else "알 수 없음"
-    return _chat(_FEEDBACK_SYSTEM, f"[질문]\n{question}\n\n[답변 길이] {dur}\n\n[답변 전사문]\n{transcript}").strip()
+def debrief_summary(items: list[dict]) -> dict:
+    """세션 전체 디브리프. items: {answer_id, order_no, question, transcript, self_rating, reflection_note, bands}."""
+    payload = [
+        {"order_no": it["order_no"], "question": it["question"],
+         "transcript": (it.get("transcript") or "")[:1500] or "(전사문 없음)",
+         "self_rating": it.get("self_rating"), "reflection_note": it.get("reflection_note"),
+         "bands": it.get("bands") or {}}
+        for it in items
+    ]
+    raw = _chat_json(_DEBRIEF_SYSTEM, json.dumps({"answers": payload}, ensure_ascii=False))
+    lesson, next_action = _clip(raw.get("lesson")), _clip(raw.get("next_action"))
+    if not (lesson or next_action):
+        raise AIResponseError("AI 응답을 해석하지 못했습니다")
+    by_no = {it["order_no"]: it for it in items}
+    moments = []
+    for m in raw.get("moments") if isinstance(raw.get("moments"), list) else []:
+        if not isinstance(m, dict) or len(moments) >= 2:
+            continue
+        try:
+            it = by_no.get(int(m.get("order_no")))
+        except (TypeError, ValueError):
+            continue
+        if not it:
+            continue
+        quote, verified = verify_quote(m.get("quote"), it.get("transcript") or "")
+        if verified:
+            moments.append({"answer_id": it["answer_id"], "order_no": it["order_no"], "quote": quote,
+                            "why": _clip(m.get("why"))})
+    return {"lesson": lesson, "next_action": next_action, "moments": moments}

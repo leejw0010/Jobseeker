@@ -5,7 +5,9 @@ import type {
   EssayItem,
   PracticeAnswer,
   PracticeSession,
+  PracticeSettings,
   Question,
+  Rubric,
   SessionSummary,
   Stats,
 } from "./types";
@@ -96,13 +98,24 @@ export const api = {
   },
   audioUrl: async (answerId: string) => {
     const res = await fetch(`${BASE}/practice/answers/${answerId}/audio`, { headers: await headers() });
-    if (!res.ok) throw new ApiError(res.status, "녹음을 불러오지 못했습니다");
+    if (!res.ok) throw new ApiError(res.status, res.status === 404 ? "원본 녹음은 삭제됐어요" : "녹음을 불러오지 못했습니다");
     return URL.createObjectURL(await res.blob());
   },
   retryTranscribe: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/transcribe`),
   reflect: (answerId: string, b: { self_rating?: number | null; reflection_note?: string | null; transcript?: string | null }) =>
     req<PracticeAnswer>("PATCH", `/practice/answers/${answerId}`, b),
   feedback: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/feedback`),
+  deleteAudio: (answerId: string) => req<PracticeAnswer>("DELETE", `/practice/answers/${answerId}/audio`),
+  rubric: () => req<Rubric>("GET", "/practice/rubric"),
+  debrief: (sessionId: string) => req<PracticeSession>("POST", `/practice/sessions/${sessionId}/debrief`),
+  /** answer_ids를 비우면 서버가 고른 약점 질문으로 새 세션을 만든다. */
+  redrill: (sessionId: string, answerIds?: string[]) =>
+    req<PracticeSession>("POST", `/practice/sessions/${sessionId}/redrill`, answerIds ? { answer_ids: answerIds } : {}),
+
+  // 녹음 동의·보관 설정
+  settings: () => req<PracticeSettings>("GET", "/practice/settings"),
+  updateSettings: (b: { consent?: boolean; keep_audio?: boolean }) => req<PracticeSettings>("PUT", "/practice/settings", b),
+  deleteAllRecordings: () => req<{ deleted: number }>("DELETE", "/practice/recordings"),
 
   // ③ Track
   applications: (f: { status?: string; stage?: string; job_category?: string; q?: string } = {}) =>

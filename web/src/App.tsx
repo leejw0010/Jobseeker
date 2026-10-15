@@ -5,6 +5,7 @@ import PracticeHome from "./pages/PracticeHome";
 import SessionRunner from "./pages/SessionRunner";
 import SessionReview from "./pages/SessionReview";
 import SessionList from "./pages/SessionList";
+import PracticeSettings from "./pages/PracticeSettings";
 import TrackList from "./pages/TrackList";
 import ApplicationPage from "./pages/ApplicationPage";
 import StatsPage from "./pages/StatsPage";
@@ -23,6 +24,7 @@ export default function App() {
         <div className="group">② Practice</div>
         <NavLink to="/practice" end>연습 시작</NavLink>
         <NavLink to="/practice/history">연습 기록</NavLink>
+        <NavLink to="/practice/settings">녹음·개인정보</NavLink>
         <div className="group">③ Track</div>
         <NavLink to="/track" end>지원 관리</NavLink>
         <NavLink to="/track/stats">통계</NavLink>
@@ -38,6 +40,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/practice" replace />} />
           <Route path="/practice" element={<PracticeHome />} />
           <Route path="/practice/history" element={<SessionList />} />
+          <Route path="/practice/settings" element={<PracticeSettings />} />
           <Route path="/practice/sessions/:id/run" element={<SessionRunner />} />
           <Route path="/practice/sessions/:id" element={<SessionReview />} />
           <Route path="/track" element={<TrackList />} />
