@@ -91,6 +91,10 @@ def _template_questions(company: str, position: str, essay: str, count: int) -> 
 
 # ───────── 음성 전사 ─────────
 
+class TranscriptionError(ValueError):
+    """A provider response contained no usable transcript."""
+
+
 def transcribe(audio: bytes, filename: str, content_type: str) -> str | None:
     if not available():
         return None
@@ -102,7 +106,14 @@ def transcribe(audio: bytes, filename: str, content_type: str) -> str | None:
         timeout=120,
     )
     r.raise_for_status()
-    return r.json().get("text", "").strip()
+    try:
+        payload = r.json()
+    except ValueError as exc:
+        raise TranscriptionError("Invalid transcription response") from exc
+    text = payload.get("text") if isinstance(payload, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        raise TranscriptionError("No speech recognized")
+    return text.strip()
 
 
 # ───────── 답변 피드백 ─────────
