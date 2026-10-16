@@ -1,10 +1,13 @@
 """P0-3: 세션 종료 자동 디브리프와 약점 재연습."""
 import json
+from datetime import datetime, timedelta, timezone
 
 from app import llm
 from app.config import settings
 from app.db import SessionLocal
-from app.models import PracticeSession
+from app.models import PracticeAnswer, PracticeSession
+from app.routers import practice
+from app.rubric import question_type, transcript_sha
 
 T1 = "작년 동아리에서 저는 회계 정리를 맡았고 엑셀 매크로로 정산 시간을 절반으로 줄였습니다."
 T2 = "지원 동기는 고객 데이터를 직접 다루는 일을 하고 싶어서입니다."
@@ -13,6 +16,12 @@ T2 = "지원 동기는 고객 데이터를 직접 다루는 일을 하고 싶어
 def _bank(client, h, n):
     qs = client.get("/practice/questions", params={"source": "bank"}, headers=h).json()
     return [q for q in qs if "자기소개" not in q["text"]][:n]
+
+
+def _experience(client, h, n):
+    """상황·행동·결과를 모두 채점하는 과거 경험 질문 n개."""
+    qs = client.get("/practice/questions", params={"source": "bank"}, headers=h).json()
+    return [q for q in qs if question_type(q["category"], q["text"], q["source"]) == "experience"][:n]
 
 
 def _grader(calls, weak_key=None):
@@ -39,7 +48,7 @@ def test_finish_runs_debrief_with_mocked_llm(client, monkeypatch):
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     calls: list = []
     monkeypatch.setattr(llm, "_chat", _grader(calls))
-    qs = _bank(client, h, 3)
+    qs = _experience(client, h, 3)
     s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"] for q in qs]}, headers=h).json()
     a1, a2, a3 = (a["id"] for a in s["answers"])
     client.patch(f"/practice/answers/{a1}", json={"transcript": T1, "self_rating": 4}, headers=h)
@@ -55,6 +64,9 @@ def test_finish_runs_debrief_with_mocked_llm(client, monkeypatch):
     for aid in (a1, a2):
         fb = by_id[aid]["feedback"]
         assert fb["rubric"] == "star-v1" and fb["criteria"][0]["quote_verified"] is True
+        assert fb["question_type"] == "experience" and fb["transcript_sha"] == transcript_sha(by_id[aid]["transcript"])
+        # 인용 없는 '충분'은 근거가 없으니 '일부'로 낮춘다
+        assert fb["criteria"][1]["band"] == "일부" and fb["criteria"][1]["evidence_missing"] is True
         assert fb["criteria"][2]["quote"] is None and fb["criteria"][2]["quote_verified"] is False
     assert by_id[a3]["feedback"] is None
     d = got["debrief"]
@@ -188,7 +200,107 @@ def test_finish_does_not_start_second_debrief_while_pending(client, monkeypatch)
     s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
     client.patch(f"/practice/answers/{s['answers'][0]['id']}", json={"transcript": T1}, headers=h)
     with SessionLocal() as db:
-        db.get(PracticeSession, s["id"]).debrief_status = "pending"  # 다른 작업이 만드는 중
+        x = db.get(PracticeSession, s["id"])
+        x.debrief_status, x.debrief_started_at = "pending", datetime.now(timezone.utc)  # 다른 작업이 만드는 중
         db.commit()
     assert client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()["debrief_status"] == "pending"
+    # 2분 뒤 화면의 '다시 시도'가 보내는 재생성 요청도 도는 작업이 있으면 하나 더 붙이지 않는다
+    assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()["debrief_status"] == "pending"
     assert calls == []
+
+    # 5분이 지나도 'pending'이면 작업이 사라진 것(서버 재시작 등)으로 보고 다시 시작한다
+    with SessionLocal() as db:
+        db.get(PracticeSession, s["id"]).debrief_started_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+        db.commit()
+    assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()["debrief_status"] == "pending"
+    assert [c["system"] for c in calls] == [llm._GRADE_SYSTEM, llm._DEBRIEF_SYSTEM]
+    assert client.get(f"/practice/sessions/{s['id']}", headers=h).json()["debrief_status"] == "done"
+
+
+def _edit_transcript(answer_id: str, text: str) -> None:
+    """다른 요청(PATCH)이 전사문을 고친 것처럼 별도 DB 세션에서 바꾼다."""
+    with SessionLocal() as db:
+        a = db.get(PracticeAnswer, answer_id)
+        practice._set_transcript(a, text)
+        db.commit()
+
+
+def test_debrief_never_pairs_new_transcript_with_old_grade(client, monkeypatch):
+    """디브리프가 앞 답변을 채점하는 동안 전사문을 고쳐도, 옛 전사문의 채점이 새 전사문에 붙지 않는다."""
+    h = {"X-User-Id": "user-debrief-race"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    t2_old, t2_new = "작년 동아리에서 저는 발표를 맡았습니다.", "인턴십에서 저는 데이터 정리 자동화를 맡았습니다."
+    a1_new = "고친 첫 답변입니다. 저는 일정을 다시 짰습니다."
+    calls: list = []
+    grade = _grader(calls)
+    ids: dict = {}
+
+    def racing(system, user, json_mode=False, **kwargs):
+        out = grade(system, user, json_mode, **kwargs)
+        if system == llm._GRADE_SYSTEM and len([c for c in calls if c["system"] == llm._GRADE_SYSTEM]) == 1:
+            _edit_transcript(ids["a1"], a1_new)  # 채점 중인 답변을 고침
+            _edit_transcript(ids["a2"], t2_new)  # 아직 채점하지 않은 답변을 고침
+        return out
+
+    monkeypatch.setattr(llm, "_chat", racing)
+    qs = _experience(client, h, 2)
+    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"] for q in qs]}, headers=h).json()
+    ids["a1"], ids["a2"] = (a["id"] for a in s["answers"])
+    client.patch(f"/practice/answers/{ids['a1']}", json={"transcript": T1}, headers=h)
+    client.patch(f"/practice/answers/{ids['a2']}", json={"transcript": t2_old}, headers=h)
+
+    client.post(f"/practice/sessions/{s['id']}/finish", headers=h)
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    a1, a2 = got["answers"]
+    assert got["debrief_status"] == "done"
+    # 채점 중에 바뀐 a1: 옛 전사문의 채점은 버린다
+    assert a1["transcript"] == a1_new and a1["feedback"] is None
+    # a2: 채점 직전에 다시 읽어 새 전사문으로 채점한다
+    graded = [c["user"] for c in calls if c["system"] == llm._GRADE_SYSTEM]
+    assert len(graded) == 2 and t2_new in graded[1] and t2_old not in graded[1]
+    assert a2["transcript"] == t2_new and a2["feedback"]["stale"] is False
+    assert a2["feedback"]["criteria"][0]["quote"] == t2_new[:8]
+    # 요약도 지금 전사문으로 만든다
+    summary = next(c["user"] for c in calls if c["system"] == llm._DEBRIEF_SYSTEM)
+    assert a1_new in summary and t2_new in summary and t2_old not in summary
+
+
+def test_feedback_for_other_transcript_counts_as_stale(client):
+    """저장된 채점의 전사문 지문이 지금 전사문과 다르면 API·약점 목록 모두 낡은 피드백으로 본다."""
+    h = {"X-User-Id": "user-sha-stale"}
+    q = _experience(client, h, 1)[0]
+    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
+    aid = s["answers"][0]["id"]
+    client.patch(f"/practice/answers/{aid}", json={"transcript": T1}, headers=h)
+    fb = {"rubric": "star-v1", "criteria": [{"key": "action", "label": "본인 행동", "band": "부족"}], "stale": False}
+    with SessionLocal() as db:
+        db.get(PracticeAnswer, aid).feedback = {**fb, "transcript_sha": transcript_sha("다른 전사문")}
+        db.commit()
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert got["answers"][0]["feedback"]["stale"] is True and got["redrill"] == []
+
+    with SessionLocal() as db:
+        db.get(PracticeAnswer, aid).feedback = {**fb, "transcript_sha": transcript_sha(T1)}
+        db.commit()
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert got["answers"][0]["feedback"]["stale"] is False and got["redrill"][0]["reasons"] == ["본인 행동 부족"]
+
+
+def test_manual_grade_is_not_saved_when_transcript_changes_meanwhile(client, monkeypatch):
+    h = {"X-User-Id": "user-grade-race"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    q = _experience(client, h, 1)[0]
+    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
+    aid = s["answers"][0]["id"]
+    client.patch(f"/practice/answers/{aid}", json={"transcript": T1}, headers=h)
+    grade = _grader([])
+
+    def racing(system, user, json_mode=False, **kwargs):
+        _edit_transcript(aid, "채점 중에 고친 전사문입니다.")
+        return grade(system, user, json_mode, **kwargs)
+
+    monkeypatch.setattr(llm, "_chat", racing)
+    r = client.post(f"/practice/answers/{aid}/feedback", headers=h)
+    assert r.status_code == 409
+    a = client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"][0]
+    assert a["transcript"] == "채점 중에 고친 전사문입니다." and a["feedback"] is None

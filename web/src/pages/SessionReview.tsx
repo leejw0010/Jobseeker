@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import RubricView, { bandClass } from "../components/RubricView";
 import Stars from "../components/Stars";
 import type { PracticeAnswer, PracticeSession, Rubric } from "../types";
@@ -14,6 +14,8 @@ const daysLeft = (iso: string) => Math.ceil((new Date(iso).getTime() - Date.now(
 
 /** 약점 사유 → 칩 색상 */
 const reasonClass = (r: string) => (r.endsWith("부족") ? "band-bad" : r === "건너뜀" ? "band-na" : "band-warn");
+/** 루브릭 '부족'에서 온 사유는 AI 채점 결과라고 표시한다(자기평가·건너뜀은 그대로) */
+const reasonText = (r: string) => (r.endsWith("부족") ? `AI · ${r}` : r);
 
 /** 다시 연습한 세션에서, 원래 세션의 같은 질문 결과를 한 줄로 보여준다. */
 function PrevLine({ prev }: { prev: PracticeAnswer }) {
@@ -21,18 +23,20 @@ function PrevLine({ prev }: { prev: PracticeAnswer }) {
   return (
     <div className="row small muted" style={{ gap: 6, marginTop: 6 }}>
       <span>지난번</span>
-      {criteria.map((c) => <span key={c.key} className={`chip ${bandClass(c.band)}`}>{c.label} {c.band}</span>)}
+      {criteria.map((c) => <span key={c.key} className={`chip ${bandClass(c.band)}`}>AI · {c.label} {c.band}</span>)}
       {prev.self_rating != null && <span>자기평가 {prev.self_rating}점</span>}
       {criteria.length === 0 && prev.self_rating == null && <span>평가 없음</span>}
     </div>
   );
 }
 
-function AnswerCard({ a, rubric, prev, onChange }: {
+function AnswerCard({ a, rubric, prev, onChange, onReload }: {
   a: PracticeAnswer;
   rubric: Rubric | null;
   prev?: PracticeAnswer;
   onChange: (a: PracticeAnswer) => void;
+  /** 실패했을 때 서버 상태로 다시 맞춘다(중간 단계가 이미 저장됐을 수 있다) */
+  onReload: () => void;
 }) {
   const [audio, setAudio] = useState<string | null>(null);
   const [audioErr, setAudioErr] = useState<string | null>(null);
@@ -40,6 +44,7 @@ function AnswerCard({ a, rubric, prev, onChange }: {
   const [note, setNote] = useState(a.reflection_note ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [needConsent, setNeedConsent] = useState(false);
 
   useEffect(() => {
     setAudio(null);
@@ -60,12 +65,16 @@ function AnswerCard({ a, rubric, prev, onChange }: {
   const act = async (fn: () => Promise<PracticeAnswer>, syncText = false) => {
     setBusy(true);
     setErr(null);
+    setNeedConsent(false);
     try {
       const next = await fn();
       onChange(next);
       if (syncText) setTranscript(next.transcript ?? "");
     } catch (e) {
-      setErr((e as Error).message);
+      // 녹음을 OpenAI로 다시 보내려면 녹음 동의가 필요하다(다른 곳에서 철회한 경우)
+      if (e instanceof ApiError && e.status === 403) setNeedConsent(true);
+      else setErr((e as Error).message);
+      onReload();
     } finally {
       setBusy(false);
     }
@@ -73,18 +82,20 @@ function AnswerCard({ a, rubric, prev, onChange }: {
 
   const textDirty = transcript !== (a.transcript ?? "");
   const dirty = textDirty || note !== (a.reflection_note ?? "");
+  const hasTranscript = !!a.transcript?.trim();
   // 한국어 발화 속도 참고용: 전사 글자 수 / 분
   const cpm = a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
 
-  // 고친 전사문이 있으면 먼저 저장하고 채점한다(옛 전사문으로 채점하지 않도록)
+  // 고친 전사문이 있으면 먼저 저장하고(바로 화면에 반영) 채점한다. 채점이 실패해도 저장한 전사문과 낡은 피드백 표시는 맞게 남는다
   const grade = () =>
     act(async () => {
-      if (textDirty) await api.reflect(a.id, { transcript: transcript || null });
+      if (textDirty) onChange(await api.reflect(a.id, { transcript: transcript || null }));
       return api.feedback(a.id);
     });
 
   const removeAudio = () => {
-    if (confirm("원본 녹음을 지울까요? 전사문은 남아요.")) act(() => api.deleteAudio(a.id));
+    const ask = hasTranscript ? "원본 녹음을 지울까요? 전사문은 남아요." : "전사문이 없어 지우면 이 답변 내용이 남지 않아요. 원본 녹음을 지울까요?";
+    if (confirm(ask)) act(() => api.deleteAudio(a.id));
   };
 
   return (
@@ -106,7 +117,7 @@ function AnswerCard({ a, rubric, prev, onChange }: {
           </div>
         </>
       ) : a.audio_deleted_at ? (
-        <p className="muted small">원본 녹음은 지웠어요. 전사문만 남겨요.</p>
+        <p className="muted small">{hasTranscript ? "원본 녹음은 지웠어요. 전사문만 남겨요." : "원본 녹음은 지웠어요."}</p>
       ) : (
         <p className="muted small">녹음이 없습니다.</p>
       )}
@@ -151,23 +162,31 @@ function AnswerCard({ a, rubric, prev, onChange }: {
           </>
         )
       )}
+      {needConsent && (
+        <p className="err">
+          녹음을 다시 전사하려면 녹음 동의가 필요해요. <Link to="/practice/settings">녹음·개인정보</Link>에서 동의한 뒤 다시 시도해 주세요.
+        </p>
+      )}
       {err && <p className="err">{err}</p>}
     </section>
   );
 }
 
 /** 세션 끝 자동 디브리프 + 약점 질문 다시 연습 */
-function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRedrill }: {
+function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry, onRedrill }: {
   s: PracticeSession;
   gaveUp: boolean;
   busy: boolean;
   err: string | null;
   onDebrief: () => void;
+  /** 오래 걸려 확인을 멈춘 뒤의 '다시 시도' */
+  onRetry: () => void;
   onRedrill: () => void;
 }) {
   const d = s.debrief;
   const status = s.debrief_status;
   const hasTranscript = s.answers.some((a) => a.transcript);
+  const hasFeedback = s.answers.some((a) => a.feedback);
 
   return (
     <section className="card">
@@ -180,7 +199,7 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRedrill }: {
         (gaveUp ? (
           <div className="row">
             <span className="small muted grow">디브리프가 오래 걸리고 있어요.</span>
-            <button disabled={busy} onClick={onDebrief}>다시 시도</button>
+            <button disabled={busy} onClick={onRetry}>다시 시도</button>
           </div>
         ) : (
           <p className="muted small" style={{ margin: 0 }}>세션 디브리프를 만드는 중이에요…</p>
@@ -221,7 +240,9 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRedrill }: {
       )}
       {status === "failed" && (
         <div className="row">
-          <span className="err grow">디브리프를 만들지 못했어요. 루브릭 채점 결과는 아래 답변에 남아 있어요.</span>
+          <span className="err grow">
+            디브리프를 만들지 못했어요.{hasFeedback && " 루브릭 채점 결과는 아래 답변에 남아 있어요."}
+          </span>
           <button disabled={busy} onClick={onDebrief}>다시 만들기</button>
         </div>
       )}
@@ -248,7 +269,7 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRedrill }: {
               <li key={w.answer_id}>
                 <div className="small"><a href={`#answer-${w.answer_id}`}>Q{w.order_no}.</a> {w.question_text}</div>
                 <div className="row small" style={{ gap: 6, marginTop: 4 }}>
-                  {w.reasons.map((r) => <span key={r} className={`chip ${reasonClass(r)}`}>{r}</span>)}
+                  {w.reasons.map((r) => <span key={r} className={`chip ${reasonClass(r)}`}>{reasonText(r)}</span>)}
                 </div>
               </li>
             ))}
@@ -273,6 +294,7 @@ export default function SessionReview() {
   const [gaveUp, setGaveUp] = useState(false);
   const [cardBusy, setCardBusy] = useState(false);
   const [cardErr, setCardErr] = useState<string | null>(null);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
   // 늦게 온 이전 응답이 새 결과를 덮지 않도록 요청 순번을 센다
   const seq = useRef(0);
@@ -355,6 +377,14 @@ export default function SessionReview() {
       apply(await api.debrief(id));
       setGaveUp(false);
     });
+  // 확인을 멈춘 뒤 '다시 시도': 먼저 지금 상태를 다시 확인하고, 아직 만드는 중일 때만 재생성을 요청한다.
+  // 서버는 도는 작업이 있으면(5분 안) 새로 시작하지 않고 지금 상태를 돌려준다. 이후 다시 확인을 이어 간다.
+  const retryDebrief = () =>
+    cardAct(async () => {
+      const cur = await api.session(id);
+      apply(cur.debrief_status === "pending" ? await api.debrief(id) : cur);
+      setGaveUp(false);
+    });
   const redrill = () =>
     cardAct(async () => {
       const next = await api.redrill(id);
@@ -365,6 +395,20 @@ export default function SessionReview() {
   const onAnswer = (next: PracticeAnswer) => {
     setS((cur) => cur && { ...cur, answers: cur.answers.map((x) => (x.id === next.id ? next : x)) });
     load().catch(() => {});
+  };
+  const reload = () => {
+    load().catch(() => {});
+  };
+
+  const removeSession = async () => {
+    if (!confirm("이 연습 기록을 삭제할까요? 전사문과 원본 녹음도 함께 지워져요.")) return;
+    setDeleteErr(null);
+    try {
+      await api.deleteSession(id);
+      nav("/practice/history");
+    } catch (e) {
+      setDeleteErr((e as Error).message);
+    }
   };
 
   if (err) return <p className="err">{err}</p>;
@@ -377,8 +421,9 @@ export default function SessionReview() {
       <div className="row">
         <h1 className="grow" style={{ margin: 0 }}>{s.title}</h1>
         {remaining > 0 && <Link to={`/practice/sessions/${s.id}/run`}>남은 {remaining}개 이어서 연습</Link>}
-        <button className="danger" onClick={async () => { if (confirm("이 연습 기록을 삭제할까요?")) { await api.deleteSession(s.id); nav("/practice/history"); } }}>삭제</button>
+        <button className="danger" onClick={removeSession}>삭제</button>
       </div>
+      {deleteErr && <p className="err">{deleteErr}</p>}
       <p className="muted small">{new Date(s.created_at).toLocaleString("ko-KR")} · {s.mode === "mock" ? `모의시험 (준비 ${s.prep_sec}초 / 답변 ${s.answer_sec}초)` : "자유 연습"}</p>
       {s.redrill_of && (
         <p className="small row" style={{ gap: 6 }}>
@@ -390,9 +435,9 @@ export default function SessionReview() {
           )}
         </p>
       )}
-      <DebriefCard s={s} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRedrill={redrill} />
+      <DebriefCard s={s} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} onRedrill={redrill} />
       {s.answers.map((a) => (
-        <AnswerCard key={a.id} a={a} rubric={rubric} prev={prevByQuestion.get(a.question.id)} onChange={onAnswer} />
+        <AnswerCard key={a.id} a={a} rubric={rubric} prev={prevByQuestion.get(a.question.id)} onChange={onAnswer} onReload={reload} />
       ))}
     </>
   );

@@ -2,10 +2,12 @@ import type {
   Application,
   ApplicationDetail,
   Category,
+  DeleteResult,
   EssayItem,
   PracticeAnswer,
   PracticeSession,
   PracticeSettings,
+  PracticeSettingsUpdate,
   Question,
   Rubric,
   SessionSummary,
@@ -114,8 +116,9 @@ export const api = {
 
   // 녹음 동의·보관 설정
   settings: () => req<PracticeSettings>("GET", "/practice/settings"),
-  updateSettings: (b: { consent?: boolean; keep_audio?: boolean }) => req<PracticeSettings>("PUT", "/practice/settings", b),
-  deleteAllRecordings: () => req<{ deleted: number }>("DELETE", "/practice/recordings"),
+  updateSettings: (b: { consent?: boolean; keep_audio?: boolean }) =>
+    req<PracticeSettingsUpdate>("PUT", "/practice/settings", b),
+  deleteAllRecordings: () => req<DeleteResult>("DELETE", "/practice/recordings"),
 
   // ③ Track
   applications: (f: { status?: string; stage?: string; job_category?: string; q?: string } = {}) =>

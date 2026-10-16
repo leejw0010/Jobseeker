@@ -24,55 +24,81 @@ export default function SessionRunner() {
   const [consent, setConsent] = useState<"checking" | "ok" | "needed">("checking");
   const [consentNotice, setConsentNotice] = useState<string | null>(null);
   const [retentionDays, setRetentionDays] = useState(30);
+  const [keepAudio, setKeepAudio] = useState(false);
+  // 이미 녹음한 답변(원본을 지웠어도 recorded_at은 남는다). 이어서 연습할 때 다시 묻지 않는다
+  const [recorded, setRecorded] = useState<Set<string>>(new Set());
   const rec = useRecorder();
   const deadline = useRef(0);
 
   useEffect(() => {
     api.session(id).then((s) => {
       setSession(s);
-      // 이미 녹음한 질문은 건너뛰고 이어서 진행 (원본을 지웠어도 recorded_at은 남는다)
-      const next = s.answers.findIndex((a) => !a.recorded_at);
+      const done = new Set(s.answers.filter((a) => a.recorded_at).map((a) => a.id));
+      setRecorded(done);
+      const next = s.answers.findIndex((a) => !done.has(a.id));
       setIdx(next === -1 ? s.answers.length : next);
       if (next === -1) setPhase("done");
     }).catch((e) => setErr(e.message));
   }, [id]);
 
-  // 설정을 못 불러와도 연습은 막지 않는다. 업로드가 403이면 그때 동의를 받는다.
+  /** 설정을 불러온다. 못 불러와도 연습은 막지 않는다(업로드가 403이면 그때 동의를 받는다). */
+  const loadSettings = useCallback(
+    () =>
+      api.settings().then((st) => {
+        setRetentionDays(st.retention_days);
+        setKeepAudio(st.keep_audio);
+        return st;
+      }),
+    [],
+  );
   useEffect(() => {
-    api.settings().then((st) => {
-      setRetentionDays(st.retention_days);
-      setConsent(st.consented_at ? "ok" : "needed");
-    }).catch(() => setConsent("ok"));
-  }, []);
+    loadSettings()
+      .then((st) => setConsent(st.consented_at ? "ok" : "needed"))
+      .catch(() => setConsent("ok"));
+  }, [loadSettings]);
 
   const mock = session?.mode === "mock";
   const answer = session?.answers[idx];
+
+  /** 지금 질문 뒤에서 아직 녹음하지 않은 질문으로 가고, 남은 질문이 없으면 세션을 끝내고 리뷰로 간다. */
+  const advance = useCallback(async (done: Set<string>) => {
+    if (!session) return;
+    const next = session.answers.findIndex((a, i) => i > idx && !done.has(a.id));
+    if (next !== -1) {
+      setIdx(next);
+      setPhase("ready");
+      return;
+    }
+    // 마지막 질문을 건너뛰어도 세션을 끝낸다(자동 디브리프와 '건너뜀' 약점 표시가 종료 시점에 정해진다)
+    await api.finishSession(session.id).catch(() => {});
+    setPhase("done");
+    nav(`/practice/sessions/${session.id}`);
+  }, [idx, nav, session]);
 
   const finishAnswer = useCallback(async () => {
     if (!answer) return;
     setPhase("uploading");
     const result = await rec.stop();
+    let done = recorded;
     try {
-      if (result && result.blob.size > 0) await api.uploadAudio(answer.id, result.blob, result.durationSec);
+      if (result && result.blob.size > 0) {
+        await api.uploadAudio(answer.id, result.blob, result.durationSec);
+        done = new Set(recorded).add(answer.id);
+        setRecorded(done);
+      }
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) {
-        // 다른 곳에서 동의를 철회한 경우: 방금 녹음은 보내지 않고, 동의 후 같은 질문을 다시 녹음한다
-        setConsentNotice(`${e.message}. 방금 녹음은 보내지 않았어요. 동의한 뒤 이 질문을 다시 녹음해 주세요.`);
+        // 다른 곳에서 동의를 철회한 경우: 서버는 방금 녹음을 저장하지 않았다. 동의 후 같은 질문을 다시 녹음한다
+        setConsentNotice("녹음하려면 먼저 동의가 필요해요. 방금 녹음은 저장하지 않았어요. 동의한 뒤 이 질문을 다시 녹음해 주세요.");
+        await loadSettings().catch(() => {}); // 동의 패널의 보관 체크를 지금 설정으로
         setConsent("needed");
         setPhase("ready");
         return;
       }
       setErr(`녹음 업로드 실패: ${(e as Error).message}`);
     }
-    if (session && idx + 1 >= session.answers.length) {
-      await api.finishSession(session.id);
-      setPhase("done");
-      nav(`/practice/sessions/${session.id}`);
-    } else {
-      setIdx((i) => i + 1);
-      setPhase("ready");
-    }
-  }, [answer, idx, nav, rec, session]);
+    await advance(done);
+  }, [advance, answer, loadSettings, rec, recorded]);
 
   const beginAnswer = useCallback(async () => {
     try {
@@ -87,13 +113,7 @@ export default function SessionRunner() {
     }
   }, [rec, session]);
 
-  // 마지막 질문을 건너뛰어도 세션을 끝낸다(자동 디브리프와 '건너뜀' 약점 표시가 종료 시점에 정해진다)
-  const skip = async () => {
-    if (!session) return;
-    if (idx + 1 < session.answers.length) return setIdx(idx + 1);
-    await api.finishSession(session.id).catch(() => {});
-    nav(`/practice/sessions/${session.id}`);
-  };
+  const skip = () => advance(recorded);
 
   const beginQuestion = useCallback(async () => {
     if (!session) return;
@@ -152,9 +172,11 @@ export default function SessionRunner() {
       {consent === "needed" ? (
         <ConsentPanel
           retentionDays={retentionDays}
+          initialKeepAudio={keepAudio}
           notice={consentNotice}
           onConsented={(st) => {
             setRetentionDays(st.retention_days);
+            setKeepAudio(st.keep_audio);
             setConsentNotice(null);
             setErr(null);
             setConsent("ok");

@@ -1,7 +1,16 @@
 from datetime import date, datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    model_validator,
+)
+
+from .rubric import feedback_current
 
 Stage = Literal["서류", "인적성", "1차면접", "2차면접", "최종"]
 Status = Literal["진행중", "합격", "불합격", "보류"]
@@ -79,6 +88,14 @@ class AnswerOut(ORM):
     def audio_available(self) -> bool:
         return self.audio_path is not None
 
+    @model_validator(mode="after")
+    def _mark_stale(self):
+        # 지금 전사문을 채점한 피드백이 아니면(채점 중에 고친 경우 등) 낡은 것으로 내보낸다
+        if isinstance(self.feedback, dict) and not self.feedback.get("stale") \
+                and not feedback_current(self.feedback, self.transcript):
+            self.feedback = {**self.feedback, "stale": True}
+        return self
+
 
 class WeakAnswerOut(BaseModel):
     """다시 연습할 약점 질문과 그 이유."""
@@ -140,7 +157,17 @@ class PracticeSettingsOut(BaseModel):
 
 
 class DeletedOut(BaseModel):
+    """원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(다음 만료 정리 때 다시 지운다)."""
+
     deleted: int
+    failed: int = 0
+
+
+class PracticeSettingsUpdateOut(PracticeSettingsOut):
+    """설정 변경 결과. 동의를 철회했으면 지운·못 지운 원본 녹음 수를 함께 돌려준다."""
+
+    deleted: int = 0
+    failed: int = 0
 
 
 # ───────────── ③ Track ─────────────

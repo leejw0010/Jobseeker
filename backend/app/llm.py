@@ -155,32 +155,44 @@ def _grade_system() -> str:
         *[f"  · {band}: {anchor}" for band, anchor in plain["anchors"].items()],
         "",
         f"[등급] {' | '.join(BANDS)}",
-        "- 어떤 기준이 '해당 없음'인지는 사용자 메시지의 [질문 유형]을 따른다. "
-        "'해당 없음'으로 정해진 기준은 band만 '해당 없음'으로 두고 quote와 comment는 비운다.",
+        (
+            "- 어떤 기준이 '해당 없음'인지는 사용자 메시지의 [질문 유형]을 따른다. "
+            "'해당 없음'으로 정해진 기준은 band만 '해당 없음'으로 두고 quote와 comment는 비운다."
+        ),
         "- relevance는 항상 채점한다.",
         "",
         "[규칙]",
-        "1. 앵커에 엄격히 맞춰 채점하고 후하게 주지 마라. LLM 채점자는 사람보다 관대하다고 알려져 있다. "
-        "두 등급 사이에서 망설여지면 낮은 쪽(충분 → 일부 → 부족)을 준다. '해당 없음'은 이 순서에 들지 않는다: "
-        "채점할 기준을 '해당 없음'으로 피하지 말고, 해당 없는 기준을 '부족'으로 만들지도 마라.",
+        (
+            "1. 앵커에 엄격히 맞춰 채점하고 후하게 주지 마라. LLM 채점자는 사람보다 관대하다고 알려져 있다. "
+            "두 등급 사이에서 망설여지면 낮은 쪽(충분 → 일부 → 부족)을 준다. '해당 없음'은 이 순서에 들지 않는다: "
+            "채점할 기준을 '해당 없음'으로 피하지 말고, 해당 없는 기준을 '부족'으로 만들지도 마라."
+        ),
         "2. 장점을 지어내지 마라. 잘한 점을 몇 개 말해야 한다는 규칙은 없다.",
-        "3. 모든 판단에는 전사문을 그대로 인용한다. 전사문에서 정확한 구간을 복사하고 고치거나 요약하지 마라. "
-        "인용할 때는 말버릇·문장부호도 전사문 그대로 둔다(규칙 5는 등급 판단에만 적용한다). "
-        "인용을 비워 두는 것은 무언가가 없어서 등급이 '부족' 또는 '해당 없음'일 때뿐이다.",
+        (
+            "3. 모든 판단에는 전사문을 그대로 인용한다. 전사문에서 정확한 구간을 복사하고 고치거나 요약하지 마라. "
+            "인용할 때는 말버릇·문장부호도 전사문 그대로 둔다(규칙 5는 등급 판단에만 적용한다). "
+            "인용을 비워 두는 것은 무언가가 없어서 등급이 '부족' 또는 '해당 없음'일 때뿐이다."
+        ),
         "4. 말의 내용만 판단한다. 목소리, 감정, 성격, 외모는 추정하지도 평가하지도 마라.",
         "5. 등급을 정할 때 말버릇·더듬음(음, 어 등)은 무시한다. 전사 과정에서 빠졌을 수 있다.",
-        "6. '본인 행동'은 팀 안에서 말하는 사람이 직접 맡은 역할과 한 일을 뜻한다. '나', '제가' 같은 단어 수로 판단하지 마라. "
-        "'우리'를 '저'로 바꾸라는 조언은 하지 않는다. 팀이 한 일은 그대로 두고, 그 안에서 본인이 맡은 몫과 판단을 "
-        "구체적 행동으로 덧붙이도록 조언한다.",
+        (
+            "6. '본인 행동'은 팀 안에서 말하는 사람이 직접 맡은 역할과 한 일을 뜻한다. '나', '제가' 같은 단어 수로 판단하지 마라. "
+            "'우리'를 '저'로 바꾸라는 조언은 하지 않는다. 팀이 한 일은 그대로 두고, 그 안에서 본인이 맡은 몫과 판단을 "
+            "구체적 행동으로 덧붙이도록 조언한다."
+        ),
         "7. 답의 내용이 맞는지(정답 여부)는 채점하지 않는다. 답변의 구조와 근거만 본다.",
         "",
         "JSON으로만 답한다:",
-        '{"criteria":[{"key":"situation|action|result|relevance","band":"충분|일부|부족|해당 없음",'
-        '"quote":"전사문 그대로","comment":"판단 근거 한 문장"}],'
-        '"rewrite":["개선 문장 1","개선 문장 2(선택)"],"summary":"한 문장"}',
-        "criteria에는 네 기준을 루브릭 순서대로 한 번씩 넣는다. rewrite에는 이 답변을 낫게 만들 실제 문장을 1~2개 쓴다. "
-        "전사문에 없는 사실·수치·역할은 지어내지 말고 [수치]·[기간]·[본인 역할] 같은 빈칸으로 남긴다. "
-        "말한 내용의 순서와 표현만 고친다.",
+        (
+            '{"criteria":[{"key":"situation|action|result|relevance","band":"충분|일부|부족|해당 없음",'
+            '"quote":"전사문 그대로","comment":"판단 근거 한 문장"}],'
+            '"rewrite":["개선 문장 1","개선 문장 2(선택)"],"summary":"한 문장"}'
+        ),
+        (
+            "criteria에는 네 기준을 루브릭 순서대로 한 번씩 넣는다. rewrite에는 이 답변을 낫게 만들 실제 문장을 1~2개 쓴다. "
+            "전사문에 없는 사실·수치·역할은 지어내지 말고 [수치]·[기간]·[본인 역할] 같은 빈칸으로 남긴다. "
+            "말한 내용의 순서와 표현만 고친다."
+        ),
     ]
     return "\n".join(lines)
 
@@ -193,6 +205,7 @@ _QUOTE_EDGES = re.compile(r"^(?:[\s\"'“”‘’「」『』…]|\.{2,})+|(?:[
 _WORD = re.compile(r"[^\s.,!?…~·\"'“”‘’「」『』()\[\]]+")
 _FILLERS = {"음", "어", "그"}
 _NUM = re.compile(r"\d+(?:[.,]\d+)?")
+MIN_QUOTE_CHARS = 4  # 근거로 인정하는 인용의 최소 글자 수(공백·문장부호·말버릇 제외)
 
 
 def _squash(text: str) -> str:
@@ -230,11 +243,13 @@ def verify_quote(quote, transcript: str) -> tuple[str | None, bool | None]:
     q = _squash(_QUOTE_EDGES.sub("", quote))
     if not q:
         return None, None
-    if q in _squash(transcript or ""):
-        return q, True
     lq, _ = _loose(q)
     if not lq:  # 말버릇·문장부호뿐인 인용은 빈 인용으로 본다
         return None, None
+    if len(lq.replace(" ", "")) < MIN_QUOTE_CHARS:  # '네', '저는'처럼 짧은 인용은 근거로 치지 않는다
+        return None, False
+    if q in _squash(transcript or ""):
+        return q, True
     lt, pos = _loose(transcript or "")
     i = lt.find(lq)
     if i < 0:
@@ -242,9 +257,12 @@ def verify_quote(quote, transcript: str) -> tuple[str | None, bool | None]:
     return _squash((transcript or "")[pos[i]: pos[i + len(lq) - 1] + 1]), True
 
 
-def _blank_new_numbers(line: str, known: set[str]) -> str:
-    """개선 문장에서 전사문·질문에 없던 숫자는 [수치] 빈칸으로 바꾼다(지어낸 성과를 연습하지 않게)."""
-    return _NUM.sub(lambda m: m.group() if m.group() in known else "[수치]", line)
+def _invents_numbers(line: str, known: set[str]) -> bool:
+    """개선 문장에 전사문·질문에 없던 숫자가 있는가(지어낸 성과를 연습하지 않게 그 문장은 버린다)."""
+    return any(n not in known for n in _NUM.findall(line))
+
+
+_NA_AS_MISSING = "이 질문에서 채점하는 기준인데 답변에서 드러나지 않았어요."
 
 
 def _not_applicable_row(key: str) -> dict:
@@ -256,7 +274,8 @@ def normalize_feedback(raw: dict, transcript: str, qtype: str | None = None, que
     """모델 응답을 루브릭에 맞춰 거른다: 아는 기준만 루브릭 순서로 한 번씩, 올바른 등급만, 인용은 전사문에 있는 것만.
 
     qtype(질문 유형)이 있으면 '해당 없음'은 서버가 정한다: 해당 없는 기준은 모델 답과 상관없이 '해당 없음',
-    채점할 기준에 모델이 '해당 없음'을 주면 '부족'으로 본다. 인용으로 확인되지 않은 '충분'은 '일부'로 낮춘다.
+    채점할 기준에 모델이 '해당 없음'을 주면 '부족'으로 본다. 인용으로 확인되지 않은 '충분'은 '일부'로 낮추고
+    evidence_missing으로 표시한다. 개선 문장에 전사문·질문에 없던 숫자가 있으면 그 문장은 버린다.
     """
     forced = not_applicable(qtype)  # None이면 모델이 '해당 없음'을 판단
     given: dict[str, dict] = {}
@@ -271,13 +290,12 @@ def normalize_feedback(raw: dict, transcript: str, qtype: str | None = None, que
             continue
         if forced is not None and key in forced:
             continue  # 아래에서 '해당 없음'으로 채운다
-        if band == "해당 없음":
-            if forced is None and key not in NA_ALLOWED:
-                continue
-            if forced is not None:
-                # 채점해야 하는 기준을 '해당 없음'으로 피해 가지 않게(관대한 채점 방지)
-                given[key] = {**_not_applicable_row(key), "band": "부족"}
-                continue
+        if band == "해당 없음" and forced is None and key not in NA_ALLOWED:
+            continue
+        if band == "해당 없음" and forced is not None:
+            # 채점해야 하는 기준을 '해당 없음'으로 피해 가지 않게(관대한 채점 방지)
+            given[key] = {**_not_applicable_row(key), "band": "부족", "comment": _NA_AS_MISSING}
+            continue
         quote, verified = verify_quote(c.get("quote"), transcript)
         item = {"key": key, "label": LABELS[key], "band": band, "quote": quote,
                 "quote_verified": verified, "comment": _clip(c.get("comment"))}
@@ -293,7 +311,7 @@ def normalize_feedback(raw: dict, transcript: str, qtype: str | None = None, que
     rewrite = raw.get("rewrite") if isinstance(raw, dict) else None
     if isinstance(rewrite, str):
         rewrite = [rewrite]
-    rewrite = [_blank_new_numbers(r, known) for r in (_clip(x) for x in rewrite) if r][:2] \
+    rewrite = [r for r in (_clip(x) for x in rewrite) if r and not _invents_numbers(r, known)][:2] \
         if isinstance(rewrite, list) else []
     return {
         "criteria": [given[c["key"]] for c in CRITERIA if c["key"] in given],

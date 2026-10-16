@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 MAX_WEAK = 10
 # 'pending'이 이보다 오래되면 작업이 사라진 것(서버 재시작 등)으로 보고 다시 시작할 수 있다
-DEBRIEF_STALE_AFTER = timedelta(minutes=10)
+DEBRIEF_STALE_AFTER = timedelta(minutes=5)
 
 
 def _has_transcript(a: PracticeAnswer) -> bool:
@@ -55,13 +55,12 @@ def save_feedback(db: Session, a: PracticeAnswer, fb: dict, graded: str) -> bool
 
 
 def job_hint(db: Session, s: PracticeSession, q: Question) -> str | None:
-    """채점 프롬프트에 넣을 지원 회사·직무. 지원 건이 없으면 질문의 직무 분류."""
-    if s.application_id:
-        app = db.scalar(select(Application).where(Application.id == s.application_id,
-                                                  Application.user_id == s.user_id))
-        if app:
-            return f"{app.company} · {app.position}"
-    return q.job_category
+    """채점 프롬프트에 넣을 지원 회사·직무(세션이나 맞춤 질문의 지원 건). 지원 건을 모르면 None."""
+    app_id = s.application_id or q.application_id
+    if not app_id:
+        return None
+    app = db.scalar(select(Application).where(Application.id == app_id, Application.user_id == s.user_id))
+    return f"{app.company} · {app.position}" if app else None
 
 
 def debrief_running(s: PracticeSession, now: datetime | None = None) -> bool:

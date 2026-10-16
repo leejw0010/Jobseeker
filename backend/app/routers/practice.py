@@ -21,6 +21,7 @@ from ..schemas import (
     GenerateIn,
     PracticeSettingsIn,
     PracticeSettingsOut,
+    PracticeSettingsUpdateOut,
     QuestionIn,
     QuestionOut,
     RedrillIn,
@@ -79,9 +80,9 @@ def _prefs(db: Session, user_id: str) -> UserSettings | None:
     return db.get(UserSettings, user_id)
 
 
-def _prefs_out(p: UserSettings | None, delete_failed: int = 0) -> PracticeSettingsOut:
+def _prefs_out(p: UserSettings | None) -> PracticeSettingsOut:
     return PracticeSettingsOut(consented_at=p.consented_at if p else None, keep_audio=bool(p and p.keep_audio),
-                               retention_days=settings.audio_retention_days, delete_failed=delete_failed)
+                               retention_days=settings.audio_retention_days)
 
 
 def _require_consent(db: Session, user_id: str) -> UserSettings:
@@ -100,17 +101,22 @@ def _set_transcript(a: PracticeAnswer, text: str | None) -> None:
 
 
 def _transcribe(a: PracticeAnswer, data: bytes, filename: str, ctype: str, keep_audio: bool) -> None:
-    """전사하고, 성공했고 원본 보관을 고르지 않았으면 원본 녹음을 바로 지운다."""
+    """전사하고, 성공했고 원본 보관을 고르지 않았으면 원본 녹음을 바로 지운다.
+
+    빈 전사문(무음 등)은 실패로 본다: '전사 다시 시도'를 할 수 있게 원본을 남기고(보관 기한 뒤 자동 삭제),
+    직접 적어 둔 전사문도 지우지 않는다.
+    """
     try:
-        text = llm.transcribe(data, filename, ctype)
+        text = (llm.transcribe(data, filename, ctype) or "").strip()
     except (httpx.HTTPError, ValueError):
+        text = ""
+    if not text:
         a.stt_status = "failed"
         return
-    _set_transcript(a, text or None)
-    # 빈 전사문(무음 등)은 실패로 본다: '전사 다시 시도'를 할 수 있게 원본을 남기고, 보관 기한 뒤 자동 삭제
-    a.stt_status = "done" if (text or "").strip() else "failed"
-    if a.stt_status == "done" and not keep_audio:
-        delete_audio(a)  # 실패하면 다음 만료 정리가 다시 지운다
+    _set_transcript(a, text)
+    a.stt_status = "done"
+    if not keep_audio:
+        delete_audio(a)  # 실패하면 보관 기한을 당겨 두어 다음 만료 정리가 다시 지운다
 
 
 def _media_type(path: str) -> str:
@@ -352,24 +358,27 @@ def get_settings(user_id: str = Depends(current_user_id), db: Session = Depends(
     return _prefs_out(_prefs(db, user_id))
 
 
-@router.put("/settings", response_model=PracticeSettingsOut)
+@router.put("/settings", response_model=PracticeSettingsUpdateOut)
 def update_settings(body: PracticeSettingsIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    """동의·철회와 원본 보관 설정. 철회하면 원본 녹음을 모두 지우고(전사문·기록은 유지) 새 녹음을 막는다."""
+    """동의·철회와 원본 보관 설정. 철회하면 원본 녹음을 모두 지우고(전사문·기록은 유지) 새 녹음을 막는다.
+
+    못 지운 녹음 수는 failed로 알리고, 그 녹음은 다음 만료 정리 때 다시 지운다.
+    """
     p = _prefs(db, user_id)
     if not p:
         p = UserSettings(user_id=user_id, keep_audio=False)
         db.add(p)
     data = body.model_dump(exclude_unset=True)
-    failed = 0
+    deleted = failed = 0
     if data.get("consent") is True:
         p.consented_at = p.consented_at or _now()
     elif data.get("consent") is False:
         p.consented_at = None
-        failed = delete_user_audio(db, user_id)[1]  # 못 지운 녹음은 다음 만료 정리가 다시 지운다
+        deleted, failed = delete_user_audio(db, user_id)
     if data.get("keep_audio") is not None:
         p.keep_audio = data["keep_audio"]  # 이미 있는 녹음의 보관 기한은 바꾸지 않는다
     db.commit()
-    return _prefs_out(p, delete_failed=failed)
+    return PracticeSettingsUpdateOut(**_prefs_out(p).model_dump(), deleted=deleted, failed=failed)
 
 
 @router.delete("/recordings", response_model=DeletedOut)
@@ -406,11 +415,10 @@ async def upload_audio(
     if ext not in AUDIO_EXTS:
         ext = "m4a" if "mp4" in ctype else "webm"
     path = f"{user_id}/{a.session_id}/{a.id}.{ext}"
-    if a.audio_path and a.audio_path != path:
-        # 확장자가 다른 이전 녹음은 먼저 지운다. 못 지우면 경로를 잃지 않게 새 녹음을 받지 않는다
-        if not delete_audio(a):
-            db.commit()
-            raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
+    # 확장자가 다른 이전 녹음은 먼저 지운다. 못 지우면 경로를 잃지 않게 새 녹음을 받지 않는다
+    if a.audio_path and a.audio_path != path and not delete_audio(a):
+        db.commit()
+        raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
     storage.save(path, data, ctype)
     now = _now()
     a.audio_path, a.duration_sec = path, duration_sec

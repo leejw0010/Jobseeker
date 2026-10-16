@@ -42,7 +42,7 @@ def test_upgrade_old_sqlite_database(tmp_path):
     added = upgrade_sqlite(engine)
     assert {"practice_answers.recorded_at", "practice_answers.audio_expires_at", "practice_answers.audio_deleted_at",
             "practice_answers.feedback", "practice_sessions.debrief", "practice_sessions.debrief_status",
-            "practice_sessions.redrill_of"} <= set(added)
+            "practice_sessions.redrill_of", "practice_sessions.debrief_started_at"} <= set(added)
     insp = inspect(engine)
     assert "user_settings" in insp.get_table_names()
     cols = {c["name"]: c for c in insp.get_columns("practice_sessions")}

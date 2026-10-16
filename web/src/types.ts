@@ -27,15 +27,24 @@ export interface RubricCriterion {
   quote: string | null;
   quote_verified: boolean | null;
   comment: string | null;
+  /** 전사문 인용으로 확인되지 않은 긍정 판단('충분'이었으면 '일부'로 낮춤) */
+  evidence_missing?: boolean;
+  /** 낮추기 전 AI가 준 등급 */
+  model_band?: Band;
 }
+
+/** 서버가 질문 분류·문구로 정한 질문 유형('해당 없음' 기준이 여기서 정해진다) */
+export type QuestionType = "experience" | "hypothetical" | "self" | "knowledge" | "aptitude" | "general";
 
 export interface RubricFeedback {
   rubric: string;
   model: string;
+  question_type?: QuestionType;
   criteria: RubricCriterion[];
   rewrite: string[];
   summary: string | null;
   graded_at: string;
+  /** 지금 전사문을 채점한 결과가 아니면 true(서버가 전사문 지문으로도 판단) */
   stale: boolean;
 }
 
@@ -47,10 +56,19 @@ export interface RubricCriterionDef {
   anchors: Partial<Record<Band, string>>;
 }
 
+/** 질문 유형에 따라 바꿔 쓰는 앵커 */
+export interface RubricVariant {
+  key: string;
+  when: string;
+  anchors: Partial<Record<Band, string>>;
+}
+
 export interface Rubric {
   version: string;
   bands: Band[];
   criteria: RubricCriterionDef[];
+  variants?: RubricVariant[];
+  question_types?: Partial<Record<QuestionType, string>>;
   note: string;
 }
 
@@ -59,6 +77,15 @@ export interface PracticeSettings {
   keep_audio: boolean;
   retention_days: number;
 }
+
+/** 원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(서버가 곧 다시 지운다) */
+export interface DeleteResult {
+  deleted: number;
+  failed: number;
+}
+
+/** PUT /practice/settings 응답. 동의를 철회했으면 삭제 결과가 함께 온다. */
+export type PracticeSettingsUpdate = PracticeSettings & DeleteResult;
 
 export interface PracticeAnswer {
   id: string;

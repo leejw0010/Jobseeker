@@ -45,7 +45,7 @@ RUBRIC = {
     "question_types": {
         "experience": "과거 경험 질문",
         "hypothetical": "가상 상황·대처 방식 질문",
-        "self": "자기소개·지원 동기·포부 질문",
+        "self": "자기소개·지원 동기·포부·장단점 질문",
         "knowledge": "지식·의견 질문",
         "aptitude": "인적성 연습 문제",
         "general": "유형을 정하지 못한 질문",
@@ -79,24 +79,22 @@ def not_applicable(qtype: str | None) -> set[str] | None:
 
 
 def relevance_ties_to_job(qtype: str | None, job_hint: str | None) -> bool:
-    """질문·직무 연결에서 '끝의 직무·회사 연결'을 볼지. 경험·자기소개류 질문이고 지원 정보가 있을 때만 본다."""
+    """질문·직무 연결에서 끝의 직무·회사 연결을 볼지. 경험·자기소개류 질문이고 지원 건의 회사·직무를 알 때만 본다."""
     return bool(job_hint) and (qtype or "general") in ("experience", "self", "general")
 
 
-# 질문 유형 판별(규칙 기반). 순서가 중요하다: 인적성 → 과거 경험 → 가상 상황 → 자기소개류 → 과거형 질문 → 대처 방식
-_PAST = "았었였했웠쳤졌렸췄봤됐냈켰겼섰났왔갔줬랐혔"
-_EXPERIENCE = re.compile(rf"경험|겪|그때|당시|프로젝트를 소개|맡았|맡은 (?:역할|일)|[{_PAST}](?:던|는지)")
-_HYPOTHETICAL = re.compile(r"겠습니까|겠나요|겠어요|하시겠|[다라]면 어떻게")
-_SELF = re.compile(r"자기소개(?!서)|지원(?:한)? (?:동기|이유)|입사 후|장점|단점|포부|목표|년 뒤|년 후|1순위|"
+# 질문 유형 판별(규칙 기반). 인적성 → 과거 경험 → 가상 상황·대처 방식 → 자기소개류 순으로 보고,
+# 단서가 없으면 공용 질문은 분류로 정하고 맞춤·직접 추가 질문은 'general'(모델이 판단)로 둔다
+_SS = "".join(chr(0xAC00 + i * 28 + 20) for i in range(19 * 21))  # 받침이 ㅆ인 글자(했·었·았·였…)
+_EXPERIENCE = re.compile(rf"경험|겪|그때|당시|사례를 들어|프로젝트를 소개|맡았|[{_SS}](?:던|는지)")
+_HYPOTHETICAL = re.compile(r"겠습니까|겠나요|겠어요|[다라]면 어떻게|때 .*어떻게")
+_SELF = re.compile(r"자기소개(?!서)|지원(?:한)? ?(?:동기|이유)|입사 후|장점|단점|포부|목표|년 [뒤후]|1순위|"
                    r"하고 싶은 말|어떤 사람|좌우명|가치관|성격")
-_PAST_QUESTION = re.compile(rf"[{_PAST}](?:나요|습니까)")
-_APPROACH = re.compile(r"어떻게.*(?:나요|니까)\s*\??\s*$")
 _BANK_FALLBACK = {"인성": "self", "기업": "self", "상황": "hypothetical", "직무": "knowledge", "인적성": "aptitude"}
-_OTHER_FALLBACK = {"기업": "self", "상황": "hypothetical", "인적성": "aptitude"}
 
 
 def question_type(category: str | None, text: str | None, source: str | None = "bank") -> str:
-    """질문 분류와 문구로 질문 유형을 정한다. 맞춤·직접 추가 질문에서 단서가 없으면 'general'(모델이 판단)."""
+    """질문 분류(Question.category)와 문구로 질문 유형을 정한다."""
     t = (text or "").strip()
     if category == "인적성" or re.match(r"\[(?:언어|수리|추리)\]", t):
         return "aptitude"
@@ -106,12 +104,7 @@ def question_type(category: str | None, text: str | None, source: str | None = "
         return "hypothetical"
     if _SELF.search(t):
         return "self"
-    if _PAST_QUESTION.search(t):
-        return "experience"
-    if _APPROACH.search(t):
-        return "hypothetical"
-    fallback = _BANK_FALLBACK if source == "bank" else _OTHER_FALLBACK
-    return fallback.get(category or "", "general")
+    return _BANK_FALLBACK.get(category or "", "general") if source == "bank" else "general"
 
 
 # ───────── 피드백이 지금 전사문을 채점한 것인지 ─────────

@@ -10,6 +10,10 @@
   --good: #0ca30c;
   --bad: #d03b3b;
   --warn: #b7791f;
+  /* 작은 글자(칩·안내문)용: 밝은 화면에서 4.5:1 이상 */
+  --good-text: #0a7a0a;
+  --warn-text: #8a5a12;
+  --bad-text: #b02a2a;
   --radius: 10px;
   color-scheme: light;
 }
@@ -26,6 +30,9 @@
     --good: #2fbf2f;
     --bad: #ec6060;
     --warn: #e0a440;
+    --good-text: var(--good);
+    --warn-text: var(--warn);
+    --bad-text: var(--bad);
     color-scheme: dark;
   }
 }
@@ -76,7 +83,7 @@ button, .btn {
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.danger { color: var(--bad); }
+button.danger { color: var(--bad-text); }
 button.rec { background: var(--bad); border-color: var(--bad); color: #fff; }
 input, select, textarea {
   font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border);
@@ -92,17 +99,18 @@ tr.click { cursor: pointer; }
 tr.click:hover td { background: var(--accent-soft); }
 
 .chip { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; border: 1px solid var(--border); color: var(--text-2); }
-.chip.good { color: var(--good); border-color: currentColor; }
-.chip.bad { color: var(--bad); border-color: currentColor; }
+.chip.good { color: var(--good-text); border-color: currentColor; }
+.chip.bad { color: var(--bad-text); border-color: currentColor; }
 .chip.accent { color: var(--accent); border-color: currentColor; }
-.err { color: var(--bad); font-size: 13px; }
-.warn-text { color: var(--warn); font-size: 13px; }
+.err { color: var(--bad-text); font-size: 13px; }
+.warn-text { color: var(--warn-text); font-size: 13px; }
+.ok-text { color: var(--good-text); font-size: 13px; }
 
-/* 루브릭 판정 단계: 충분=good, 일부=warn, 부족=bad, 해당 없음=muted */
-.chip.band-good { color: var(--good); border-color: currentColor; background: color-mix(in srgb, var(--good) 10%, transparent); }
-.chip.band-warn { color: var(--warn); border-color: currentColor; background: color-mix(in srgb, var(--warn) 10%, transparent); }
-.chip.band-bad { color: var(--bad); border-color: currentColor; background: color-mix(in srgb, var(--bad) 10%, transparent); }
-.chip.band-na { color: var(--muted); border-style: dashed; }
+/* 루브릭 판정 단계: 충분=good, 일부=warn, 부족=bad, 해당 없음=점선 */
+.chip.band-good { color: var(--good-text); border-color: currentColor; background: color-mix(in srgb, var(--good) 10%, transparent); }
+.chip.band-warn { color: var(--warn-text); border-color: currentColor; background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.chip.band-bad { color: var(--bad-text); border-color: currentColor; background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.chip.band-na { color: var(--text-2); border-style: dashed; }
 
 .quote {
   margin: 6px 0; padding: 4px 10px; border-left: 3px solid var(--border);
