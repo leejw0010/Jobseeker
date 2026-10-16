@@ -31,6 +31,8 @@ create table if not exists user_settings (
 );
 -- 전체 삭제·철회 때 못 지운, 답변이 가리키지 않는 파일: 이 시각 전 것을 다음 만료 정리가 지운다
 alter table user_settings add column if not exists sweep_audio_before timestamptz;
+-- 원본 녹음을 모두 지운(전체 삭제·철회) 시각: 그 전에 시작해 아직 전사 중이던 업로드·다시 전사도 녹음을 지운 것으로 저장한다
+alter table user_settings add column if not exists audio_cleared_at timestamptz;
 alter table user_settings enable row level security;
 drop policy if exists us_all on user_settings;
 create policy us_all on user_settings for all using (user_id = auth.uid()) with check (user_id = auth.uid());

@@ -4,11 +4,13 @@
 다음 정리(PURGE_INTERVAL_MIN 안)에 다시 시도한다.
 
 답변 행이 가리키지 않는 저장소 파일(고아 파일: 예전 버전이 세션 행만 지우며 남긴 녹음, 지워진 답변에 올라가던 녹음 등)도
-지운다. 전체 삭제·동의 철회는 사용자 폴더({user_id}/)를 통째로 훑고, 만료 정리는 보관 기간이 지난 고아 파일을 지운다.
+지운다. 전체 삭제·동의 철회는 사용자 폴더({user_id}/)를 통째로 훑고, 세션·질문 삭제는 지운 답변의 파일을 경로 규칙으로
+찾아 지우고, 만료 정리는 보관 기간이 지난 고아 파일을 지운다.
 """
 import asyncio
 import logging
 import re
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
@@ -32,6 +34,14 @@ def _utc(dt: datetime | None = None) -> datetime:
 
 def retention() -> timedelta:
     return timedelta(days=settings.audio_retention_days)
+
+
+def cleared_since(prefs: UserSettings, started: datetime) -> bool:
+    """started(업로드·다시 전사를 시작한 시각) 뒤에 원본 녹음을 모두 지웠는가(전체 삭제·동의 철회).
+
+    그랬다면 이 요청이 저장·전사하던 녹음도 그 삭제가 지웠거나 지웠어야 한다: 커밋할 때 녹음을 지운 것으로 저장한다.
+    """
+    return prefs.audio_cleared_at is not None and _utc(prefs.audio_cleared_at) >= _utc(started)
 
 
 def owned_audio_path(a: PracticeAnswer) -> str | None:
@@ -110,12 +120,22 @@ class UserAudioDeleted(NamedTuple):
 
 
 def delete_user_audio(db: Session, user_id: str, now: datetime | None = None) -> UserAudioDeleted:
-    """사용자의 원본 녹음을 모두 지운다(커밋은 호출한 쪽에서).
+    """사용자의 원본 녹음을 모두 지운다. 지운 시각만 먼저 커밋하고, 녹음을 지운 결과의 커밋은 호출한 쪽에서 한다.
+
+    먼저 지운 시각(audio_cleared_at)을 동의 설정 행에 저장·커밋한다. 올리는 중이거나 다시 전사하는 중인 요청은 커밋하기
+    전에 이 행을 잠그고 다시 읽으므로, 이 시각 전에 시작했으면 녹음을 지운 것으로 저장한다(전사문은 남긴다). 그래서
+    아직 어떤 행도 가리키지 않는 올리는 중인 녹음도 지운 것으로 세어도 맞다. 이 시각 뒤에 저장된 파일은 그 뒤에 시작한
+    업로드의 녹음이라 건드리지 않는다(그 업로드가 직접 커밋한다).
 
     답변 행이 가리키는 녹음을 지운 뒤 사용자 폴더를 훑어 어떤 행도 가리키지 않는 파일까지 지운다. 행이 있는 녹음을
     못 지우면 보관 기한을 당겨 두고, 행이 없는 파일을 못 지웠거나 폴더 목록을 못 읽으면 sweep이 True: 호출한 쪽이
     request_sweep으로 표시해 다음 만료 정리가 다시 지우게 한다. 목록을 못 읽으면 남은 수를 모르니 세지 않고 unchecked로 알린다.
     """
+    now = _utc(now)
+    # 업로드·다시 전사가 동의를 다시 읽을 때와 같은 행을 잠가 쓴다: 그 요청은 이 시각을 보거나, 먼저 커밋해 아래에서 읽힌다
+    db.execute(update(UserSettings).where(UserSettings.user_id == user_id).values(audio_cleared_at=now),
+               execution_options={"synchronize_session": False})
+    db.commit()
     rows = db.scalars(
         select(PracticeAnswer).join(PracticeSession)
         .where(PracticeSession.user_id == user_id, PracticeAnswer.audio_path.is_not(None))
@@ -134,11 +154,35 @@ def delete_user_audio(db: Session, user_id: str, now: datetime | None = None) ->
     for obj in objects:
         if obj.path in kept:
             continue
+        if obj.modified is not None and obj.modified > now:  # 지운 시각 뒤에 시작한 업로드의 녹음(만료 정리의 표시와 같은 비교)
+            continue
         if delete_object(obj.path):
             deleted += 1
         else:
             orphan_failed += 1
     return UserAudioDeleted(deleted, failed + orphan_failed, False, orphan_failed > 0)
+
+
+def delete_session_files(db: Session, user_id: str, session_id: str, answer_ids: Iterable[str] | None = None) -> None:
+    """지운 세션(answer_ids를 주면 그 답변들)의 녹음 파일을 경로 규칙({user_id}/{session_id}/{answer_id}.확장자)으로 찾아 지운다.
+
+    답변 행을 지우고 커밋한 뒤에 부른다. 세션·질문 삭제가 답변을 읽은 뒤에 커밋된 업로드의 녹음은 읽은 행에 없어 먼저 지우지
+    못했지만 그 행은 함께 지워졌다. 목록을 못 읽었거나 못 지운 파일이 있으면 다음 만료 정리가 다시 지우게 표시한다.
+    """
+    folder = _user_folder(user_id)
+    if folder is None or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(session_id)):
+        return
+    prefix = f"{folder}{session_id}/"
+    names = None if answer_ids is None else tuple(f"{prefix}{answer_id}." for answer_id in answer_ids)
+    try:
+        objects = storage.list(prefix)
+    except Exception:
+        log.exception("녹음 폴더 목록을 읽지 못했습니다(%s)", prefix)
+        request_sweep(db, user_id)
+        return
+    failed = [obj.path for obj in objects if (names is None or obj.path.startswith(names)) and not delete_object(obj.path)]
+    if failed:
+        request_sweep(db, user_id)
 
 
 def request_sweep(db: Session, user_id: str, now: datetime | None = None) -> None:

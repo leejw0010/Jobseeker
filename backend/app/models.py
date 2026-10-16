@@ -167,6 +167,9 @@ class UserSettings(Base):
     # 전체 삭제·동의 철회 때 답변이 가리키지 않는 저장소 파일을 못 지웠으면 그 요청 시각.
     # 다음 만료 정리가 이 시각 전에 저장된 그런 파일을 다시 지우고, 다 지우면 비운다
     sweep_audio_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 원본 녹음을 모두 지운(내 원본 녹음 모두 지우기·동의 철회) 마지막 시각. 그 전에 시작해 아직 저장·전사 중이던
+    # 업로드·다시 전사는 커밋할 때 이 시각을 보고 녹음을 지운 것으로 저장한다(전사문은 남긴다)
+    audio_cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 

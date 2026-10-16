@@ -76,16 +76,17 @@ def test_upgrade_adds_later_columns_to_a_p0_branch_database(tmp_path):
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         for table, column in (("practice_sessions", "debrief_heartbeat_at"), ("practice_sessions", "debrief_requested_at"),
-                              ("user_settings", "sweep_audio_before")):
+                              ("user_settings", "sweep_audio_before"), ("user_settings", "audio_cleared_at")):
             conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
         conn.execute(text("INSERT INTO user_settings (user_id, consented_at, keep_audio, updated_at) "
                           "VALUES ('u1', '2026-10-15 00:00:00.000000', 1, '2026-10-15 00:00:00.000000')"))
     assert set(upgrade_sqlite(engine)) == {"practice_sessions.debrief_heartbeat_at",
-                                           "practice_sessions.debrief_requested_at", "user_settings.sweep_audio_before"}
+                                           "practice_sessions.debrief_requested_at", "user_settings.sweep_audio_before",
+                                           "user_settings.audio_cleared_at"}
     from app.models import UserSettings
     with Session(engine) as db:
         p = db.get(UserSettings, "u1")
-        assert p.keep_audio is True and p.sweep_audio_before is None
+        assert p.keep_audio is True and p.sweep_audio_before is None and p.audio_cleared_at is None
     assert upgrade_sqlite(engine) == []
     engine.dispose()
 

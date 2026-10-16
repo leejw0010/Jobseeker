@@ -26,9 +26,11 @@ from ..models import (
     valid_id,
 )
 from ..retention import (
+    cleared_since,
     delete_audio,
     delete_audios,
     delete_object,
+    delete_session_files,
     delete_user_audio,
     owned_audio_path,
     request_sweep,
@@ -262,6 +264,9 @@ def delete_question(question_id: str, user_id: str = Depends(current_user_id), d
         db.commit()
         raise HTTPException(502, "원본 녹음을 지우지 못해 질문을 삭제하지 않았어요. 잠시 후 다시 시도해 주세요")
     ids = [a.id for a in answers]
+    by_session: dict[tuple[str, str], list[str]] = {}
+    for a in answers:
+        by_session.setdefault((a.session.user_id, a.session_id), []).append(a.id)
     if ids:
         db.execute(update(AnswerCoaching).where(AnswerCoaching.parent_answer_id.in_(ids)).values(parent_answer_id=None),
                    execution_options={"synchronize_session": False})
@@ -269,6 +274,9 @@ def delete_question(question_id: str, user_id: str = Depends(current_user_id), d
         db.delete(a)  # 코칭 행도 함께(관계 cascade)
     db.delete(q)
     db.commit()
+    # 답변을 읽은 뒤 커밋된 업로드의 녹음은 위에서 지우지 못했다: 지운 답변의 파일을 경로로 찾아 지운다
+    for (owner, session_id), answer_ids in by_session.items():
+        delete_session_files(db, owner, session_id, answer_ids)
 
 
 @router.post("/questions/generate", response_model=list[QuestionOut], status_code=201)
@@ -418,6 +426,8 @@ def delete_session(session_id: str, user_id: str = Depends(current_user_id), db:
         raise HTTPException(502, "원본 녹음을 지우지 못해 세션을 삭제하지 않았어요. 잠시 후 다시 시도해 주세요")
     db.delete(s)
     db.commit()
+    # 답변을 읽은 뒤 커밋된 업로드의 녹음은 위에서 지우지 못했지만 그 행은 함께 지워졌다: 세션 폴더에 남은 파일도 지운다
+    delete_session_files(db, user_id, session_id)
 
 
 # ───────── 녹음 동의·개인정보 ─────────
@@ -483,7 +493,9 @@ def upload_audio(
     """녹음을 저장하고 곧바로 전사한다. 전사에 성공하면 원본은 지우고(보관을 고르지 않았을 때) 전사문만 남긴다.
 
     전사가 실패하면 다시 시도할 수 있게 원본을 남기되, 보관 기한이 지나면 자동으로 지운다.
+    저장·전사하는 동안 원본 녹음을 지웠으면(모두 지우기, 덮어쓴 이전 녹음 삭제) 녹음은 지운 것으로 저장하고 전사문은 남긴다.
     """
+    started = _now()
     a = _own_answer(db, user_id, answer_id)
     _require_consent(db, user_id)
     # A synchronous route runs blocking storage/STT calls in FastAPI's worker pool.
@@ -502,6 +514,7 @@ def upload_audio(
         db.commit()  # 지운 것(못 지웠으면 당긴 보관 기한)을 바로 저장한다
         if not ok:
             raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
+    overwrite = a.audio_path == path  # 같은 경로의 이전 녹음을 덮어쓴다: 그 녹음을 지우면 이번 파일이 지워진다
     storage.save(path, data, ctype)
     transcript = _stt(data, f"{a.id}.{ext}", ctype) if llm.available() else ""
     # 저장·전사하는 동안 세션·질문이 지워졌거나 동의를 철회했을 수 있다: 잠그고 다시 확인한 뒤에 반영한다
@@ -511,6 +524,9 @@ def upload_audio(
         raise HTTPException(404, ANSWER_NOT_FOUND)
     prefs = _locked_consent(db, user_id)
     db.refresh(a)
+    # 저장·전사하는 동안 원본 녹음을 모두 지웠거나(전체 삭제는 아직 행이 가리키지 않는 이 파일도 지우고 센다)
+    # 덮어쓴 이전 녹음을 지웠다(녹음 삭제 등): 그 삭제 뒤에 커밋한 것과 같게 녹음을 지운 것으로 저장한다
+    deleted = prefs is not None and (cleared_since(prefs, started) or (overwrite and not a.audio_path))
     if prefs is None and not transcript:
         # 철회했고 전사문도 없다: 이번 녹음은 없던 일로 하고 파일만 지운다
         if a.audio_path == path:  # 같은 경로의 이전 녹음을 덮어썼다
@@ -535,6 +551,8 @@ def upload_audio(
         a.stt_status = "unavailable"
     else:
         _apply_stt(a, transcript, prefs.keep_audio)
+    if deleted:
+        delete_audio(a)  # 전사문은 남기고 파일이 아직 있으면 지운다. 못 지우면 보관 기한을 당겨 다음 만료 정리가 지운다
     db.commit()
     return a
 
@@ -567,7 +585,9 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
     """원본 녹음을 다시 전사한다. 원본 보관은 지금 설정을 따른다.
 
     다시 전사할 수 없는 경우(원본 삭제, 녹음 없음, 키 없음)는 동의보다 먼저 알린다: 동의해도 할 수 있는 일이 없다.
+    전사하는 동안 원본을 지웠으면 이미 얻은 전사문은 남긴다(동의 철회와 같다).
     """
+    started = _now()
     a = _own_answer(db, user_id, answer_id)
     if a.audio_deleted_at:
         raise HTTPException(404, "원본 녹음은 삭제됐어요")
@@ -600,9 +620,16 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
             _apply_transcript(a, transcript)
         db.commit()
         raise HTTPException(403, NEED_CONSENT)
-    if a.audio_path != path:  # 전사하는 동안 원본을 지웠다
+    if a.audio_path != path or cleared_since(prefs, started):
+        # 전사하는 동안 원본을 지웠다(녹음 삭제, 원본 녹음 모두 지우기): 이미 얻은 전사문은 남긴다
+        if a.audio_path:  # 모두 지우기가 이 행을 아직 커밋하지 않았다
+            delete_audio(a)
+        if not transcript:
+            db.commit()
+            raise HTTPException(404, "원본 녹음은 삭제됐어요")
+        _apply_transcript(a, transcript)
         db.commit()
-        raise HTTPException(404, "원본 녹음은 삭제됐어요")
+        return a
     _apply_stt(a, transcript, prefs.keep_audio)
     db.commit()
     return a

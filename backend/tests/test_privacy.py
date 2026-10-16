@@ -686,6 +686,150 @@ def test_deleting_the_session_during_retry_transcribe_returns_404(client, monkey
     assert _user_files(h["X-User-Id"]) == []
 
 
+@pytest.mark.parametrize("keep_audio,stt", [(True, "모두 지우는 동안 전사된 답변"), (False, httpx.ConnectError("down"))])
+def test_delete_all_during_upload_counts_and_deletes_that_recording(client, monkeypatch, consent, keep_audio, stt):
+    """'내 원본 녹음 모두 지우기'는 올리는 중(전사 대기)이라 아직 행이 가리키지 않는 녹음도 지우고 센다. 업로드는 지운 파일을
+    다시 가리키지 않고, 그 삭제 직후에 커밋한 것처럼 녹음을 지운 것으로 저장한다(전사문은 남긴다)."""
+    h = {"X-User-Id": f"user-clear-inflight-{keep_audio}"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    consent(h, keep_audio=keep_audio)  # 원본 보관을 골랐거나 전사에 실패하면 원본이 남는 경우다
+    s = _session(client, h)
+    aid = s["answers"][0]["id"]
+    r, d = _while_transcribing(monkeypatch, stt, lambda: _upload(client, h, aid),
+                               lambda: client.delete("/practice/recordings", headers=h).json())
+    assert d == {"deleted": 1, "failed": 0, "unchecked": False}
+    assert r.status_code == 200, r.text
+    a = r.json()
+    assert a["audio_available"] is False and a["audio_deleted_at"] and a["recorded_at"]
+    assert _user_files(h["X-User-Id"]) == []
+    assert client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"][0]["audio_available"] is False
+    assert client.get(f"/practice/answers/{aid}/audio", headers=h).json()["detail"] == "원본 녹음은 삭제됐어요"
+    if isinstance(stt, str):
+        assert (a["transcript"], a["stt_status"]) == (stt, "done")
+    else:
+        assert (a["transcript"], a["stt_status"]) == (None, "failed")
+        retry = client.post(f"/practice/answers/{aid}/transcribe", headers=h)
+        assert retry.status_code == 404 and retry.json()["detail"] == "원본 녹음은 삭제됐어요"
+
+
+def test_upload_started_after_delete_all_keeps_its_recording(client, monkeypatch, consent):
+    """모두 지우기가 지운 시각을 저장한 뒤에 시작한 업로드는 새 녹음이다.
+    모두 지우기가 폴더를 훑기 전에 파일을 저장했어도 지우지 않는다."""
+    h = {"X-User-Id": "user-clear-then-upload"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    consent(h, keep_audio=True)
+    s = _session(client, h)
+    aid = s["answers"][0]["id"]
+    entered, resume = _blocking_stt(monkeypatch, "지운 뒤에 녹음한 답변")
+    real_list = storage.list
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        started = []
+
+        def list_after_upload(prefix=""):
+            started.append(pool.submit(lambda: _upload(client, h, aid)))
+            assert entered.wait(5)  # 업로드가 파일을 저장하고 전사를 기다린다
+            return real_list(prefix)
+
+        monkeypatch.setattr(storage, "list", list_after_upload)
+        try:
+            d = client.delete("/practice/recordings", headers=h).json()
+        finally:
+            monkeypatch.setattr(storage, "list", real_list)
+            resume.set()
+        r = started[0].result(timeout=5)
+    assert d == {"deleted": 0, "failed": 0, "unchecked": False}
+    assert r.status_code == 200 and r.json()["audio_available"] is True and r.json()["audio_deleted_at"] is None
+    assert client.get(f"/practice/answers/{aid}/audio", headers=h).status_code == 200
+
+
+def test_deleting_the_overwritten_recording_during_upload_deletes_the_new_one(client, monkeypatch, consent):
+    """다시 녹음하면 같은 경로에 덮어쓴다. 전사하는 동안 다른 탭에서 이전 녹음을 지우면 그 삭제가 새 파일을 지웠으므로
+    업로드도 녹음을 지운 것으로 저장한다(없는 파일을 가리키지 않는다)."""
+    h = {"X-User-Id": "user-overwrite-delete"}
+    consent(h, keep_audio=True)
+    s = _session(client, h)
+    aid = s["answers"][0]["id"]
+    _upload(client, h, aid)  # 키가 없어 원본이 남는다
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    r, deleted = _while_transcribing(monkeypatch, "다시 녹음한 답변", lambda: _upload(client, h, aid),
+                                     lambda: client.delete(f"/practice/answers/{aid}/audio", headers=h).status_code)
+    assert deleted == 200 and r.status_code == 200, r.text
+    a = r.json()
+    assert (a["transcript"], a["stt_status"], a["audio_available"]) == ("다시 녹음한 답변", "done", False)
+    assert a["audio_deleted_at"] and _user_files(h["X-User-Id"]) == []
+
+
+@pytest.mark.parametrize("during", ["delete-all", "delete-one"])
+@pytest.mark.parametrize("stt", ["다시 전사한 답변", httpx.ConnectError("down")])
+def test_deleting_the_recording_during_retry_transcribe_keeps_the_transcript(client, monkeypatch, consent, during, stt):
+    """다시 전사하는 동안 원본을 지워도(모두 지우기, 녹음 삭제) 이미 얻은 전사문은 남긴다(동의 철회와 같다).
+    원본은 이미 OpenAI로 보냈다."""
+    h = {"X-User-Id": f"user-retry-{during}-{isinstance(stt, str)}"}
+    consent(h, keep_audio=True)
+    s = _session(client, h)
+    aid = s["answers"][0]["id"]
+    _upload(client, h, aid)  # 키가 없어 원본이 남는다
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    url = "/practice/recordings" if during == "delete-all" else f"/practice/answers/{aid}/audio"
+    r, deleted = _while_transcribing(monkeypatch, stt, lambda: client.post(f"/practice/answers/{aid}/transcribe", headers=h),
+                                     lambda: client.delete(url, headers=h).status_code)
+    assert deleted == 200
+    a = client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"][0]
+    assert a["audio_available"] is False and a["audio_deleted_at"] and _user_files(h["X-User-Id"]) == []
+    if isinstance(stt, str):
+        assert r.status_code == 200 and r.json()["transcript"] == stt
+        assert (a["transcript"], a["stt_status"]) == (stt, "done")
+    else:  # 전사문도 없으면 지웠다고 알린다
+        assert r.status_code == 404 and r.json()["detail"] == "원본 녹음은 삭제됐어요"
+        assert (a["transcript"], a["stt_status"]) == (None, "unavailable")
+
+
+@pytest.mark.parametrize("target", ["session", "question"])
+def test_upload_committed_while_deleting_the_session_or_question_leaves_no_file(client, monkeypatch, consent, target):
+    """세션·질문 삭제가 답변을 읽고 다른 녹음을 지우는 동안 업로드가 먼저 커밋해도, 함께 지워진 답변의 녹음 파일이 남지 않는다."""
+    h = {"X-User-Id": f"user-delete-after-commit-{target}"}
+    consent(h, keep_audio=True)
+    q = client.post("/practice/questions", json={"category": "인성", "text": "좌우명이 무엇인가요?"}, headers=h).json()
+    if target == "session":
+        bank = client.get("/practice/questions", params={"source": "bank"}, headers=h).json()[0]
+        s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"], bank["id"]]}, headers=h).json()
+        a1, a2 = (a["id"] for a in s["answers"])
+        url = f"/practice/sessions/{s['id']}"
+    else:  # 같은 질문으로 연습한 두 세션
+        a1, a2 = (client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
+                  ["answers"][0]["id"] for _ in range(2))
+        url = f"/practice/questions/{q['id']}"
+    _upload(client, h, a1)  # 키가 없어 원본이 남는다
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    entered, resume = _blocking_stt(monkeypatch, "올리던 답변")
+    real_delete = storage.delete
+    deleting, go = Event(), Event()
+
+    def slow_delete(path):
+        deleting.set()
+        assert go.wait(5)
+        return real_delete(path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        upload = pool.submit(lambda: _upload(client, h, a2))
+        assert entered.wait(5)
+        monkeypatch.setattr(storage, "delete", slow_delete)
+        removal = pool.submit(lambda: client.delete(url, headers=h).status_code)
+        try:
+            assert deleting.wait(5)  # 삭제가 답변을 읽고 a1의 녹음을 지우는 중
+            monkeypatch.setattr(storage, "delete", real_delete)
+            resume.set()
+            r = upload.result(timeout=5)  # 그사이 업로드가 a2의 녹음을 커밋한다
+        finally:
+            resume.set()
+            go.set()
+        assert removal.result(timeout=5) == 204
+    assert r.status_code == 200 and r.json()["audio_available"] is True
+    with SessionLocal() as db:
+        assert db.get(PracticeAnswer, a1) is None and db.get(PracticeAnswer, a2) is None
+    assert _user_files(h["X-User-Id"]) == []
+
+
 # ───────── 맞춤 질문 삭제(로컬 SQLite도 Supabase의 외래 키 동작과 같게) ─────────
 
 def test_deleting_a_custom_question_deletes_its_answers_like_supabase(client, consent):

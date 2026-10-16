@@ -37,6 +37,15 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
   const [err, setErr] = useState<string | null>(null);
   // 음성 인식 다시 시도가 403(녹음 동의 없음)이면 지금 설정으로 동의 패널을 띄운다
   const [needConsent, setNeedConsent] = useState<PracticeSettings | null>(null);
+  // 서버 전사문이 바뀌면(다시 불러옴 등) 입력란을 고치지 않았을 때만 맞춘다. 실패한 다시 전사도 서버가 이미 얻은 전사문을
+  // 남겼을 수 있다(전사 중 동의 철회): 맞추지 않으면 빈 입력란이 바뀐 것으로 보여 '저장'이 그 전사문을 지운다
+  const shownTranscript = useRef(a.transcript ?? "");
+  useEffect(() => {
+    const prev = shownTranscript.current;
+    const next = a.transcript ?? "";
+    shownTranscript.current = next;
+    setTranscript((t) => (t === prev ? next : t));
+  }, [a.transcript]);
 
   useEffect(() => {
     setAudio(null);

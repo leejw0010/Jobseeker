@@ -65,6 +65,7 @@ create table if not exists user_settings (
   consented_at  timestamptz,                -- null = 녹음 미동의(또는 철회)
   keep_audio    boolean not null default false,  -- true면 전사 후에도 원본 보관(보관 기한 뒤 자동 삭제)
   sweep_audio_before timestamptz,           -- 전체 삭제·철회 때 못 지운, 답변이 가리키지 않는 파일: 이 시각 전 것을 다음 정리가 지운다
+  audio_cleared_at timestamptz,             -- 원본 녹음을 모두 지운(전체 삭제·철회) 시각: 그 전에 시작해 전사 중이던 업로드도 지운 것으로 저장한다
   updated_at    timestamptz not null default now()
 );
 

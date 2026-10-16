@@ -143,18 +143,23 @@ export default function SessionRunner() {
   const retranscribe = async () => {
     if (!answer || processing.current) return;
     processing.current = true; setBusy(true); setErr(null);
+    // 입력란이 서버 전사문과 같은가(고친 내용은 아래에서 먼저 저장한다). 저장하지 못했으면 다시 맞출 때 입력란을 덮지 않는다
+    let saved = draft === (answer.transcript ?? "");
     try {
-      if (draft !== (answer.transcript ?? "")) updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null }));
+      if (!saved) { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null })); saved = true; }
       const recognized = await api.retryTranscribe(answer.id);
       updateAnswer(recognized); setDraft(recognized.transcript ?? draft);
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) askConsent("transcribe");
       else setErr((e as Error).message);
-      // 서버 상태로 다시 맞춘다: 그 사이 원본이 지워졌으면(404) '녹음은 보관되어 있어요'와 다시 시도 버튼을 내린다
-      api.session(id).then((s) => {
-        const cur = s.answers.find((x) => x.id === answer.id);
-        if (cur) updateAnswer(cur);
-      }).catch(() => {});
+      // 서버 상태로 다시 맞춘다: 그 사이 원본이 지워졌으면(404) '녹음은 보관되어 있어요'와 다시 시도 버튼을 내린다.
+      // 실패해도 서버가 이미 얻은 전사문을 남겼을 수 있다(전사 중 동의 철회): 입력란도 맞춘다. 맞추지 않으면 '다음 질문'이
+      // 입력란과 다르다고 보고 그 전사문을 빈 입력란으로 덮어쓴다. 다 맞출 때까지 입력란은 잠가 둔다(busy)
+      const cur = await api.session(id).then((s) => s.answers.find((x) => x.id === answer.id)).catch(() => undefined);
+      if (cur) {
+        updateAnswer(cur);
+        if (saved) setDraft(cur.transcript ?? "");
+      }
     }
     finally { processing.current = false; setBusy(false); }
   };
