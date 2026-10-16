@@ -404,6 +404,19 @@ def test_empty_transcript_counts_as_failed(client, monkeypatch, consent):
     assert a["stt_status"] == "done" and not a["audio_available"]
 
 
+def test_rerecord_drops_previous_transcript(client, monkeypatch, consent):
+    """새로 녹음하면 이전 녹음의 전사문·채점은 버린다. 새 전사가 비어도 옛 글이 새 녹음 옆에 남지 않는다."""
+    h = {"X-User-Id": "user-rerecord-empty"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(llm, "transcribe", lambda audio, filename, ctype: "첫 녹음의 답변입니다")
+    consent(h)
+    aid = _session(client, h)["answers"][0]["id"]
+    assert _upload(client, h, aid).json()["transcript"] == "첫 녹음의 답변입니다"
+    monkeypatch.setattr(llm, "transcribe", lambda audio, filename, ctype: "")
+    a = _upload(client, h, aid).json()
+    assert a["stt_status"] == "failed" and a["transcript"] is None and a["feedback"] is None
+
+
 def test_audio_path_outside_own_prefix_is_not_trusted(client, consent):
     """다른 사람 파일을 가리키게 바뀐 audio_path로는 읽지도 지우지도 않는다."""
     victim, attacker = {"X-User-Id": "user-path-victim"}, {"X-User-Id": "user-path-attacker"}

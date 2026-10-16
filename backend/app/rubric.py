@@ -87,6 +87,9 @@ def relevance_ties_to_job(qtype: str | None, job_hint: str | None) -> bool:
 # 단서가 없으면 공용 질문은 분류로 정하고 맞춤·직접 추가 질문은 'general'(모델이 판단)로 둔다
 _SS = "".join(chr(0xAC00 + i * 28 + 20) for i in range(19 * 21))  # 받침이 ㅆ인 글자(했·었·았·였…)
 _EXPERIENCE = re.compile(rf"경험|겪|그때|당시|사례를 들어|프로젝트를 소개|맡았|[{_SS}](?:던|는지)")
+# 마지막 문장이 과거형 질문으로 끝나면(해결했나요·하셨나요·했습니까) '~했을 때 어떻게'가 있어도 과거 경험이다
+_PAST_SS = _SS.replace("겠", "").replace("있", "")  # 받침 ㅆ이어도 과거가 아닌 '겠'(추측)·'있'(존재)은 뺀다
+_PAST_ENDING = re.compile(rf"[{_PAST_SS}](?:나요|습니까|어요|니)\s*[?？]?\s*$")
 _HYPOTHETICAL = re.compile(r"겠습니까|겠나요|겠어요|[다라]면 어떻게|때 .*어떻게")
 _SELF = re.compile(r"자기소개(?!서)|지원(?:한)? ?(?:동기|이유)|입사 후|장점|단점|포부|목표|년 [뒤후]|1순위|"
                    r"하고 싶은 말|어떤 사람|좌우명|가치관|성격")
@@ -98,7 +101,7 @@ def question_type(category: str | None, text: str | None, source: str | None = "
     t = (text or "").strip()
     if category == "인적성" or re.match(r"\[(?:언어|수리|추리)\]", t):
         return "aptitude"
-    if _EXPERIENCE.search(t):
+    if _EXPERIENCE.search(t) or _PAST_ENDING.search(t):
         return "experience"
     if _HYPOTHETICAL.search(t):
         return "hypothetical"

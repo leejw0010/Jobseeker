@@ -144,6 +144,8 @@ export interface PracticeSession {
   answers: PracticeAnswer[];
   debrief: Debrief | null;
   debrief_status: DebriefStatus;
+  /** 디브리프 작업이 아직 도는 중(5분 안). 이때는 다시 요청해도 서버가 새로 시작하지 않는다 */
+  debrief_running?: boolean;
   redrill_of: string | null;
   redrill: WeakAnswer[];
 }

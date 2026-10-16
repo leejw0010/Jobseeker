@@ -40,8 +40,8 @@ function RubricGuide({ rubric }: { rubric: Rubric }) {
         </div>
       ))}
       <p className="small muted">
-        ‘해당 없음’은 질문 유형으로 정해요. 자기소개·지원 동기·지식·인적성 질문은 상황·행동·결과를, 가상 상황 질문은 상황·결과를 채점하지 않아요.
-        질문·직무 연결은 항상 보고, 지원 회사·직무와의 연결은 지원 건이 있는 경험·자기소개 질문에서만 봐요.
+        ‘해당 없음’은 대부분 질문 유형으로 정해요. 자기소개·지원 동기·지식·인적성 질문은 상황·행동·결과를, 가상 상황 질문은 상황·결과를 채점하지 않아요. 유형을 정하지 못한 질문은 AI가 판단해요.
+        질문·직무 연결은 항상 보고, 지원 회사·직무와의 연결은 지원 건이 있을 때 지식·인적성·가상 상황 질문을 뺀 나머지에서만 봐요.
       </p>
       <p className="small muted" style={{ marginBottom: 0 }}>{rubric.note}</p>
     </details>
@@ -59,7 +59,9 @@ export default function RubricView({ feedback, rubric }: { feedback: RubricFeedb
         <span className="chip accent">AI 생성 · 참고용</span>
       </div>
       {typeLabel && <div className="small muted">질문 유형: {typeLabel}</div>}
-      {(qtype === "knowledge" || qtype === "aptitude") && <div className="small muted">내용이 맞는지(정답 여부)는 채점하지 않아요.</div>}
+      {(qtype === "knowledge" || qtype === "aptitude" || qtype === "general") && (
+        <div className="small muted">내용이 맞는지(정답 여부)는 채점하지 않아요.</div>
+      )}
       {feedback.stale && <p className="warn-text">전사문이 바뀌었어요. 다시 채점해 주세요.</p>}
       {feedback.summary && <p style={{ marginBottom: 6 }}>{feedback.summary}</p>}
       <div className="spacer" />

@@ -11,7 +11,7 @@ from .. import llm, storage
 from ..auth import current_user_id
 from ..config import settings
 from ..db import get_db
-from ..debrief import job_hint, prepare_debrief, qtype, run_debrief, save_feedback, weak_answers
+from ..debrief import debrief_running, job_hint, prepare_debrief, qtype, run_debrief, save_feedback, weak_answers
 from ..models import Application, PracticeAnswer, PracticeSession, Question, UserSettings
 from ..retention import delete_audio, delete_audios, delete_user_audio, owned_audio_path, retention
 from ..rubric import RUBRIC
@@ -70,9 +70,10 @@ def _now() -> datetime:
 
 
 def _session_out(s: PracticeSession) -> SessionOut:
-    """세션 응답. 약점 재연습 후보는 저장하지 않고 응답마다 다시 계산한다."""
+    """세션 응답. 약점 재연습 후보와 디브리프 작업이 도는 중인지는 저장하지 않고 응답마다 다시 계산한다."""
     out = SessionOut.model_validate(s)
     out.redrill = weak_answers(s)
+    out.debrief_running = debrief_running(s)
     return out
 
 
@@ -423,7 +424,8 @@ async def upload_audio(
     now = _now()
     a.audio_path, a.duration_sec = path, duration_sec
     a.recorded_at, a.audio_expires_at, a.audio_deleted_at = now, now + retention(), None
-    a.feedback = None  # 새 녹음이 전사문을 바꾸므로 이전 채점은 버린다
+    # 새 녹음이면 이전 녹음의 전사문과 채점은 이 녹음 것이 아니므로 버린다(빈 전사가 와도 옛 글이 남지 않게)
+    a.transcript, a.feedback = None, None
     if not llm.available():
         a.stt_status = "unavailable"
     else:

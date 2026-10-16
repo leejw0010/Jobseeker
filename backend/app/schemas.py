@@ -121,6 +121,7 @@ class SessionOut(ORM):
     redrill_of: str | None
     answers: list[AnswerOut]
     redrill: list[WeakAnswerOut] = Field(default=[], description="약점 재연습 후보(응답마다 다시 계산)")
+    debrief_running: bool = Field(default=False, description="디브리프 작업이 도는 중(다시 요청해도 새로 시작하지 않음)")
 
 
 class SessionSummary(ORM):

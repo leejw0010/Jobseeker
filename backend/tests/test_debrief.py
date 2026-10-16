@@ -73,6 +73,11 @@ def test_finish_runs_debrief_with_mocked_llm(client, monkeypatch):
     assert d["lesson"] and d["next_action"] and d["generated_at"] and d["model"] == settings.openai_feedback_model
     assert d["moments"] == [{"answer_id": a1, "order_no": 1, "quote": "정산 시간을 절반으로 줄였습니다", "why": "수치"}]
     assert [w["reasons"] for w in got["redrill"]] == [["건너뜀"]]
+    # 디브리프 요청: 기준의 뜻을 함께 보내고, 동의 화면에 알린 항목(전사문·질문·자기평가·회고 메모)만 보낸다
+    payload = json.loads(next(c["user"] for c in calls if c["system"] == llm._DEBRIEF_SYSTEM))
+    assert set(payload["rubric"]) == {"상황·과제", "본인 행동", "결과·배운 점", "질문·직무 연결"}
+    assert set(payload["answers"][0]) == {"order_no", "question", "transcript", "self_rating", "reflection_note", "bands"}
+    assert payload["answers"][0]["self_rating"] == 4
 
     # 이어서 녹음한 뒤 다시 끝내면 요약만 새로 만들고, 낡지 않은 채점은 다시 하지 않는다
     n = len(calls)
@@ -203,8 +208,11 @@ def test_finish_does_not_start_second_debrief_while_pending(client, monkeypatch)
         x = db.get(PracticeSession, s["id"])
         x.debrief_status, x.debrief_started_at = "pending", datetime.now(timezone.utc)  # 다른 작업이 만드는 중
         db.commit()
-    assert client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()["debrief_status"] == "pending"
-    # 2분 뒤 화면의 '다시 시도'가 보내는 재생성 요청도 도는 작업이 있으면 하나 더 붙이지 않는다
+    r = client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()
+    assert r["debrief_status"] == "pending" and r["debrief_running"] is True
+    # 2분 뒤 화면의 '다시 시도'는 먼저 상태를 확인한다: 작업이 돌고 있으면 재생성을 보내지 않는다
+    assert client.get(f"/practice/sessions/{s['id']}", headers=h).json()["debrief_running"] is True
+    # 그래도 재생성 요청이 오면 도는 작업이 있으니 하나 더 붙이지 않는다
     assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()["debrief_status"] == "pending"
     assert calls == []
 
@@ -212,9 +220,12 @@ def test_finish_does_not_start_second_debrief_while_pending(client, monkeypatch)
     with SessionLocal() as db:
         db.get(PracticeSession, s["id"]).debrief_started_at = datetime.now(timezone.utc) - timedelta(minutes=6)
         db.commit()
+    lost = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert lost["debrief_status"] == "pending" and lost["debrief_running"] is False
     assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()["debrief_status"] == "pending"
     assert [c["system"] for c in calls] == [llm._GRADE_SYSTEM, llm._DEBRIEF_SYSTEM]
-    assert client.get(f"/practice/sessions/{s['id']}", headers=h).json()["debrief_status"] == "done"
+    done = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert done["debrief_status"] == "done" and done["debrief_running"] is False
 
 
 def _edit_transcript(answer_id: str, text: str) -> None:
@@ -253,11 +264,13 @@ def test_debrief_never_pairs_new_transcript_with_old_grade(client, monkeypatch):
     got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
     a1, a2 = got["answers"]
     assert got["debrief_status"] == "done"
-    # 채점 중에 바뀐 a1: 옛 전사문의 채점은 버린다
-    assert a1["transcript"] == a1_new and a1["feedback"] is None
-    # a2: 채점 직전에 다시 읽어 새 전사문으로 채점한다
+    # 채점 중에 바뀐 a1: 옛 전사문의 채점은 버리고, 다음 바퀴에서 새 전사문으로 다시 채점한다
     graded = [c["user"] for c in calls if c["system"] == llm._GRADE_SYSTEM]
-    assert len(graded) == 2 and t2_new in graded[1] and t2_old not in graded[1]
+    assert len(graded) == 3 and T1 in graded[0] and a1_new in graded[2]
+    assert a1["transcript"] == a1_new and a1["feedback"]["stale"] is False
+    assert a1["feedback"]["criteria"][0]["quote"] == a1_new[:8]
+    # a2: 채점 직전에 다시 읽어 새 전사문으로 채점한다
+    assert t2_new in graded[1] and t2_old not in graded[1]
     assert a2["transcript"] == t2_new and a2["feedback"]["stale"] is False
     assert a2["feedback"]["criteria"][0]["quote"] == t2_new[:8]
     # 요약도 지금 전사문으로 만든다

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api } from "../api";
+import ConsentPanel from "../components/ConsentPanel";
 import RubricView, { bandClass } from "../components/RubricView";
 import Stars from "../components/Stars";
-import type { PracticeAnswer, PracticeSession, Rubric } from "../types";
+import type { PracticeAnswer, PracticeSession, PracticeSettings, Rubric } from "../types";
 
 const STT_LABEL = { none: "녹음 없음", done: "전사 완료", failed: "전사 실패", unavailable: "전사 꺼짐" } as const;
 const POLL_MS = 2500;
@@ -44,7 +45,8 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
   const [note, setNote] = useState(a.reflection_note ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [needConsent, setNeedConsent] = useState(false);
+  // 전사 다시 시도가 403(녹음 동의 없음)이면 지금 설정으로 동의 패널을 띄운다
+  const [needConsent, setNeedConsent] = useState<PracticeSettings | null>(null);
 
   useEffect(() => {
     setAudio(null);
@@ -65,14 +67,15 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
   const act = async (fn: () => Promise<PracticeAnswer>, syncText = false) => {
     setBusy(true);
     setErr(null);
-    setNeedConsent(false);
+    setNeedConsent(null);
     try {
       const next = await fn();
       onChange(next);
       if (syncText) setTranscript(next.transcript ?? "");
     } catch (e) {
       // 녹음을 OpenAI로 다시 보내려면 녹음 동의가 필요하다(다른 곳에서 철회한 경우)
-      if (e instanceof ApiError && e.status === 403) setNeedConsent(true);
+      if (e instanceof ApiError && e.status === 403)
+        setNeedConsent(await api.settings().catch(() => ({ consented_at: null, keep_audio: false, retention_days: 30 })));
       else setErr((e as Error).message);
       onReload();
     } finally {
@@ -163,9 +166,16 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
         )
       )}
       {needConsent && (
-        <p className="err">
-          녹음을 다시 전사하려면 녹음 동의가 필요해요. <Link to="/practice/settings">녹음·개인정보</Link>에서 동의한 뒤 다시 시도해 주세요.
-        </p>
+        <>
+          <div className="spacer" />
+          <ConsentPanel
+            retentionDays={needConsent.retention_days}
+            initialKeepAudio={needConsent.keep_audio}
+            notice="녹음을 다시 전사하려면 먼저 녹음 동의가 필요해요."
+            buttonLabel="동의하고 다시 전사"
+            onConsented={() => act(() => api.retryTranscribe(a.id), true)}
+          />
+        </>
       )}
       {err && <p className="err">{err}</p>}
     </section>
@@ -377,12 +387,12 @@ export default function SessionReview() {
       apply(await api.debrief(id));
       setGaveUp(false);
     });
-  // 확인을 멈춘 뒤 '다시 시도': 먼저 지금 상태를 다시 확인하고, 아직 만드는 중일 때만 재생성을 요청한다.
-  // 서버는 도는 작업이 있으면(5분 안) 새로 시작하지 않고 지금 상태를 돌려준다. 이후 다시 확인을 이어 간다.
+  // 확인을 멈춘 뒤 '다시 시도': 먼저 지금 상태를 다시 확인한다. 작업이 아직 돌고 있으면(5분 안) 재생성을 요청하지 않고
+  // 확인만 이어 가고, 'pending'인데 작업이 사라졌을 때(서버 재시작 등)만 다시 만들기를 요청한다.
   const retryDebrief = () =>
     cardAct(async () => {
       const cur = await api.session(id);
-      apply(cur.debrief_status === "pending" ? await api.debrief(id) : cur);
+      apply(cur.debrief_status === "pending" && !cur.debrief_running ? await api.debrief(id) : cur);
       setGaveUp(false);
     });
   const redrill = () =>

@@ -154,6 +154,23 @@ def test_non_string_key_or_band_is_skipped_not_500(client, monkeypatch):
     assert r.status_code == 502 and r.json()["detail"] == "AI 응답을 해석하지 못했습니다"
 
 
+@pytest.mark.parametrize("quote", ["", None, "성과를 수치로 잘 제시했습니다", "반응"])
+def test_positive_band_without_verified_quote_is_downgraded(quote):
+    """빈 인용·지어낸 인용·너무 짧은 인용의 '충분'은 '일부'로 낮추고 근거 없음으로 표시한다."""
+    transcript = "결과적으로 반응이 좋았습니다"
+    raw = {"criteria": [{"key": "result", "band": "충분", "quote": quote, "comment": "성과를 수치로 잘 제시함"},
+                        {"key": "relevance", "band": "일부", "quote": quote, "comment": "c"},
+                        {"key": "action", "band": "부족", "quote": "", "comment": "행동이 없다"}]}
+    act, res, rel = normalize_feedback(raw, transcript, "experience")["criteria"]  # 루브릭 순서
+    assert (res["band"], res["model_band"], res["evidence_missing"], res["quote"]) == ("일부", "충분", True, None)
+    assert rel["band"] == "일부" and rel["evidence_missing"] is True and "model_band" not in rel
+    assert act["band"] == "부족" and "evidence_missing" not in act  # '부족'은 인용이 없어도 된다
+    # 전사문에서 확인된 인용이 있으면 '충분' 그대로
+    raw["criteria"][0]["quote"] = "반응이 좋았습니다."
+    res = normalize_feedback(raw, transcript, "experience")["criteria"][1]
+    assert res["band"] == "충분" and res["quote_verified"] is True and "evidence_missing" not in res
+
+
 @pytest.mark.parametrize("quote, transcript, expected", [
     ("응답 속도를 40% 줄였습니다.", "응답 속도를 40% 줄였습니다", ("응답 속도를 40% 줄였습니다", True)),  # 문장부호만 다름
     ("저는 데이터를", "어 그 저는 음 데이터를 정리했습니다", ("저는 음 데이터를", True)),  # 말버릇을 뺀 인용
@@ -225,6 +242,11 @@ def test_question_type_of_custom_questions():
     assert question_type("직무", "Redis를 고른 이유는?", "generated") == "general"  # 단서 없으면 모델이 판단
     assert question_type("기업", "네이버에 지원한 이유와 입사 후 목표를 말씀해 주세요.", "generated") == "self"
     assert question_type("인성", "갈등이 생긴다면 어떻게 할 건가요?", "custom") == "hypothetical"
+    # 과거형으로 끝나는 질문은 '~했을 때 어떻게'가 있어도 경험 질문(AI 꼬리질문에 자주 나오는 꼴)
+    for text in ("팀에서 갈등이 생겼을 때 어떻게 해결했나요?", "협업 중 의견 충돌이 있었을 때 어떻게 대처하셨나요?",
+                 "문제가 생겼을 때 어떻게 행동했습니까?"):
+        assert question_type("인성", text, "generated") == "experience", text
+    assert question_type("상황", "실수를 했을 때 어떻게 하겠습니까?", "custom") == "hypothetical"
 
 
 def test_server_decides_not_applicable_by_question_type():

@@ -116,18 +116,27 @@ def _run(db: Session, s: PracticeSession) -> None:
         s.debrief_status = "none"
         db.commit()
         return
-    for a in s.answers:
-        db.refresh(a)  # 앞 답변을 채점하는 동안 고친 전사문·새로 받은 채점을 다시 읽는다
-        if not _has_transcript(a) or _fresh_feedback(a):
-            continue
-        graded = a.transcript
-        try:
-            fb = llm.grade_answer(a.question.text, graded, job_hint(db, s, a.question), qtype(a.question))
-            if not save_feedback(db, a, fb, graded):
-                log.info("채점하는 동안 전사문이 바뀌어 채점을 버렸습니다(%s)", a.id)
-        except Exception:  # 한 답변의 채점 실패는 디브리프 전체를 막지 않는다(그 답변은 피드백 없음)
-            db.rollback()
-            log.exception("디브리프 중 답변 채점 실패(%s)", a.id)
+    # 채점하는 동안 앞 순서 답변이 새로 녹음되거나 고쳐질 수 있으니, 새로 채점할 것이 없을 때까지 다시 돈다.
+    # 같은 (답변, 전사문)은 한 번만 시도하므로 실패한 채점을 되풀이하지 않는다.
+    tried: set[tuple[str, str]] = set()
+    for _ in range(5):
+        progressed = False
+        for a in s.answers:
+            db.refresh(a)  # 앞 답변을 채점하는 동안 고친 전사문·새로 받은 채점을 다시 읽는다
+            if not _has_transcript(a) or _fresh_feedback(a) or (a.id, a.transcript) in tried:
+                continue
+            graded = a.transcript
+            tried.add((a.id, graded))
+            progressed = True
+            try:
+                fb = llm.grade_answer(a.question.text, graded, job_hint(db, s, a.question), qtype(a.question))
+                if not save_feedback(db, a, fb, graded):
+                    log.info("채점하는 동안 전사문이 바뀌어 채점을 버렸습니다(%s)", a.id)
+            except Exception:  # 한 답변의 채점 실패는 디브리프 전체를 막지 않는다(그 답변은 피드백 없음)
+                db.rollback()
+                log.exception("디브리프 중 답변 채점 실패(%s)", a.id)
+        if not progressed:
+            break
     for a in s.answers:
         db.refresh(a)  # 요약은 지금 전사문과 채점으로 만든다
     try:
