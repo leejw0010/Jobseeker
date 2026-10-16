@@ -1,16 +1,7 @@
 from datetime import date, datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import (
-    AfterValidator,
-    BaseModel,
-    ConfigDict,
-    Field,
-    computed_field,
-    model_validator,
-)
-
-from .rubric import feedback_current
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 
 Stage = Literal["서류", "인적성", "1차면접", "2차면접", "최종"]
 Status = Literal["진행중", "합격", "불합격", "보류"]
@@ -51,7 +42,8 @@ class GenerateIn(BaseModel):
     company: str | None = None
     position: str | None = None
     job_category: str | None = None
-    essay_text: str | None = Field(default=None, description="자소서 내용. 비우면 지원 건의 최신 버전을 사용")
+    essay_text: str | None = Field(default=None, description="비우면 선택한 지원 건의 제출본 우선 사용")
+    essay_basis: Literal["submitted", "latest"] = "submitted"
     count: int = Field(default=5, ge=1, le=10)
 
 
@@ -65,6 +57,40 @@ class SessionIn(BaseModel):
     job_category: str | None = None
     prep_sec: int = Field(default=30, ge=0, le=300)
     answer_sec: int = Field(default=90, ge=10, le=600)
+    essay_basis: Literal["submitted", "latest"] = "submitted"
+    job_description: str = Field(default="", max_length=12000)
+    followups_enabled: bool = False
+
+
+Focus = Literal["specificity", "relevance", "consistency"]
+
+
+class CoachingCriterion(BaseModel):
+    key: Focus
+    label: str = Field(max_length=50)
+    status: Literal["충분", "보완", "판단유보"]
+    reason: str = Field(min_length=1, max_length=1000)
+    answer_quote: str = Field(default="", max_length=1000)
+    source_quote: str = Field(default="", max_length=1000)
+    source_version_id: str | None = None
+
+
+class FollowupSuggestion(BaseModel):
+    text: str = Field(min_length=5, max_length=1000)
+    focus: Focus
+    reason: str = Field(min_length=1, max_length=1000)
+    answer_quote: str = Field(min_length=1, max_length=1000)
+    source_quote: str = Field(default="", max_length=1000)
+    source_version_id: str | None = None
+
+
+class CoachingReport(BaseModel):
+    method: Literal["basic", "ai"] = "basic"
+    rubric_version: str = "2026-10-15"
+    summary: str = Field(min_length=1, max_length=1000)
+    next_action: str = Field(min_length=1, max_length=1000)
+    criteria: list[CoachingCriterion] = Field(min_length=3, max_length=3)
+    followup: FollowupSuggestion
 
 
 class AnswerOut(ORM):
@@ -77,28 +103,23 @@ class AnswerOut(ORM):
     stt_status: str
     self_rating: int | None
     reflection_note: str | None
-    ai_feedback: str | None  # 예전 자유 서술 피드백(새 채점은 feedback)
-    feedback: dict | None  # 루브릭 피드백
-    recorded_at: UTCDatetime | None
-    audio_expires_at: UTCDatetime | None
-    audio_deleted_at: UTCDatetime | None
+    ai_feedback: str | None
+    coaching_report: CoachingReport | None = None
+    parent_answer_id: str | None = None
+    followup_reason: str | None = None
+    # 녹음한 시각("녹음으로 답했다"의 기준). 원본은 전사가 끝나면 지워질 수 있다
+    recorded_at: UTCDatetime | None = None
+    audio_expires_at: UTCDatetime | None = None
+    audio_deleted_at: UTCDatetime | None = None
 
     @computed_field
     @property
     def audio_available(self) -> bool:
         return self.audio_path is not None
 
-    @model_validator(mode="after")
-    def _mark_stale(self):
-        # 지금 전사문을 채점한 피드백이 아니면(채점 중에 고친 경우 등) 낡은 것으로 내보낸다
-        if isinstance(self.feedback, dict) and not self.feedback.get("stale") \
-                and not feedback_current(self.feedback, self.transcript):
-            self.feedback = {**self.feedback, "stale": True}
-        return self
-
 
 class WeakAnswerOut(BaseModel):
-    """다시 연습할 약점 질문과 그 이유."""
+    """다시 연습할 답변과 그 이유(보완 항목, 자기평가 1~2점)."""
 
     answer_id: str
     question_id: str
@@ -116,11 +137,12 @@ class SessionOut(ORM):
     answer_sec: int
     created_at: datetime
     finished_at: datetime | None
-    debrief: dict | None
-    debrief_status: str
-    redrill_of: str | None
     answers: list[AnswerOut]
-    redrill: list[WeakAnswerOut] = Field(default=[], description="약점 재연습 후보(응답마다 다시 계산)")
+    context_snapshot: dict | None = None
+    followups_enabled: bool = False
+    debrief: dict | None = None
+    debrief_status: str = "none"
+    redrill: list[WeakAnswerOut] = Field(default=[], description="다시 연습할 답변(응답마다 다시 계산)")
     debrief_running: bool = Field(default=False, description="디브리프 작업이 도는 중(다시 요청해도 새로 시작하지 않음)")
 
 
@@ -133,17 +155,12 @@ class SessionSummary(ORM):
     answer_count: int
     recorded_count: int
     avg_rating: float | None
-    redrill_of: str | None
 
 
 class ReflectionIn(BaseModel):
     self_rating: int | None = Field(default=None, ge=1, le=5)
     reflection_note: str | None = None
     transcript: str | None = Field(default=None, description="전사문 수동 수정")
-
-
-class RedrillIn(BaseModel):
-    answer_ids: list[str] | None = Field(default=None, description="비우면 약점 목록 전체")
 
 
 class PracticeSettingsIn(BaseModel):

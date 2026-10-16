@@ -1,20 +1,30 @@
-"""② Practice: 질문은행·맞춤 질문, 모의시험 세션, 녹음·전사, 회고, 루브릭 피드백, 디브리프·재연습, 녹음 동의."""
+"""② Practice: 질문은행·맞춤 질문, 모의시험 세션, 녹음·전사, 회고, 코칭·디브리프·재연습, 녹음 동의."""
 import random
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .. import llm, storage
+from .. import coaching, llm, storage
 from ..auth import current_user_id
 from ..config import settings
 from ..db import get_db
-from ..debrief import debrief_running, job_hint, prepare_debrief, qtype, run_debrief, save_feedback, weak_answers
-from ..models import Application, PracticeAnswer, PracticeSession, Question, UserSettings
+from ..debrief import debrief_running, drill_focus, drill_picks, prepare_debrief, run_debrief, weak_answers
+from ..models import (
+    AnswerCoaching,
+    Application,
+    PracticeAnswer,
+    PracticeContext,
+    PracticePrivateQuestion,
+    PracticeSession,
+    Question,
+    UserSettings,
+)
 from ..retention import delete_audio, delete_audios, delete_user_audio, owned_audio_path, retention
-from ..rubric import RUBRIC
 from ..schemas import (
     AnswerOut,
     DeletedOut,
@@ -24,7 +34,6 @@ from ..schemas import (
     PracticeSettingsUpdateOut,
     QuestionIn,
     QuestionOut,
-    RedrillIn,
     ReflectionIn,
     SessionIn,
     SessionOut,
@@ -34,12 +43,22 @@ from ..schemas import (
 router = APIRouter(prefix="/practice", tags=["practice"])
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # OpenAI 전사 API의 파일 크기 상한
-# 저장 경로에 쓰는 확장자(OpenAI 전사 API가 받는 형식). 그 밖의 이름은 content-type으로 정한다
-AUDIO_EXTS = {"webm", "m4a", "mp4", "mp3", "mpeg", "mpga", "ogg", "oga", "wav", "flac"}
+AUDIO_MEDIA_TYPES = {"webm": "audio/webm", "m4a": "audio/mp4", "mp4": "audio/mp4",
+                     "mp3": "audio/mpeg", "mpeg": "audio/mpeg", "mpga": "audio/mpeg",
+                     "wav": "audio/wav", "ogg": "audio/ogg", "flac": "audio/flac"}
+
+
+def _audio_media_type(path: str) -> str:
+    extension = path.rsplit(".", 1)[-1].lower()
+    if extension not in AUDIO_MEDIA_TYPES:
+        raise HTTPException(415, "지원하지 않는 녹음 형식입니다. WebM, MP4, M4A, WAV 등의 오디오 파일을 사용해 주세요")
+    return AUDIO_MEDIA_TYPES[extension]
 
 
 def _visible_questions(user_id: str):
-    return select(Question).where(or_(Question.user_id.is_(None), Question.user_id == user_id))
+    followup_ids = select(PracticePrivateQuestion.question_id)
+    return select(Question).where(or_(Question.user_id.is_(None), Question.user_id == user_id),
+                                  Question.id.not_in(followup_ids))
 
 
 def _own_session(db: Session, user_id: str, session_id: str) -> PracticeSession:
@@ -65,12 +84,21 @@ def _own_answer(db: Session, user_id: str, answer_id: str) -> PracticeAnswer:
     return a
 
 
+def _own_application(db: Session, user_id: str, application_id: str | None) -> Application | None:
+    if not application_id:
+        return None
+    application = db.scalar(select(Application).where(Application.id == application_id, Application.user_id == user_id))
+    if not application:
+        raise HTTPException(404, "지원 건을 찾을 수 없습니다")
+    return application
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 def _session_out(s: PracticeSession) -> SessionOut:
-    """세션 응답. 약점 재연습 후보와 디브리프 작업이 도는 중인지는 저장하지 않고 응답마다 다시 계산한다."""
+    """세션 응답. 다시 연습할 답변과 디브리프 작업이 도는 중인지는 저장하지 않고 응답마다 다시 계산한다."""
     out = SessionOut.model_validate(s)
     out.redrill = weak_answers(s)
     out.debrief_running = debrief_running(s)
@@ -87,41 +115,59 @@ def _prefs_out(p: UserSettings | None) -> PracticeSettingsOut:
 
 
 def _require_consent(db: Session, user_id: str) -> UserSettings:
-    """녹음을 저장하거나 OpenAI로 보내기 전에 녹음 동의를 확인한다(업로드·전사 다시 시도 공통)."""
+    """녹음을 저장하거나 OpenAI로 보내기 전에 녹음 동의를 확인한다(업로드·전사 다시 시도 공통). 글 답변에는 필요 없다."""
     prefs = _prefs(db, user_id)
     if not prefs or not prefs.consented_at:
         raise HTTPException(403, "녹음 전에 동의가 필요합니다")
     return prefs
 
 
-def _set_transcript(a: PracticeAnswer, text: str | None) -> None:
-    """전사문을 바꾼다. 내용이 달라지면 기존 루브릭 피드백은 낡은 것으로 표시한다."""
-    if text != a.transcript and a.feedback:
-        a.feedback = {**a.feedback, "stale": True}  # 새 dict로 바꿔야 SQLAlchemy가 변경을 안다
-    a.transcript = text
+def _invalidate_coaching(answer: PracticeAnswer) -> None:
+    answer.ai_feedback = None
+    if answer.coaching:
+        answer.coaching.report = None
+
+
+def _report(answer: PracticeAnswer, db: Session) -> dict:
+    if not answer.transcript or not answer.transcript.strip():
+        raise HTTPException(422, "답변 전사문을 입력하거나 녹음해 주세요")
+    history = [{"question": a.question.text, "answer": a.transcript}
+               for a in answer.session.answers if a.order_no < answer.order_no and a.transcript]
+    transcript = answer.transcript
+    report = coaching.build_report(answer.question.text, transcript, answer.session.context_snapshot or {}, history)
+    # Lock only after the external request. An edit while it ran must not revive stale evidence.
+    unchanged = db.execute(update(PracticeAnswer).where(PracticeAnswer.id == answer.id,
+                           PracticeAnswer.transcript == transcript).values(transcript=PracticeAnswer.transcript),
+                           execution_options={"synchronize_session": False})
+    if unchanged.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "점검 중 답변이 바뀌었어요. 수정한 답변으로 다시 점검해 주세요")
+    # Another request may have created this row while the model was running.
+    saved = db.get(AnswerCoaching, answer.id, populate_existing=True)
+    answer.coaching = saved if saved is not None else AnswerCoaching()
+    answer.coaching.report = report
+    return answer.coaching.report
 
 
 def _transcribe(a: PracticeAnswer, data: bytes, filename: str, ctype: str, keep_audio: bool) -> None:
     """전사하고, 성공했고 원본 보관을 고르지 않았으면 원본 녹음을 바로 지운다.
 
-    빈 전사문(무음 등)은 실패로 본다: '전사 다시 시도'를 할 수 있게 원본을 남기고(보관 기한 뒤 자동 삭제),
+    빈 전사문(무음 등)과 잘못된 응답은 실패로 본다: '전사 다시 시도'를 할 수 있게 원본을 남기고(보관 기한 뒤 자동 삭제),
     직접 적어 둔 전사문도 지우지 않는다.
     """
     try:
-        text = (llm.transcribe(data, filename, ctype) or "").strip()
-    except (httpx.HTTPError, ValueError):
-        text = ""
-    if not text:
+        transcript = (llm.transcribe(data, filename, ctype) or "").strip()
+    except (httpx.HTTPError, llm.TranscriptionError):
+        transcript = ""
+    if not transcript:
         a.stt_status = "failed"
         return
-    _set_transcript(a, text)
+    if transcript != a.transcript:
+        _invalidate_coaching(a)
+    a.transcript = transcript
     a.stt_status = "done"
     if not keep_audio:
         delete_audio(a)  # 실패하면 보관 기한을 당겨 두어 다음 만료 정리가 다시 지운다
-
-
-def _media_type(path: str) -> str:
-    return "audio/mp4" if path.endswith((".m4a", ".mp4")) else "audio/webm"
 
 
 # ───────── 질문은행 ─────────
@@ -179,16 +225,10 @@ def generate(body: GenerateIn, user_id: str = Depends(current_user_id), db: Sess
     """지원 건(또는 직접 입력한 회사·직무·자소서)으로 맞춤 질문을 만들어 질문은행에 저장."""
     company, position, job_category, essay = body.company, body.position, body.job_category, body.essay_text
     if body.application_id:
-        app = db.scalar(select(Application).where(Application.id == body.application_id, Application.user_id == user_id))
-        if not app:
-            raise HTTPException(404, "지원 건을 찾을 수 없습니다")
+        app = _own_application(db, user_id, body.application_id)
         company, position, job_category = company or app.company, position or app.position, job_category or app.job_category
         if not essay:
-            parts = []
-            for item in app.essay_items:
-                if item.versions:
-                    parts.append(f"Q. {item.question_text}\nA. {item.versions[-1].content}")
-            essay = "\n\n".join(parts)
+            essay = coaching.essay_text(coaching.snapshot(app, body.essay_basis))
     if not (company or position or essay):
         raise HTTPException(422, "회사, 직무, 자소서 중 하나 이상이 필요합니다")
     generated = llm.generate_questions(company or "", position or "", essay or "", body.count)
@@ -209,12 +249,16 @@ def generate(body: GenerateIn, user_id: str = Depends(current_user_id), db: Sess
 
 @router.post("/sessions", response_model=SessionOut, status_code=201)
 def create_session(body: SessionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    application = _own_application(db, user_id, body.application_id)
+    context = coaching.snapshot(application, body.essay_basis, body.job_description)
     if body.question_ids:
         found = {q.id: q for q in db.scalars(_visible_questions(user_id).where(Question.id.in_(body.question_ids)))}
         missing = [qid for qid in body.question_ids if qid not in found]
         if missing:
             raise HTTPException(404, f"질문을 찾을 수 없습니다: {missing}")
         picked = [found[qid] for qid in body.question_ids]
+        if body.application_id and any(q.application_id and q.application_id != body.application_id for q in picked):
+            raise HTTPException(422, "다른 지원 건에서 만든 질문이 포함되어 있어요. 지원 건과 질문을 맞춰 주세요")
     else:
         stmt = _visible_questions(user_id)
         if body.categories:
@@ -244,6 +288,7 @@ def create_session(body: SessionIn, user_id: str = Depends(current_user_id), db:
     s = PracticeSession(user_id=user_id, mode=body.mode, title=title, application_id=body.application_id,
                         prep_sec=body.prep_sec, answer_sec=body.answer_sec)
     s.answers = [PracticeAnswer(question=q, order_no=i + 1) for i, q in enumerate(picked)]
+    s.context = PracticeContext(snapshot=context, followups_enabled=body.followups_enabled)
     db.add(s)
     db.commit()
     return _session_out(_own_session(db, user_id, s.id))
@@ -263,7 +308,7 @@ def list_sessions(user_id: str = Depends(current_user_id), db: Session = Depends
         out.append(SessionSummary(
             id=s.id, mode=s.mode, title=s.title, created_at=s.created_at, finished_at=s.finished_at,
             answer_count=len(s.answers), recorded_count=sum(1 for a in s.answers if a.recorded_at),
-            avg_rating=round(sum(ratings) / len(ratings), 2) if ratings else None, redrill_of=s.redrill_of,
+            avg_rating=round(sum(ratings) / len(ratings), 2) if ratings else None,
         ))
     return out
 
@@ -280,10 +325,10 @@ def finish_session(
     user_id: str = Depends(current_user_id),
     db: Session = Depends(get_db),
 ):
-    """세션을 끝내고 자동 디브리프를 시작한다. 이미 만드는 중이면 하나 더 붙이지 않는다."""
+    """세션을 끝내고 자동 디브리프(답변 점검 + 요약)를 시작한다. 이미 도는 작업이 있으면 하나 더 붙이지 않는다."""
     s = _own_session(db, user_id, session_id)
     s.finished_at = s.finished_at or _now()
-    start = prepare_debrief(s) == "pending"
+    start = prepare_debrief(s)
     db.commit()
     if start:
         background.add_task(run_debrief, s.id)
@@ -299,44 +344,14 @@ def regenerate_debrief(
 ):
     """디브리프를 (다시) 만든다. 키가 없으면 'unavailable', 전사문이 없으면 'none'을 바로 돌려준다.
 
-    이미 만드는 중이면(오래되지 않은 'pending') 작업을 하나 더 붙이지 않고 지금 상태를 돌려준다.
+    이미 도는 작업이 있으면 하나 더 붙이지 않고 지금 상태를 돌려준다.
     """
     s = _own_session(db, user_id, session_id)
-    status = prepare_debrief(s)
+    start = prepare_debrief(s)
     db.commit()
-    if status == "pending":
+    if start:
         background.add_task(run_debrief, s.id)
     return _session_out(s)
-
-
-@router.post("/sessions/{session_id}/redrill", response_model=SessionOut, status_code=201)
-def redrill(
-    session_id: str,
-    body: RedrillIn | None = None,
-    user_id: str = Depends(current_user_id),
-    db: Session = Depends(get_db),
-):
-    """약점 질문(또는 고른 답변의 질문)만 모아 같은 설정으로 새 세션을 만든다."""
-    src = _own_session(db, user_id, session_id)
-    if body and body.answer_ids:
-        own = {a.id for a in src.answers}
-        wrong = [aid for aid in body.answer_ids if aid not in own]
-        if wrong:
-            raise HTTPException(422, f"이 세션의 답변이 아닙니다: {wrong}")
-        chosen = set(body.answer_ids)
-    else:
-        chosen = {w.answer_id for w in weak_answers(src)}
-    picked = [a for a in src.answers if a.id in chosen]  # 원래 세션 순서 그대로
-    if not picked:
-        raise HTTPException(422, "다시 연습할 약점 질문이 없어요")
-    # 모의시험이어도 자기소개를 다시 끼워 넣지 않는다
-    s = PracticeSession(user_id=user_id, mode=src.mode, title=f"다시 연습 · {src.title}"[:200],
-                        application_id=src.application_id, prep_sec=src.prep_sec, answer_sec=src.answer_sec,
-                        redrill_of=src.id)
-    s.answers = [PracticeAnswer(question_id=a.question_id, order_no=i + 1) for i, a in enumerate(picked)]
-    db.add(s)
-    db.commit()
-    return _session_out(_own_session(db, user_id, s.id))
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -346,8 +361,6 @@ def delete_session(session_id: str, user_id: str = Depends(current_user_id), db:
     if delete_audios(s.answers)[1]:
         db.commit()  # 지운 것은 반영하고, 못 지운 것은 다음 만료 정리가 다시 지운다
         raise HTTPException(502, "원본 녹음을 지우지 못해 세션을 삭제하지 않았어요. 잠시 후 다시 시도해 주세요")
-    # 이 세션을 원본으로 둔 재연습 세션의 연결을 끊는다(Supabase의 on delete set null과 같게)
-    db.execute(update(PracticeSession).where(PracticeSession.redrill_of == s.id).values(redrill_of=None))
     db.delete(s)
     db.commit()
 
@@ -393,7 +406,7 @@ def delete_all_recordings(user_id: str = Depends(current_user_id), db: Session =
 # ───────── 녹음·전사·회고 ─────────
 
 @router.post("/answers/{answer_id}/audio", response_model=AnswerOut)
-async def upload_audio(
+def upload_audio(
     answer_id: str,
     file: UploadFile = File(...),
     duration_sec: float | None = Form(default=None),
@@ -406,15 +419,15 @@ async def upload_audio(
     """
     a = _own_answer(db, user_id, answer_id)
     prefs = _require_consent(db, user_id)
-    data = await file.read()
+    # A synchronous route runs blocking storage/STT calls in FastAPI's worker pool.
+    # Read at most the limit plus one byte so an oversized upload is bounded.
+    data = file.file.read(MAX_AUDIO_BYTES + 1)
     if not data:
         raise HTTPException(422, "빈 녹음 파일입니다")
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(413, "녹음 파일이 25MB를 넘습니다")
-    ctype = file.content_type or "audio/webm"
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
-    if ext not in AUDIO_EXTS:
-        ext = "m4a" if "mp4" in ctype else "webm"
+    ext = (file.filename or "rec.webm").rsplit(".", 1)[-1].lower()
+    ctype = _audio_media_type(f"recording.{ext}")
     path = f"{user_id}/{a.session_id}/{a.id}.{ext}"
     # 확장자가 다른 이전 녹음은 먼저 지운다. 못 지우면 경로를 잃지 않게 새 녹음을 받지 않는다
     if a.audio_path and a.audio_path != path and not delete_audio(a):
@@ -424,8 +437,8 @@ async def upload_audio(
     now = _now()
     a.audio_path, a.duration_sec = path, duration_sec
     a.recorded_at, a.audio_expires_at, a.audio_deleted_at = now, now + retention(), None
-    # 새 녹음이면 이전 녹음의 전사문과 채점은 이 녹음 것이 아니므로 버린다(빈 전사가 와도 옛 글이 남지 않게)
-    a.transcript, a.feedback = None, None
+    _invalidate_coaching(a)
+    a.transcript = None
     if not llm.available():
         a.stt_status = "unavailable"
     else:
@@ -443,7 +456,7 @@ def download_audio(answer_id: str, user_id: str = Depends(current_user_id), db: 
     data = storage.load(path) if path else None
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
-    return Response(content=data, media_type=_media_type(path))
+    return Response(content=data, media_type=_audio_media_type(path))
 
 
 @router.delete("/answers/{answer_id}/audio", response_model=AnswerOut)
@@ -469,7 +482,7 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
     data = storage.load(path) if path else None
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
-    _transcribe(a, data, path.rsplit("/", 1)[-1], _media_type(path), prefs.keep_audio)
+    _transcribe(a, data, path.rsplit("/", 1)[-1], _audio_media_type(path), prefs.keep_audio)
     db.commit()
     return a
 
@@ -477,41 +490,117 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
 @router.patch("/answers/{answer_id}", response_model=AnswerOut)
 def reflect(answer_id: str, body: ReflectionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     a = _own_answer(db, user_id, answer_id)
-    data = body.model_dump(exclude_unset=True)
-    if "transcript" in data:
-        _set_transcript(a, data.pop("transcript"))
-    for k, v in data.items():
+    if "transcript" in body.model_fields_set and body.transcript != a.transcript:
+        _invalidate_coaching(a)
+    for k, v in body.model_dump(exclude_unset=True).items():
         setattr(a, k, v)
     db.commit()
     return a
 
 
-# ───────── 루브릭 피드백 ─────────
-
 @router.get("/rubric")
 def get_rubric():
-    """채점 기준(STAR 루브릭). 화면의 '채점 기준 보기'에 쓴다."""
-    return RUBRIC
+    """코칭 기준(구체성·질문 적합성·제출본 연결)과 앵커. 화면의 '채점 기준 보기'에 쓴다."""
+    return coaching.RUBRIC
+
+
+@router.post("/answers/{answer_id}/coach", response_model=AnswerOut)
+def coach_answer(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    a = _own_answer(db, user_id, answer_id)
+    _report(a, db)
+    db.commit()
+    return a
+
+
+@router.post("/answers/{answer_id}/followup", response_model=SessionOut, status_code=201)
+def followup(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    a = _own_answer(db, user_id, answer_id)
+    s = a.session
+    if s.finished_at:
+        raise HTTPException(409, "종료한 면접입니다. 회고에서 다시 연습해 주세요")
+    if not a.transcript or not a.transcript.strip():
+        raise HTTPException(422, "답변 전사문을 입력하거나 녹음해 주세요")
+    if not s.followups_enabled:
+        raise HTTPException(409, "이 세션은 꼬리질문을 사용하지 않도록 설정되어 있습니다")
+    if a.parent_answer_id:
+        raise HTTPException(409, "꼬리질문은 원 질문당 한 번 진행합니다")
+    if db.scalar(select(AnswerCoaching).where(AnswerCoaching.parent_answer_id == a.id)):
+        return _session_out(_own_session(db, user_id, s.id))
+    if not a.coaching_report:
+        _report(a, db)
+        db.commit()
+    # A short database write serializes insertion on SQLite and PostgreSQL alike.
+    # No external model request is made while holding this session lock.
+    session_id = s.id
+    db.execute(update(PracticeSession).where(PracticeSession.id == session_id).values(title=PracticeSession.title),
+               execution_options={"synchronize_session": False})
+    db.expire_all()
+    a = _own_answer(db, user_id, answer_id)
+    s = a.session
+    if s.finished_at:
+        raise HTTPException(409, "종료한 면접입니다. 회고에서 다시 연습해 주세요")
+    if db.scalar(select(AnswerCoaching).where(AnswerCoaching.parent_answer_id == a.id)):
+        return _session_out(_own_session(db, user_id, s.id))
+    report = a.coaching_report
+    if not report:
+        raise HTTPException(409, "답변이 바뀌었어요. 수정한 답변으로 다시 점검해 주세요")
+    suggestion = report["followup"]
+    q = Question(user_id=user_id, category=a.question.category, source="generated",
+                 application_id=s.application_id, job_category=a.question.job_category, text=suggestion["text"],
+                 private_scope=PracticePrivateQuestion())
+    child = PracticeAnswer(question=q, order_no=a.order_no + 1,
+                           coaching=AnswerCoaching(parent_answer_id=a.id, followup_reason=suggestion["reason"]))
+    for later in s.answers:
+        if later.order_no > a.order_no:
+            later.order_no += 1
+    s.answers.append(child)
+    try:
+        db.commit()
+    except IntegrityError:
+        # The unique parent key also makes concurrent/retried clicks idempotent.
+        db.rollback()
+        if not db.scalar(select(AnswerCoaching).where(AnswerCoaching.parent_answer_id == answer_id)):
+            raise
+    db.expire_all()
+    return _session_out(_own_session(db, user_id, s.id))
+
+
+@router.post("/sessions/{session_id}/redrill", response_model=SessionOut, status_code=201)
+def redrill(session_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    original = _own_session(db, user_id, session_id)
+    targets = []
+    picked = []
+    # 코칭에 '보완'이 있거나 자기평가가 1~2점인 답변(세션 순서대로 최대 20개). 화면의 목록과 같은 규칙이다
+    for a, weak, low in drill_picks(original):
+        picked.append(a)
+        targets.append({"answer_id": a.id, "question_id": a.question_id,
+                        "focus": drill_focus(weak, low),
+                        "next_action": a.coaching_report["next_action"] if a.coaching_report else
+                                       f"지난번 자기평가 {low}점이었던 답변이에요. 아쉬웠던 점을 떠올리며 다시 답해 보세요."})
+    if not picked:
+        raise HTTPException(422, "먼저 답변을 점검하거나 자기평가를 남겨 주세요. "
+                                 "보완 항목이 있거나 자기평가가 1~2점인 답변을 모아 다시 연습합니다")
+    frozen = deepcopy(original.context_snapshot or {})
+    frozen.update({"origin_session_id": original.id, "drill_targets": targets})
+    s = PracticeSession(user_id=user_id, mode="free", title=f"보완 연습 · {original.title}"[:200],
+                        application_id=original.application_id, prep_sec=original.prep_sec, answer_sec=original.answer_sec,
+                        context=PracticeContext(snapshot=frozen, followups_enabled=True))
+    s.answers = [PracticeAnswer(question=a.question, order_no=i + 1) for i, a in enumerate(picked)]
+    db.add(s)
+    db.commit()
+    return _session_out(_own_session(db, user_id, s.id))
 
 
 @router.post("/answers/{answer_id}/feedback", response_model=AnswerOut)
-def rubric_feedback(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    """전사문을 루브릭으로 채점한다. 모든 판단에는 전사문 인용이 붙고, 전사문에 없는 인용은 버린다.
-
-    채점하는 동안 전사문이 바뀌면 옛 전사문의 채점을 저장하지 않고 409를 돌려준다.
-    """
+def ai_feedback(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     a = _own_answer(db, user_id, answer_id)
-    if not (a.transcript or "").strip():
+    if not a.transcript:
         raise HTTPException(422, "전사문이 있어야 피드백을 받을 수 있습니다")
     if not llm.available():
         raise HTTPException(503, "OPENAI_API_KEY가 설정되지 않아 AI 피드백을 쓸 수 없습니다")
-    graded = a.transcript
     try:
-        fb = llm.grade_answer(a.question.text, graded, job_hint(db, a.session, a.question), qtype(a.question))
+        a.ai_feedback = llm.feedback(a.question.text, a.transcript, a.duration_sec)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"AI 피드백 요청 실패: {e}") from e
-    except llm.AIResponseError as e:
-        raise HTTPException(502, "AI 응답을 해석하지 못했습니다") from e
-    if not save_feedback(db, a, fb, graded):
-        raise HTTPException(409, "채점하는 동안 전사문이 바뀌었어요. 다시 채점해 주세요")
+    db.commit()
     return a

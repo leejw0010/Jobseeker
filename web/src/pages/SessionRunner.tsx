@@ -2,15 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api } from "../api";
 import ConsentPanel from "../components/ConsentPanel";
+import InterviewContext from "../components/InterviewContext";
 import { useRecorder } from "../components/useRecorder";
-import type { PracticeSession } from "../types";
+import type { PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
 
-type Phase = "ready" | "prep" | "answer" | "uploading" | "done";
-
-const fmt = (s: number) => {
-  const t = Math.max(0, Math.ceil(s));
-  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
-};
+type Phase = "ready" | "prep" | "answer" | "uploading" | "reviewing";
+const fmt = (s: number) => `${Math.floor(Math.max(0, Math.ceil(s)) / 60)}:${String(Math.max(0, Math.ceil(s)) % 60).padStart(2, "0")}`;
 
 export default function SessionRunner() {
   const { id = "" } = useParams();
@@ -20,205 +17,229 @@ export default function SessionRunner() {
   const [phase, setPhase] = useState<Phase>("ready");
   const [left, setLeft] = useState(0);
   const [err, setErr] = useState<string | null>(null);
-  // 녹음 동의: 확인 전에는 질문을 보여주지 않는다
+  const [inputMode, setInputMode] = useState<"audio" | "text">("audio");
+  const [draft, setDraft] = useState("");
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const [busy, setBusy] = useState(false);
+  const [uploadFailed, setUploadFailed] = useState(false);
+  // 녹음 동의: 녹음으로 답할 때만 필요하다(글 답변에는 묻지 않는다)
   const [consent, setConsent] = useState<"checking" | "ok" | "needed">("checking");
-  const [consentNotice, setConsentNotice] = useState<string | null>(null);
-  const [retentionDays, setRetentionDays] = useState(30);
-  const [keepAudio, setKeepAudio] = useState(false);
-  // 이미 녹음한 답변(원본을 지웠어도 recorded_at은 남는다). 이어서 연습할 때 다시 묻지 않는다
-  const [recorded, setRecorded] = useState<Set<string>>(new Set());
+  const [prefs, setPrefs] = useState<PracticeSettings | null>(null);
+  // 서버가 403(동의 없음)을 돌려준 동작. 동의하면 이어서 다시 한다
+  const [consentFor, setConsentFor] = useState<"upload" | "transcribe" | null>(null);
   const rec = useRecorder();
+  const { start, stop, ensureStream } = rec;
   const deadline = useRef(0);
+  const processing = useRef(false);
+  const pendingAudio = useRef<{ blob: Blob; durationSec: number } | null>(null);
 
   useEffect(() => {
+    let alive = true;
     api.session(id).then((s) => {
+      if (!alive) return;
       setSession(s);
-      const done = new Set(s.answers.filter((a) => a.recorded_at).map((a) => a.id));
-      setRecorded(done);
-      const next = s.answers.findIndex((a) => !done.has(a.id));
-      setIdx(next === -1 ? s.answers.length : next);
-      if (next === -1) setPhase("done");
+      if (s.finished_at) { nav(`/practice/sessions/${id}`, { replace: true }); return; }
+      // 원본 녹음은 전사가 끝나면 지워질 수 있으니 녹음 여부는 recorded_at으로 본다
+      const next = s.answers.findIndex((a) => !a.recorded_at && !a.transcript?.trim());
+      setIdx(next === -1 ? Math.max(0, s.answers.length - 1) : next);
+      if (next === -1) {
+        setDraft(s.answers[s.answers.length - 1]?.transcript ?? "");
+        setPhase("reviewing");
+      } else setPhase("ready");
     }).catch((e) => setErr(e.message));
-  }, [id]);
+    return () => { alive = false; };
+  }, [id, nav]);
 
   /** 설정을 불러온다. 못 불러와도 연습은 막지 않는다(업로드가 403이면 그때 동의를 받는다). */
-  const loadSettings = useCallback(
-    () =>
-      api.settings().then((st) => {
-        setRetentionDays(st.retention_days);
-        setKeepAudio(st.keep_audio);
-        return st;
-      }),
-    [],
-  );
+  const loadPrefs = useCallback(() => api.settings().then((st) => { setPrefs(st); return st; }), []);
   useEffect(() => {
-    loadSettings()
-      .then((st) => setConsent(st.consented_at ? "ok" : "needed"))
-      .catch(() => setConsent("ok"));
-  }, [loadSettings]);
+    loadPrefs().then((st) => setConsent(st.consented_at ? "ok" : "needed")).catch(() => setConsent("ok"));
+  }, [loadPrefs]);
+  /** 다른 곳에서 동의를 철회한 경우: 서버가 녹음을 받지 않았다. 동의하면 같은 동작을 다시 한다 */
+  const askConsent = useCallback((action: "upload" | "transcribe") => {
+    setConsent("needed");
+    setConsentFor(action);
+    loadPrefs().catch(() => {}); // 동의 패널의 보관 체크를 지금 설정으로
+  }, [loadPrefs]);
 
   const mock = session?.mode === "mock";
   const answer = session?.answers[idx];
-
-  /** 지금 질문 뒤에서 아직 녹음하지 않은 질문으로 가고, 남은 질문이 없으면 세션을 끝내고 리뷰로 간다. */
-  const advance = useCallback(async (done: Set<string>) => {
-    if (!session) return;
-    const next = session.answers.findIndex((a, i) => i > idx && !done.has(a.id));
-    if (next !== -1) {
-      setIdx(next);
-      setPhase("ready");
-      return;
-    }
-    // 마지막 질문을 건너뛰어도 세션을 끝낸다(자동 디브리프와 '건너뜀' 약점 표시가 종료 시점에 정해진다)
-    await api.finishSession(session.id).catch(() => {});
-    setPhase("done");
-    nav(`/practice/sessions/${session.id}`);
-  }, [idx, nav, session]);
+  const updateAnswer = useCallback((a: PracticeAnswer) => {
+    setSession((s) => s ? { ...s, answers: s.answers.map((x) => x.id === a.id ? a : x) } : s);
+  }, []);
 
   const finishAnswer = useCallback(async () => {
-    if (!answer) return;
+    if (!answer || processing.current) return;
+    processing.current = true;
     setPhase("uploading");
-    const result = await rec.stop();
-    let done = recorded;
+    setErr(null);
     try {
-      if (result && result.blob.size > 0) {
-        await api.uploadAudio(answer.id, result.blob, result.durationSec);
-        done = new Set(recorded).add(answer.id);
-        setRecorded(done);
+      let saved: PracticeAnswer;
+      if (inputMode === "audio") {
+        pendingAudio.current ??= await stop();
+        const recording = pendingAudio.current;
+        if (!recording?.blob.size) throw new Error("녹음된 소리가 없어요. 글로 답변하거나 다시 녹음해 주세요.");
+        saved = await api.uploadAudio(answer.id, recording.blob, recording.durationSec);
+        pendingAudio.current = null;
+      } else {
+        saved = await api.reflect(answer.id, { transcript: draftRef.current.trim() || null });
       }
+      updateAnswer(saved);
+      setDraft(saved.transcript ?? "");
+      setUploadFailed(false);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 403) {
-        // 다른 곳에서 동의를 철회한 경우: 서버는 방금 녹음을 저장하지 않았다. 동의 후 같은 질문을 다시 녹음한다
-        setConsentNotice("녹음하려면 먼저 동의가 필요해요. 방금 녹음은 저장하지 않았어요. 동의한 뒤 이 질문을 다시 녹음해 주세요.");
-        await loadSettings().catch(() => {}); // 동의 패널의 보관 체크를 지금 설정으로
-        setConsent("needed");
-        setPhase("ready");
-        return;
-      }
-      setErr(`녹음 업로드 실패: ${(e as Error).message}`);
+      if (e instanceof ApiError && e.status === 403) askConsent("upload");
+      else setErr((e as Error).message);
+      setUploadFailed(inputMode === "audio" && !!pendingAudio.current);
+    } finally {
+      processing.current = false;
+      setPhase("reviewing");
     }
-    await advance(done);
-  }, [advance, answer, loadSettings, rec, recorded]);
+  }, [answer, askConsent, inputMode, stop, updateAnswer]);
 
   const beginAnswer = useCallback(async () => {
     try {
-      await rec.start();
-    } catch {
-      return;
-    }
-    setPhase("answer");
-    if (session) {
-      deadline.current = performance.now() + session.answer_sec * 1000;
-      setLeft(session.answer_sec);
-    }
-  }, [rec, session]);
+      if (inputMode === "audio") await start();
+      setPhase("answer");
+      if (session) {
+        deadline.current = performance.now() + session.answer_sec * 1000;
+        setLeft(session.answer_sec);
+      }
+    } catch { setPhase("ready"); }
+  }, [inputMode, start, session]);
 
-  const skip = () => advance(recorded);
-
-  const beginQuestion = useCallback(async () => {
+  const beginQuestion = async () => {
     if (!session) return;
-    try {
-      await rec.ensureStream();
-    } catch {
-      return;
-    }
+    setErr(null);
+    setDraft("");
+    setUploadFailed(false);
+    try { if (inputMode === "audio") await ensureStream(); } catch { return; }
     if (mock && session.prep_sec > 0) {
-      setPhase("prep");
       deadline.current = performance.now() + session.prep_sec * 1000;
       setLeft(session.prep_sec);
-    } else {
-      beginAnswer();
-    }
-  }, [beginAnswer, mock, rec, session]);
+      setPhase("prep");
+    } else await beginAnswer();
+  };
 
-  // 모의시험: 준비 시간이 끝나면 녹음 시작, 답변 시간이 끝나면 자동 종료
   useEffect(() => {
     if (phase !== "prep" && !(phase === "answer" && mock)) return;
     const t = setInterval(() => {
       const remain = (deadline.current - performance.now()) / 1000;
       setLeft(remain);
-      if (remain <= 0) {
-        clearInterval(t);
-        phase === "prep" ? beginAnswer() : finishAnswer();
-      }
+      if (remain <= 0) { clearInterval(t); void (phase === "prep" ? beginAnswer() : finishAnswer()); }
     }, 200);
     return () => clearInterval(t);
   }, [phase, mock, beginAnswer, finishAnswer]);
 
-  // 자유 연습: 경과 시간 표시
   useEffect(() => {
     if (phase !== "answer" || mock) return;
-    const start = performance.now();
-    const t = setInterval(() => setLeft((performance.now() - start) / 1000), 250);
+    const began = performance.now();
+    const t = setInterval(() => setLeft((performance.now() - began) / 1000), 250);
     return () => clearInterval(t);
   }, [phase, mock]);
 
+  const retranscribe = async () => {
+    if (!answer || processing.current) return;
+    processing.current = true; setBusy(true); setErr(null);
+    try {
+      if (draft !== (answer.transcript ?? "")) updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null }));
+      const recognized = await api.retryTranscribe(answer.id);
+      updateAnswer(recognized); setDraft(recognized.transcript ?? draft);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) askConsent("transcribe");
+      else setErr((e as Error).message);
+    }
+    finally { processing.current = false; setBusy(false); }
+  };
+
+  const consentPanel = (notice: string | null, buttonLabel: string, then: () => void) => (
+    <ConsentPanel retentionDays={prefs?.retention_days} initialKeepAudio={prefs?.keep_audio} notice={notice} buttonLabel={buttonLabel}
+      onConsented={(st) => { setPrefs(st); setConsent("ok"); setConsentFor(null); setErr(null); then(); }} />
+  );
+
+  const next = async (withFollowup = false, save = true) => {
+    if (!answer || !session || processing.current) return;
+    processing.current = true;
+    setBusy(true);
+    setErr(null);
+    try {
+      if (save && draft !== (answer.transcript ?? "")) {
+        updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null }));
+      }
+      if (withFollowup) {
+        const updated = await api.followup(answer.id);
+        setSession(updated);
+        setIdx(updated.answers.findIndex((a) => a.parent_answer_id === answer.id));
+      } else if (idx + 1 < session.answers.length) setIdx(idx + 1);
+      else {
+        await api.finishSession(session.id);
+        nav(`/practice/sessions/${session.id}`);
+        return;
+      }
+      setDraft("");
+      setPhase("ready");
+    } catch (e) { setErr((e as Error).message); }
+    finally { processing.current = false; setBusy(false); }
+  };
+
   if (err && !session) return <p className="err">{err}</p>;
   if (!session || consent === "checking") return <p className="muted">불러오는 중…</p>;
-  if (phase === "done" || !answer)
-    return (
-      <div className="card">
-        <h2>연습이 끝났습니다</h2>
-        <Link to={`/practice/sessions/${session.id}`}>답변 다시 보기 →</Link>
-      </div>
-    );
-
-  return (
-    <>
-      <div className="row">
-        <h1 className="grow" style={{ margin: 0 }}>{session.title}</h1>
-        <span className="muted">{idx + 1} / {session.answers.length}</span>
-      </div>
-      {consent === "needed" ? (
-        <ConsentPanel
-          retentionDays={retentionDays}
-          initialKeepAudio={keepAudio}
-          notice={consentNotice}
-          onConsented={(st) => {
-            setRetentionDays(st.retention_days);
-            setKeepAudio(st.keep_audio);
-            setConsentNotice(null);
-            setErr(null);
-            setConsent("ok");
-          }}
-        />
-      ) : (
-        <div className="card">
-          <div className="row small">
-            <span className="chip">{answer.question.category}</span>
-            {mock && <span className="chip accent">모의시험</span>}
-            {session.redrill_of && <span className="chip accent">다시 연습</span>}
-          </div>
-          <div className="runner-q">{answer.question.text}</div>
-
-          {phase === "prep" && (
-            <>
-              <div className="phase">답변 준비 시간</div>
-              <div className="timer">{fmt(left)}</div>
-              <div className="spacer" />
-              <button className="primary" onClick={beginAnswer}>바로 답변 시작</button>
-            </>
-          )}
-          {phase === "answer" && (
-            <>
-              <div className="phase">● 녹음 중 {mock ? "· 남은 시간" : "· 경과 시간"}</div>
-              <div className={`timer ${mock && left < 10 ? "low" : ""}`}>{fmt(left)}</div>
-              <div className="level" aria-label="마이크 입력 레벨"><div style={{ width: `${rec.level * 100}%` }} /></div>
-              <div className="spacer" />
-              <button className="rec" onClick={finishAnswer}>답변 끝내기</button>
-            </>
-          )}
-          {phase === "ready" && (
-            <div className="row">
-              <button className="primary" onClick={beginQuestion}>{mock ? "질문 시작" : "녹음 시작"}</button>
-              <button onClick={skip}>건너뛰기</button>
-            </div>
-          )}
-          {phase === "uploading" && <p className="muted">녹음을 저장하고 전사하는 중…</p>}
-          {(rec.error || err) && <p className="err">{rec.error || err}</p>}
+  if (!answer) return <div className="card"><Link to={`/practice/sessions/${id}`}>답변 다시 보기</Link></div>;
+  return <>
+    <div className="row"><h1 className="grow">{session.title}</h1><span className="muted">{idx + 1} / {session.answers.length}</span></div>
+    <InterviewContext context={session.context_snapshot} />
+    <section className="card">
+      <div className="row small"><span className="chip">{answer.question.category}</span>{mock && <span className="chip accent">모의시험</span>}{answer.parent_answer_id && <span className="chip accent">꼬리질문</span>}</div>
+      {answer.followup_reason && <p className="followup-reason">{answer.followup_reason}</p>}
+      <div className="runner-q">{answer.question.text}</div>
+      {phase === "ready" && <>
+        <div className="row input-choice">
+          <label className="check-label"><input type="radio" name="input-mode" checked={inputMode === "audio"} onChange={() => setInputMode("audio")} />녹음으로 답변</label>
+          <label className="check-label"><input type="radio" name="input-mode" checked={inputMode === "text"} onChange={() => setInputMode("text")} />글로 답변</label>
         </div>
-      )}
-      <Link to={`/practice/sessions/${session.id}`} className="small">중단하고 지금까지 답변 보기</Link>
-    </>
-  );
+        {inputMode === "audio" && consent === "needed" ? <>
+          {consentPanel(null, "동의하고 시작", () => void beginQuestion())}
+          <div className="row"><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>
+        </> : <div className="row"><button className="primary" onClick={beginQuestion}>답변 시작</button><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>}
+      </>}
+      {phase === "prep" && <><p className="phase">답변 준비 시간</p><div className="timer">{fmt(left)}</div><button className="primary" onClick={beginAnswer}>바로 답변 시작</button></>}
+      {phase === "answer" && <>
+        <p className="phase">{inputMode === "audio" ? "녹음 중" : "답변 작성 중"} · {mock ? "남은 시간" : "경과 시간"}</p><div className="timer">{fmt(left)}</div>
+        {inputMode === "audio" ? <div className="level" aria-label="마이크 입력 레벨"><div style={{ width: `${rec.level * 100}%` }} /></div> :
+          <label>내 답변<textarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="질문에 대한 답변을 적어 주세요." /></label>}
+        <div className="spacer" /><button className="primary" onClick={finishAnswer}>답변 끝내기</button>
+      </>}
+      {phase === "uploading" && <p role="status">답변을 저장하는 중…</p>}
+      {phase === "reviewing" && <>
+        {answer.audio_available && answer.stt_status !== "done" && <div className="row small">
+          <p className="muted grow">{answer.stt_status === "failed" ? "말소리를 인식하지 못했거나 전사 요청이 실패했어요. 녹음은 보관되어 있어요." : "자동 음성 인식이 연결되지 않았어요. 녹음을 보관하고 있으니 직접 입력하거나 연결 후 다시 시도할 수 있어요."}
+            {prefs && ` 원본은 ${prefs.retention_days}일이 지나면 자동으로 지워져요.`}</p>
+          <button disabled={busy || uploadFailed} onClick={retranscribe}>음성 인식 다시 시도</button>
+        </div>}
+        {answer.recorded_at && answer.audio_deleted_at && <p className="small muted">원본 녹음은 지웠어요. 전사문만 남겨요.</p>}
+        {consentFor === "upload" && uploadFailed && consentPanel("녹음을 저장하려면 먼저 동의가 필요해요. 동의하면 방금 녹음을 저장해요.", "동의하고 녹음 저장", () => void finishAnswer())}
+        {consentFor === "transcribe" && consentPanel("녹음을 다시 전사하려면 먼저 녹음 동의가 필요해요.", "동의하고 다시 전사", () => void retranscribe())}
+        <label>답변 확인 · 전사문을 고칠 수 있어요<textarea disabled={busy} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="녹음의 전사문이 없으면 답변을 직접 입력해 주세요." /></label>
+        <p className="small muted">확인한 답변을 저장하고 다음 단계로 진행해요.</p>
+        {uploadFailed && consentFor !== "upload" && <button onClick={finishAnswer}>녹음 저장 다시 시도</button>}
+        {inputMode === "audio" && (uploadFailed || !answer.recorded_at) && <button onClick={() => {
+          pendingAudio.current = null; setUploadFailed(false); setInputMode("text"); setErr(null); setConsentFor(null);
+        }}>녹음 대신 글로 답변</button>}
+        <div className="row">
+          <button disabled={busy || uploadFailed || !draft.trim()} onClick={async () => {
+            setBusy(true); setErr(null);
+            try { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() })); }
+            catch (e) { setErr((e as Error).message); }
+            finally { setBusy(false); }
+          }}>답변만 저장</button>
+          {session.followups_enabled && !answer.parent_answer_id && <button className="primary" disabled={busy || uploadFailed || !draft.trim()} onClick={() => next(true)}>꼬리질문 받기</button>}
+          <button disabled={busy || uploadFailed} onClick={() => next()}>{idx + 1 < session.answers.length ? "다음 질문" : "면접 마치고 회고 보기"}</button>
+        </div>
+        {busy && <p className="small muted" role="status">답변을 확인하고 다음 질문을 준비하는 중…</p>}
+      </>}
+      {(rec.error || err) && <p className="err" role="alert">{err || rec.error}</p>}
+    </section>
+    <Link className="small" to={`/practice/sessions/${id}`}>지금까지 저장한 답변 보기</Link>
+  </>;
 }

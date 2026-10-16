@@ -8,7 +8,6 @@ os.environ["OPENAI_API_KEY"] = ""
 os.environ["SUPABASE_URL"] = ""
 os.environ["AUDIO_RETENTION_DAYS"] = "30"
 os.environ["PURGE_INTERVAL_MIN"] = "60"
-os.environ["OPENAI_BASE_URL"] = "http://openai.invalid/v1"  # 실수로 호출해도 실제 API로 나가지 않게
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

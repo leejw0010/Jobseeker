@@ -2,6 +2,7 @@ import type {
   Application,
   ApplicationDetail,
   Category,
+  CoachingRubric,
   DeleteResult,
   EssayItem,
   PracticeAnswer,
@@ -9,7 +10,6 @@ import type {
   PracticeSettings,
   PracticeSettingsUpdate,
   Question,
-  Rubric,
   SessionSummary,
   Stats,
 } from "./types";
@@ -74,6 +74,7 @@ export const api = {
     position?: string;
     job_category?: string;
     essay_text?: string;
+    essay_basis?: "submitted" | "latest";
     count: number;
   }) => req<Question[]>("POST", "/practice/questions/generate", b),
   createSession: (b: {
@@ -86,6 +87,9 @@ export const api = {
     job_category?: string;
     prep_sec?: number;
     answer_sec?: number;
+    essay_basis?: "submitted" | "latest";
+    job_description?: string;
+    followups_enabled?: boolean;
   }) => req<PracticeSession>("POST", "/practice/sessions", b),
   sessions: () => req<SessionSummary[]>("GET", "/practice/sessions"),
   session: (id: string) => req<PracticeSession>("GET", `/practice/sessions/${id}`),
@@ -107,12 +111,12 @@ export const api = {
   reflect: (answerId: string, b: { self_rating?: number | null; reflection_note?: string | null; transcript?: string | null }) =>
     req<PracticeAnswer>("PATCH", `/practice/answers/${answerId}`, b),
   feedback: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/feedback`),
-  deleteAudio: (answerId: string) => req<PracticeAnswer>("DELETE", `/practice/answers/${answerId}/audio`),
-  rubric: () => req<Rubric>("GET", "/practice/rubric"),
+  coach: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/coach`),
+  followup: (answerId: string) => req<PracticeSession>("POST", `/practice/answers/${answerId}/followup`),
+  redrill: (sessionId: string) => req<PracticeSession>("POST", `/practice/sessions/${sessionId}/redrill`),
   debrief: (sessionId: string) => req<PracticeSession>("POST", `/practice/sessions/${sessionId}/debrief`),
-  /** answer_ids를 비우면 서버가 고른 약점 질문으로 새 세션을 만든다. */
-  redrill: (sessionId: string, answerIds?: string[]) =>
-    req<PracticeSession>("POST", `/practice/sessions/${sessionId}/redrill`, answerIds ? { answer_ids: answerIds } : {}),
+  rubric: () => req<CoachingRubric>("GET", "/practice/rubric"),
+  deleteAudio: (answerId: string) => req<PracticeAnswer>("DELETE", `/practice/answers/${answerId}/audio`),
 
   // 녹음 동의·보관 설정
   settings: () => req<PracticeSettings>("GET", "/practice/settings"),

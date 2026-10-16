@@ -14,9 +14,12 @@ export default function PracticeHome() {
   const [selected, setSelected] = useState<string[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [essayBasis, setEssayBasis] = useState<"submitted" | "latest">("submitted");
+  const [jobDescription, setJobDescription] = useState("");
+  const [followups, setFollowups] = useState(true);
 
   // 모의시험 설정
-  const [mock, setMock] = useState({ count: 5, prep_sec: 30, answer_sec: 90, job_category: "", application_id: "" });
+  const [mock, setMock] = useState({ count: 5, prep_sec: 30, answer_sec: 90, job_category: "", application_id: params.get("application") ?? "" });
   const [mockCats, setMockCats] = useState<Category[]>(["인성", "직무", "기업", "상황"]);
 
   // 맞춤 질문 생성
@@ -66,7 +69,9 @@ export default function PracticeHome() {
 
   const startFree = () =>
     run(async () => {
-      const s = await api.createSession({ mode: "free", question_ids: selected });
+      const s = await api.createSession({ mode: "free", question_ids: selected,
+        application_id: gen.application_id || undefined, essay_basis: essayBasis,
+        job_description: jobDescription, followups_enabled: followups });
       nav(`/practice/sessions/${s.id}/run`);
     });
 
@@ -80,6 +85,9 @@ export default function PracticeHome() {
         categories: mockCats,
         job_category: mock.job_category || undefined,
         application_id: mock.application_id || undefined,
+        essay_basis: essayBasis,
+        job_description: jobDescription,
+        followups_enabled: followups,
       });
       nav(`/practice/sessions/${s.id}/run`);
     });
@@ -93,6 +101,7 @@ export default function PracticeHome() {
         job_category: gen.job_category || undefined,
         essay_text: gen.essay_text || undefined,
         count: gen.count,
+        essay_basis: essayBasis,
       });
       if (made.length === 0) throw new Error("새로 만든 질문이 없습니다. 같은 질문이 이미 질문은행에 있어요.");
       setFilter((f) => ({ ...f, source: "generated", category: "" }));
@@ -114,6 +123,23 @@ export default function PracticeHome() {
         JobSeeker는 면접 연습 전용이에요. 실제 면접 중에는 쓰지 마세요. <Link to="/practice/settings">녹음·개인정보 설정</Link>
       </p>
       {err && <p className="err">{err}</p>}
+      <section className="card practice-settings">
+        <h2>이번 면접의 기준</h2>
+        <p className="small muted">지원 건을 연결하면 시작 시점의 자소서를 보관하고, 그 내용을 기준으로 답변과 꼬리질문을 연결해요.</p>
+        <div className="row">
+          <label className="grow">자소서 기준
+            <select value={essayBasis} onChange={(e) => setEssayBasis(e.target.value as "submitted" | "latest")}>
+              <option value="submitted">제출본 우선 · 제출 표시가 없으면 최신본</option>
+              <option value="latest">최신본으로 연습</option>
+            </select>
+          </label>
+          <label className="check-label"><input type="checkbox" checked={followups} onChange={(e) => setFollowups(e.target.checked)} />답변 뒤 꼬리질문 선택하기</label>
+        </div>
+        <div className="spacer" />
+        <label>채용 공고의 주요 업무·자격 요건 (선택)
+          <textarea value={jobDescription} maxLength={12000} onChange={(e) => setJobDescription(e.target.value)} placeholder="지원하는 직무의 업무와 요구 역량을 붙여 넣어 주세요." style={{ minHeight: 80 }} />
+        </label>
+      </section>
       <div className="grid2">
         <section className="card">
           <h2>모의시험 모드</h2>
@@ -153,7 +179,7 @@ export default function PracticeHome() {
 
         <section className="card">
           <h2>맞춤 질문 만들기</h2>
-          <p className="small muted">지원 건을 고르면 그 회사·직무와 최신 자소서로 꼬리질문을 만듭니다. 직접 입력해도 됩니다.</p>
+          <p className="small muted">지원 건을 고르면 위에서 선택한 자소서를 바탕으로 질문을 만들어요. 직접 입력해도 됩니다.</p>
           <label>지원 건
             <select value={gen.application_id} onChange={(e) => setGen({ ...gen, application_id: e.target.value })}>
               <option value="">직접 입력</option>

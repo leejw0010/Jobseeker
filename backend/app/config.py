@@ -30,7 +30,7 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
     openai_stt_model: str = os.getenv("OPENAI_STT_MODEL", "whisper-1")
-    # 루브릭 채점·세션 디브리프 전용 모델(비우면 채팅 모델)
+    # 세션 디브리프 요약 전용 모델(비우면 채팅 모델). 답변 코칭·꼬리질문은 채팅 모델을 쓴다
     openai_feedback_model: str = os.getenv("OPENAI_FEEDBACK_MODEL") or openai_chat_model
     # 테스트·e2e에서 가짜 서버를 가리킬 수 있게 API 주소를 바꿀 수 있다
     openai_base_url: str = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")

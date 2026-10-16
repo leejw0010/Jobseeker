@@ -54,6 +54,23 @@ def test_consent_required_then_upload_keeps_audio_when_stt_unavailable(client):
     assert client.get(f"/practice/answers/{aid}/audio", headers=h).status_code == 200
 
 
+def test_text_answer_needs_no_consent_but_audio_does(client):
+    """글 답변·코칭·종료에는 녹음 동의가 필요 없다. 녹음 업로드와 전사 다시 시도만 동의를 확인한다."""
+    h = {"X-User-Id": "user-text-only"}
+    s = _session(client, h)
+    aid = s["answers"][0]["id"]
+    a = client.patch(f"/practice/answers/{aid}", json={"transcript": "제가 직접 정리한 글 답변입니다."}, headers=h)
+    assert a.status_code == 200 and a.json()["recorded_at"] is None and a.json()["audio_available"] is False
+    assert client.post(f"/practice/answers/{aid}/coach", headers=h).json()["coaching_report"]["method"] == "basic"
+    assert client.post(f"/practice/sessions/{s['id']}/finish", headers=h).status_code == 200
+    r = _upload(client, h, aid)
+    assert r.status_code == 403 and r.json()["detail"] == "녹음 전에 동의가 필요합니다"
+    assert client.post(f"/practice/answers/{aid}/transcribe", headers=h).status_code == 403
+    assert client.get("/practice/settings", headers=h).json()["consented_at"] is None
+    me = next(x for x in client.get("/practice/sessions", headers=h).json() if x["id"] == s["id"])
+    assert me["recorded_count"] == 0  # 글 답변은 녹음으로 세지 않는다
+
+
 def test_successful_transcription_deletes_raw_audio(client, monkeypatch, consent):
     h = {"X-User-Id": "user-stt-done"}
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
@@ -405,16 +422,19 @@ def test_empty_transcript_counts_as_failed(client, monkeypatch, consent):
 
 
 def test_rerecord_drops_previous_transcript(client, monkeypatch, consent):
-    """새로 녹음하면 이전 녹음의 전사문·채점은 버린다. 새 전사가 비어도 옛 글이 새 녹음 옆에 남지 않는다."""
+    """새로 녹음하면 이전 녹음의 전사문·코칭은 버린다. 새 전사가 비어도 옛 글이 새 녹음 옆에 남지 않는다."""
     h = {"X-User-Id": "user-rerecord-empty"}
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     monkeypatch.setattr(llm, "transcribe", lambda audio, filename, ctype: "첫 녹음의 답변입니다")
     consent(h)
     aid = _session(client, h)["answers"][0]["id"]
     assert _upload(client, h, aid).json()["transcript"] == "첫 녹음의 답변입니다"
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    assert client.post(f"/practice/answers/{aid}/coach", headers=h).json()["coaching_report"]["method"] == "basic"
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     monkeypatch.setattr(llm, "transcribe", lambda audio, filename, ctype: "")
     a = _upload(client, h, aid).json()
-    assert a["stt_status"] == "failed" and a["transcript"] is None and a["feedback"] is None
+    assert a["stt_status"] == "failed" and a["transcript"] is None and a["coaching_report"] is None
 
 
 def test_audio_path_outside_own_prefix_is_not_trusted(client, consent):

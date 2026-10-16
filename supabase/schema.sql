@@ -33,8 +33,7 @@ create table if not exists practice_sessions (
   debrief         jsonb,
   debrief_status  text not null default 'none'
                   check (debrief_status in ('none','pending','done','failed','unavailable')),
-  debrief_started_at timestamptz,          -- 디브리프 작업 시작 시각(오래된 'pending'은 다시 시작)
-  redrill_of      uuid references practice_sessions(id) on delete set null  -- 약점 재연습이면 원래 세션
+  debrief_started_at timestamptz           -- 디브리프 작업(답변 점검 + 요약) 시작 시각(오래된 작업은 다시 시작)
 );
 
 -- 세션 안의 개별 답변(녹음 → 전사 → 회고)
@@ -49,8 +48,7 @@ create table if not exists practice_answers (
   stt_status       text not null default 'none' check (stt_status in ('none','done','failed','unavailable')),
   self_rating      int check (self_rating between 1 and 5),
   reflection_note  text,
-  ai_feedback      text,                    -- 예전 자유 서술 피드백(새 채점은 feedback)
-  feedback         jsonb,                   -- 루브릭 피드백 {rubric, model, criteria[], rewrite[], summary, graded_at, stale}
+  ai_feedback      text,
   recorded_at      timestamptz,             -- 녹음한 시각("답했다"의 기준. 원본이 지워져도 남는다)
   audio_expires_at timestamptz,             -- 원본 녹음 자동 삭제 시각
   audio_deleted_at timestamptz,             -- 원본 녹음을 지운 시각
@@ -153,3 +151,51 @@ insert into storage.buckets (id, name, public) values ('recordings','recordings'
 create policy rec_own on storage.objects for all
   using (bucket_id = 'recordings' and (storage.foldername(name))[1] = auth.uid()::text)
   with check (bucket_id = 'recordings' and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- 2026-10-15: 제출본 기반 면접 코칭
+-- Existing Supabase projects: run this after the original schema.sql.
+-- New tables only; existing applications, answers and recordings are retained.
+create table if not exists practice_private_questions (
+  question_id uuid primary key references questions(id) on delete cascade
+);
+
+create table if not exists practice_contexts (
+  session_id uuid primary key references practice_sessions(id) on delete cascade,
+  snapshot json not null,
+  followups_enabled boolean not null default false
+);
+
+create table if not exists answer_coaching (
+  answer_id uuid primary key references practice_answers(id) on delete cascade,
+  parent_answer_id uuid unique references practice_answers(id) on delete set null,
+  followup_reason text,
+  report json
+);
+
+alter table practice_contexts enable row level security;
+alter table answer_coaching enable row level security;
+alter table practice_private_questions enable row level security;
+
+drop policy if exists ppq_own on practice_private_questions;
+create policy ppq_own on practice_private_questions for all
+  using (exists (select 1 from questions q where q.id = question_id and q.user_id = auth.uid()))
+  with check (exists (select 1 from questions q where q.id = question_id and q.user_id = auth.uid()));
+
+drop policy if exists pc_own on practice_contexts;
+create policy pc_own on practice_contexts for all
+  using (exists (select 1 from practice_sessions s where s.id = session_id and s.user_id = auth.uid()))
+  with check (exists (select 1 from practice_sessions s where s.id = session_id and s.user_id = auth.uid()));
+
+drop policy if exists ac_own on answer_coaching;
+create policy ac_own on answer_coaching for all
+  using (exists (select 1 from practice_answers a join practice_sessions s on s.id = a.session_id
+                where a.id = answer_id and s.user_id = auth.uid()))
+  with check (
+    exists (select 1 from practice_answers a join practice_sessions s on s.id = a.session_id
+            where a.id = answer_id and s.user_id = auth.uid())
+    and (parent_answer_id is null or exists (
+      select 1 from practice_answers p join practice_sessions s on s.id = p.session_id
+      join practice_answers child on child.session_id = p.session_id
+      where p.id = parent_answer_id and child.id = answer_id and s.user_id = auth.uid()
+    ))
+  );

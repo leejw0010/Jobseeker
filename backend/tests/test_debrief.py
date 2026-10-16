@@ -1,16 +1,20 @@
-"""P0-3: 세션 종료 자동 디브리프와 약점 재연습."""
+"""세션 종료 자동 디브리프(답변 코칭 위에서)와 다시 연습할 답변 고르기."""
 import json
 from datetime import datetime, timedelta, timezone
 
-from app import llm
+import pytest
+
+from app import coaching, llm
 from app.config import settings
 from app.db import SessionLocal
 from app.models import PracticeAnswer, PracticeSession
 from app.routers import practice
-from app.rubric import question_type, transcript_sha
 
 T1 = "작년 동아리에서 저는 회계 정리를 맡았고 엑셀 매크로로 정산 시간을 절반으로 줄였습니다."
 T2 = "지원 동기는 고객 데이터를 직접 다루는 일을 하고 싶어서입니다."
+SUMMARY = {"lesson": "결과를 수치로 말할 때 답이 선명했다", "next_action": "첫 문장에 결론을 말한다",
+           "moments": [{"order_no": 1, "quote": "정산 시간을 절반으로 줄였습니다", "why": "수치"},
+                       {"order_no": 2, "quote": "전사문에 없는 문장", "why": "지어냄"}]}
 
 
 def _bank(client, h, n):
@@ -18,191 +22,178 @@ def _bank(client, h, n):
     return [q for q in qs if "자기소개" not in q["text"]][:n]
 
 
-def _experience(client, h, n):
-    """상황·행동·결과를 모두 채점하는 과거 경험 질문 n개."""
-    qs = client.get("/practice/questions", params={"source": "bank"}, headers=h).json()
-    return [q for q in qs if question_type(q["category"], q["text"], q["source"]) == "experience"][:n]
+def _session(client, h, n, **body):
+    qs = _bank(client, h, n)
+    r = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"] for q in qs], **body}, headers=h)
+    assert r.status_code == 201, r.text
+    return r.json()
 
 
-def _grader(calls, weak_key=None):
-    """채점·디브리프 요청을 흉내 낸다. 채점은 전사문 앞부분을 그대로 인용한다."""
+def _coach_reply(transcript: str, weak: bool = True) -> dict:
+    """PR #2 코칭 형식의 응답. 인용은 이번 답변 앞부분을 그대로 쓴다(자소서가 없으니 제출본 연결은 판단유보)."""
+    quote = transcript[:10]
+    return {"summary": "결과 확인 과정을 더 말해 보세요.", "next_action": "결과를 확인한 방법을 한 문장으로 덧붙이세요.",
+            "criteria": [
+                {"key": "specificity", "label": "구체성", "status": "보완" if weak else "충분",
+                 "reason": "결과를 확인한 방법이 없어요.", "answer_quote": quote},
+                {"key": "relevance", "label": "질문 적합성", "status": "충분", "reason": "질문에 바로 답했어요.",
+                 "answer_quote": quote},
+                {"key": "consistency", "label": "제출본 연결", "status": "판단유보", "reason": "비교할 자소서가 없어요."}],
+            "followup": {"text": "그 결과는 어떻게 확인했나요?", "focus": "specificity", "reason": "결과 확인 과정",
+                         "answer_quote": quote}}
+
+
+def _fake(calls, weak=True, summary=SUMMARY):
+    """코칭·디브리프 요청을 흉내 낸다."""
     def fake_chat(system, user, json_mode=False, **kwargs):
         calls.append({"system": system, "user": user, **kwargs})
-        if system == llm._GRADE_SYSTEM:
-            transcript = user.split("[답변 전사문]\n", 1)[1]
-            return json.dumps({"criteria": [
-                {"key": "situation", "band": "일부", "quote": transcript[:8], "comment": "맥락이 짧다"},
-                {"key": "action", "band": "부족" if weak_key == "action" else "충분", "quote": "", "comment": "-"},
-                {"key": "relevance", "band": "일부", "quote": "지어낸 인용입니다", "comment": "-"},
-            ], "rewrite": ["결론부터 말해 보세요."], "summary": "요약"})
+        if system == coaching.SYSTEM:
+            return json.dumps(_coach_reply(json.loads(user)["answer"], weak), ensure_ascii=False)
         if system == llm._DEBRIEF_SYSTEM:
-            return json.dumps({"lesson": "결과를 수치로 말할 때 답이 선명했다", "next_action": "첫 문장에 결론을 말한다",
-                               "moments": [{"order_no": 1, "quote": "정산 시간을 절반으로 줄였습니다", "why": "수치"},
-                                           {"order_no": 2, "quote": "전사문에 없는 문장", "why": "지어냄"}]})
+            return summary if isinstance(summary, str) else json.dumps(summary, ensure_ascii=False)
         raise AssertionError("예상하지 못한 프롬프트")
     return fake_chat
 
 
-def test_finish_runs_debrief_with_mocked_llm(client, monkeypatch):
+def _kinds(calls):
+    return ["coach" if c["system"] == coaching.SYSTEM else "debrief" for c in calls]
+
+
+def test_finish_coaches_answers_then_builds_debrief(client, monkeypatch):
     h = {"X-User-Id": "user-debrief"}
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     calls: list = []
-    monkeypatch.setattr(llm, "_chat", _grader(calls))
-    qs = _experience(client, h, 3)
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"] for q in qs]}, headers=h).json()
+    monkeypatch.setattr(llm, "_chat", _fake(calls))
+    s = _session(client, h, 3)
     a1, a2, a3 = (a["id"] for a in s["answers"])
-    client.patch(f"/practice/answers/{a1}", json={"transcript": T1, "self_rating": 4}, headers=h)
+    client.patch(f"/practice/answers/{a1}", json={"transcript": T1, "self_rating": 4, "reflection_note": "결론이 늦었다"},
+                 headers=h)
     client.patch(f"/practice/answers/{a2}", json={"transcript": T2}, headers=h)
 
     r = client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()
-    assert r["debrief_status"] == "pending"  # 응답은 바로, 디브리프는 백그라운드에서
+    assert r["debrief_status"] == "pending"  # 응답은 바로, 코칭·디브리프는 백그라운드에서
     got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    assert got["debrief_status"] == "done"
-    grading = [c for c in calls if c["system"] == llm._GRADE_SYSTEM]
-    assert len(grading) == 2 and all(c["temperature"] == 0.2 for c in calls)
+    assert got["debrief_status"] == "done" and got["debrief_running"] is False
+    assert _kinds(calls) == ["coach", "coach", "debrief"]
+    # 코칭은 /coach와 같은 경로(채팅 모델), 디브리프 요약만 피드백 모델·낮은 temperature
+    assert "temperature" not in calls[0] and calls[2]["temperature"] == 0.2
+    assert calls[2]["model"] == settings.openai_feedback_model
     by_id = {a["id"]: a for a in got["answers"]}
     for aid in (a1, a2):
-        fb = by_id[aid]["feedback"]
-        assert fb["rubric"] == "star-v1" and fb["criteria"][0]["quote_verified"] is True
-        assert fb["question_type"] == "experience" and fb["transcript_sha"] == transcript_sha(by_id[aid]["transcript"])
-        # 인용 없는 '충분'은 근거가 없으니 '일부'로 낮춘다
-        assert fb["criteria"][1]["band"] == "일부" and fb["criteria"][1]["evidence_missing"] is True
-        assert fb["criteria"][2]["quote"] is None and fb["criteria"][2]["quote_verified"] is False
-    assert by_id[a3]["feedback"] is None
+        report = by_id[aid]["coaching_report"]
+        assert report["method"] == "ai" and report["criteria"][0]["status"] == "보완"
+    assert by_id[a3]["coaching_report"] is None
     d = got["debrief"]
     assert d["lesson"] and d["next_action"] and d["generated_at"] and d["model"] == settings.openai_feedback_model
+    # 전사문에 없는 인용은 버린다
     assert d["moments"] == [{"answer_id": a1, "order_no": 1, "quote": "정산 시간을 절반으로 줄였습니다", "why": "수치"}]
-    assert [w["reasons"] for w in got["redrill"]] == [["건너뜀"]]
-    # 디브리프 요청: 기준의 뜻을 함께 보내고, 동의 화면에 알린 항목(전사문·질문·자기평가·회고 메모)만 보낸다
-    payload = json.loads(next(c["user"] for c in calls if c["system"] == llm._DEBRIEF_SYSTEM))
-    assert set(payload["rubric"]) == {"상황·과제", "본인 행동", "결과·배운 점", "질문·직무 연결"}
-    assert set(payload["answers"][0]) == {"order_no", "question", "transcript", "self_rating", "reflection_note", "bands"}
-    assert payload["answers"][0]["self_rating"] == 4
+    assert [(w["answer_id"], w["reasons"]) for w in got["redrill"]] == [(a1, ["AI · 구체성 보완"]), (a2, ["AI · 구체성 보완"])]
+    # 디브리프 요청: 기준의 뜻과, 동의 화면에 알린 항목(질문·전사문·자기평가·회고 메모·코칭 결과)만 보낸다
+    payload = json.loads(calls[2]["user"])
+    assert set(payload["criteria"]) == {"구체성", "질문 적합성", "제출본 연결"}
+    first = payload["answers"][0]
+    assert set(first) == {"order_no", "question", "transcript", "self_rating", "reflection_note",
+                          "coaching_method", "coaching"}
+    assert (first["self_rating"], first["reflection_note"], first["coaching_method"]) == (4, "결론이 늦었다", "ai")
+    assert first["coaching"] == {"구체성": "보완", "질문 적합성": "충분", "제출본 연결": "판단유보"}
 
-    # 이어서 녹음한 뒤 다시 끝내면 요약만 새로 만들고, 낡지 않은 채점은 다시 하지 않는다
+    # 다시 끝내면 요약만 새로 만들고, 이미 있는 코칭은 다시 하지 않는다
     n = len(calls)
     assert client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()["debrief_status"] == "pending"
-    assert [c["system"] for c in calls[n:]] == [llm._DEBRIEF_SYSTEM]
+    assert _kinds(calls[n:]) == ["debrief"]
     assert client.get(f"/practice/sessions/{s['id']}", headers=h).json()["debrief_status"] == "done"
 
 
-def test_debrief_failure_keeps_grades_and_can_regenerate(client, monkeypatch):
+def test_debrief_failure_keeps_coaching_and_can_regenerate(client, monkeypatch):
     h = {"X-User-Id": "user-debrief-fail"}
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     calls: list = []
-    good = _grader(calls)
-
-    def no_summary(system, user, json_mode=False, **kwargs):
-        if system == llm._DEBRIEF_SYSTEM:
-            return "깨진 응답"
-        return good(system, user, json_mode, **kwargs)
-
-    monkeypatch.setattr(llm, "_chat", no_summary)
-    q = _bank(client, h, 1)[0]
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
+    monkeypatch.setattr(llm, "_chat", _fake(calls, summary="깨진 응답"))
+    s = _session(client, h, 1)
     aid = s["answers"][0]["id"]
     client.patch(f"/practice/answers/{aid}", json={"transcript": T1}, headers=h)
     client.post(f"/practice/sessions/{s['id']}/finish", headers=h)
     got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    assert got["debrief_status"] == "failed" and got["debrief"] is None
-    assert got["answers"][0]["feedback"]["rubric"] == "star-v1"  # 채점은 남는다
+    assert got["debrief_status"] == "failed" and got["debrief"] is None and got["debrief_running"] is False
+    assert got["answers"][0]["coaching_report"]["method"] == "ai"  # 코칭은 남는다
 
-    monkeypatch.setattr(llm, "_chat", good)
+    monkeypatch.setattr(llm, "_chat", _fake(calls))
     r = client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()
     assert r["debrief_status"] == "pending"
     got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
     assert got["debrief_status"] == "done" and got["debrief"]["moments"][0]["answer_id"] == aid
 
 
-def test_finish_without_key_or_transcript(client, monkeypatch):
+def test_finish_without_key_runs_basic_coaching_and_is_unavailable(client, monkeypatch):
     h = {"X-User-Id": "user-debrief-off"}
-    q = _bank(client, h, 1)[0]
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
-    client.patch(f"/practice/answers/{s['answers'][0]['id']}", json={"transcript": T1}, headers=h)
-    assert client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()["debrief_status"] == "unavailable"
+    s = _session(client, h, 2)
+    aid = s["answers"][0]["id"]
+    client.patch(f"/practice/answers/{aid}", json={"transcript": T1}, headers=h)
+    r = client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()
+    assert r["debrief_status"] == "unavailable"
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    # 키가 없어도 코칭은 기본 점검으로 돈다(AI 평가로 표시하지 않음). 요약은 만들지 않는다
+    assert got["answers"][0]["coaching_report"]["method"] == "basic" and got["answers"][1]["coaching_report"] is None
+    assert got["debrief_status"] == "unavailable" and got["debrief"] is None and got["debrief_running"] is False
     assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()["debrief_status"] == "unavailable"
 
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    s2 = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
-    assert client.post(f"/practice/sessions/{s2['id']}/finish", headers=h).json()["debrief_status"] == "none"
+    s2 = _session(client, h, 1)
+    r = client.post(f"/practice/sessions/{s2['id']}/finish", headers=h).json()
+    assert r["debrief_status"] == "none" and r["debrief_running"] is False
 
 
-def test_weak_list_and_redrill(client, monkeypatch):
-    h = {"X-User-Id": "user-redrill"}
-    qs = _bank(client, h, 4)
-    app_id = client.post("/track/applications", json={"company": "토스", "position": "데이터 분석가"},
-                         headers=h).json()["id"]
-    s = client.post("/practice/sessions", json={"mode": "mock", "question_ids": [q["id"] for q in qs],
-                                                "prep_sec": 20, "answer_sec": 45, "title": "금요일 모의",
-                                                "application_id": app_id},
-                    headers=h).json()
-    a1, a2, a3, a4 = (a["id"] for a in s["answers"])
-    client.patch(f"/practice/answers/{a1}", json={"self_rating": 2}, headers=h)
-    client.patch(f"/practice/answers/{a2}", json={"transcript": T1}, headers=h)
-    client.patch(f"/practice/answers/{a4}", json={"transcript": T2, "self_rating": 5}, headers=h)
+def _edit_transcript(answer_id: str, text: str) -> None:
+    """다른 요청(PATCH)이 전사문을 고친 것처럼 별도 DB 세션에서 바꾼다(코칭도 PATCH처럼 무효화)."""
+    with SessionLocal() as db:
+        a = db.get(PracticeAnswer, answer_id)
+        practice._invalidate_coaching(a)
+        a.transcript = text
+        db.commit()
+
+
+def test_answer_edited_during_coaching_is_skipped_then_coached_again(client, monkeypatch):
+    """점검 중에 전사문이 바뀐 답변은 /coach처럼 409로 버리고, 다음 바퀴에서 새 전사문으로 다시 점검한다."""
+    h = {"X-User-Id": "user-debrief-race"}
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    t2_old, t2_new = "작년 동아리에서 저는 발표를 맡았습니다.", "인턴십에서 저는 데이터 정리 자동화를 맡았습니다."
+    a1_new = "고친 첫 답변입니다. 저는 일정을 다시 짰습니다."
     calls: list = []
-    monkeypatch.setattr(llm, "_chat", _grader(calls, weak_key="action"))
-    assert client.post(f"/practice/answers/{a2}/feedback", headers=h).status_code == 200
-    assert "토스 · 데이터 분석가" in calls[0]["user"]  # 지원 건의 회사·직무를 채점에 넘긴다
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    fake = _fake(calls)
+    ids: dict = {}
 
+    def racing(system, user, json_mode=False, **kwargs):
+        out = fake(system, user, json_mode, **kwargs)
+        if _kinds(calls) == ["coach"]:
+            _edit_transcript(ids["a1"], a1_new)  # 점검 중인 답변을 고침
+            _edit_transcript(ids["a2"], t2_new)  # 아직 점검하지 않은 답변을 고침
+        return out
+
+    monkeypatch.setattr(llm, "_chat", racing)
+    s = _session(client, h, 2)
+    ids["a1"], ids["a2"] = (a["id"] for a in s["answers"])
+    client.patch(f"/practice/answers/{ids['a1']}", json={"transcript": T1}, headers=h)
+    client.patch(f"/practice/answers/{ids['a2']}", json={"transcript": t2_old}, headers=h)
+
+    client.post(f"/practice/sessions/{s['id']}/finish", headers=h)
     got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    assert [(w["answer_id"], w["reasons"]) for w in got["redrill"]] == [(a1, ["자기평가 2점"]), (a2, ["본인 행동 부족"])]
-    client.post(f"/practice/sessions/{s['id']}/finish", headers=h)  # 끝나면 녹음 안 한 질문은 '건너뜀'
-    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    weak = got["redrill"]
-    assert [w["answer_id"] for w in weak] == [a1, a2, a3] and weak[2]["reasons"] == ["건너뜀"]
-    assert weak[0]["question_id"] == qs[0]["id"] and weak[0]["question_text"] == qs[0]["text"]
-    assert weak[2]["order_no"] == 3
-
-    r = client.post(f"/practice/sessions/{s['id']}/redrill", headers=h)
-    assert r.status_code == 201, r.text
-    new = r.json()
-    assert new["redrill_of"] == s["id"] and new["mode"] == "mock"
-    assert (new["prep_sec"], new["answer_sec"], new["application_id"]) == (20, 45, app_id)
-    assert new["title"] == "다시 연습 · 금요일 모의"
-    assert [a["question"]["id"] for a in new["answers"]] == [qs[0]["id"], qs[1]["id"], qs[2]["id"]]  # 자기소개 없음
-    assert [a["order_no"] for a in new["answers"]] == [1, 2, 3]
-    me = next(x for x in client.get("/practice/sessions", headers=h).json() if x["id"] == new["id"])
-    assert me["redrill_of"] == s["id"]
-
-    one = client.post(f"/practice/sessions/{s['id']}/redrill", json={"answer_ids": [a4]}, headers=h).json()
-    assert [a["question"]["id"] for a in one["answers"]] == [qs[3]["id"]]
-    bad = client.post(f"/practice/sessions/{s['id']}/redrill", json={"answer_ids": [new["answers"][0]["id"]]},
-                      headers=h)
-    assert bad.status_code == 422
-
-    # 전사문을 고치면 낡은 '부족'은 약점 이유에서 빠진다
-    client.patch(f"/practice/answers/{a2}", json={"transcript": "고친 답변"}, headers=h)
-    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    assert [w["answer_id"] for w in got["redrill"]] == [a1, a3]
-
-    # 원래 세션을 지우면 재연습 세션의 연결만 끊긴다
-    assert client.delete(f"/practice/sessions/{s['id']}", headers=h).status_code == 204
-    assert client.get(f"/practice/sessions/{new['id']}", headers=h).json()["redrill_of"] is None
+    a1, a2 = got["answers"]
+    assert got["debrief_status"] == "done"
+    coached = [json.loads(c["user"])["answer"] for c in calls if c["system"] == coaching.SYSTEM]
+    assert coached == [T1, t2_new, a1_new]
+    assert a1["transcript"] == a1_new and a1["coaching_report"]["criteria"][0]["answer_quote"] == a1_new[:10]
+    assert a2["transcript"] == t2_new and a2["coaching_report"]["criteria"][0]["answer_quote"] == t2_new[:10]
+    # 요약도 지금 전사문으로 만든다
+    summary = next(c["user"] for c in calls if c["system"] == llm._DEBRIEF_SYSTEM)
+    assert a1_new in summary and t2_new in summary and T1 not in summary and t2_old not in summary
 
 
-def test_redrill_nothing_weak_and_other_user(client):
-    h, other = {"X-User-Id": "user-redrill-none"}, {"X-User-Id": "user-redrill-other"}
-    q = _bank(client, h, 1)[0]
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
-    r = client.post(f"/practice/sessions/{s['id']}/redrill", headers=h)
-    assert r.status_code == 422 and r.json()["detail"] == "다시 연습할 약점 질문이 없어요"
-    assert client.post(f"/practice/sessions/{s['id']}/redrill", headers=other).status_code == 404
-    assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=other).status_code == 404
-    assert client.post(f"/practice/sessions/{s['id']}/finish", headers=other).status_code == 404
-    assert client.delete(f"/practice/answers/{s['answers'][0]['id']}/audio", headers=other).status_code == 404
-    assert client.post(f"/practice/answers/{s['answers'][0]['id']}/feedback", headers=other).status_code == 404
-
-
-def test_finish_does_not_start_second_debrief_while_pending(client, monkeypatch):
+def test_finish_does_not_start_second_debrief_while_running(client, monkeypatch):
     h = {"X-User-Id": "user-debrief-pending"}
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     calls: list = []
-    monkeypatch.setattr(llm, "_chat", _grader(calls))
-    q = _bank(client, h, 1)[0]
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
+    monkeypatch.setattr(llm, "_chat", _fake(calls))
+    s = _session(client, h, 1)
     client.patch(f"/practice/answers/{s['answers'][0]['id']}", json={"transcript": T1}, headers=h)
     with SessionLocal() as db:
         x = db.get(PracticeSession, s["id"])
@@ -216,104 +207,138 @@ def test_finish_does_not_start_second_debrief_while_pending(client, monkeypatch)
     assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()["debrief_status"] == "pending"
     assert calls == []
 
-    # 5분이 지나도 'pending'이면 작업이 사라진 것(서버 재시작 등)으로 보고 다시 시작한다
+    # 5분이 지나도 끝나지 않았으면 작업이 사라진 것(서버 재시작 등)으로 보고 다시 시작한다
     with SessionLocal() as db:
         db.get(PracticeSession, s["id"]).debrief_started_at = datetime.now(timezone.utc) - timedelta(minutes=6)
         db.commit()
     lost = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
     assert lost["debrief_status"] == "pending" and lost["debrief_running"] is False
     assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()["debrief_status"] == "pending"
-    assert [c["system"] for c in calls] == [llm._GRADE_SYSTEM, llm._DEBRIEF_SYSTEM]
+    assert _kinds(calls) == ["coach", "debrief"]
     done = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
     assert done["debrief_status"] == "done" and done["debrief_running"] is False
 
 
-def _edit_transcript(answer_id: str, text: str) -> None:
-    """다른 요청(PATCH)이 전사문을 고친 것처럼 별도 DB 세션에서 바꾼다."""
-    with SessionLocal() as db:
-        a = db.get(PracticeAnswer, answer_id)
-        practice._set_transcript(a, text)
-        db.commit()
-
-
-def test_debrief_never_pairs_new_transcript_with_old_grade(client, monkeypatch):
-    """디브리프가 앞 답변을 채점하는 동안 전사문을 고쳐도, 옛 전사문의 채점이 새 전사문에 붙지 않는다."""
-    h = {"X-User-Id": "user-debrief-race"}
+def test_redrill_also_takes_low_self_ratings_in_order(client, monkeypatch):
+    h = {"X-User-Id": "user-redrill"}
+    s = _session(client, h, 4, title="금요일 연습")
+    a1, a2, a3, a4 = (a["id"] for a in s["answers"])
+    client.patch(f"/practice/answers/{a1}", json={"self_rating": 2}, headers=h)  # 글 답변 없이 자기평가만
+    client.patch(f"/practice/answers/{a2}", json={"transcript": T1}, headers=h)
+    client.patch(f"/practice/answers/{a3}", json={"transcript": T2, "self_rating": 3}, headers=h)
+    client.patch(f"/practice/answers/{a4}", json={"transcript": T2, "self_rating": 1}, headers=h)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    t2_old, t2_new = "작년 동아리에서 저는 발표를 맡았습니다.", "인턴십에서 저는 데이터 정리 자동화를 맡았습니다."
-    a1_new = "고친 첫 답변입니다. 저는 일정을 다시 짰습니다."
-    calls: list = []
-    grade = _grader(calls)
-    ids: dict = {}
+    monkeypatch.setattr(llm, "_chat", _fake([], weak=True))
+    assert client.post(f"/practice/answers/{a2}/coach", headers=h).status_code == 200
+    monkeypatch.setattr(llm, "_chat", _fake([], weak=False))
+    assert client.post(f"/practice/answers/{a3}/coach", headers=h).status_code == 200  # 보완 없음, 자기평가 3점
+    assert client.post(f"/practice/answers/{a4}/coach", headers=h).status_code == 200  # 보완 없음, 자기평가 1점
+    monkeypatch.setattr(settings, "openai_api_key", "")
 
-    def racing(system, user, json_mode=False, **kwargs):
-        out = grade(system, user, json_mode, **kwargs)
-        if system == llm._GRADE_SYSTEM and len([c for c in calls if c["system"] == llm._GRADE_SYSTEM]) == 1:
-            _edit_transcript(ids["a1"], a1_new)  # 채점 중인 답변을 고침
-            _edit_transcript(ids["a2"], t2_new)  # 아직 채점하지 않은 답변을 고침
-        return out
-
-    monkeypatch.setattr(llm, "_chat", racing)
-    qs = _experience(client, h, 2)
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"] for q in qs]}, headers=h).json()
-    ids["a1"], ids["a2"] = (a["id"] for a in s["answers"])
-    client.patch(f"/practice/answers/{ids['a1']}", json={"transcript": T1}, headers=h)
-    client.patch(f"/practice/answers/{ids['a2']}", json={"transcript": t2_old}, headers=h)
-
-    client.post(f"/practice/sessions/{s['id']}/finish", headers=h)
     got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    a1, a2 = got["answers"]
-    assert got["debrief_status"] == "done"
-    # 채점 중에 바뀐 a1: 옛 전사문의 채점은 버리고, 다음 바퀴에서 새 전사문으로 다시 채점한다
-    graded = [c["user"] for c in calls if c["system"] == llm._GRADE_SYSTEM]
-    assert len(graded) == 3 and T1 in graded[0] and a1_new in graded[2]
-    assert a1["transcript"] == a1_new and a1["feedback"]["stale"] is False
-    assert a1["feedback"]["criteria"][0]["quote"] == a1_new[:8]
-    # a2: 채점 직전에 다시 읽어 새 전사문으로 채점한다
-    assert t2_new in graded[1] and t2_old not in graded[1]
-    assert a2["transcript"] == t2_new and a2["feedback"]["stale"] is False
-    assert a2["feedback"]["criteria"][0]["quote"] == t2_new[:8]
-    # 요약도 지금 전사문으로 만든다
-    summary = next(c["user"] for c in calls if c["system"] == llm._DEBRIEF_SYSTEM)
-    assert a1_new in summary and t2_new in summary and t2_old not in summary
+    assert [(w["answer_id"], w["reasons"]) for w in got["redrill"]] == [
+        (a1, ["자기평가 2점"]), (a2, ["AI · 구체성 보완"]), (a4, ["자기평가 1점"])]
+    assert got["redrill"][0]["question_text"] == s["answers"][0]["question"]["text"]
+
+    r = client.post(f"/practice/sessions/{s['id']}/redrill", headers=h)
+    assert r.status_code == 201, r.text
+    drill = r.json()
+    assert [a["question"]["id"] for a in drill["answers"]] == [s["answers"][i]["question"]["id"] for i in (0, 1, 3)]
+    assert drill["title"] == "보완 연습 · 금요일 연습" and drill["mode"] == "free"
+    targets = drill["context_snapshot"]["drill_targets"]
+    assert [(t["answer_id"], t["focus"]) for t in targets] == [(a1, ["자기평가 2점"]), (a2, ["구체성"]), (a4, ["자기평가 1점"])]
+    assert "자기평가 2점" in targets[0]["next_action"]  # 코칭이 없으면 자기평가로 안내한다
+    assert targets[1]["next_action"] == "결과를 확인한 방법을 한 문장으로 덧붙이세요."  # 코칭의 다음 연습
+    assert targets[2]["next_action"] == "결과를 확인한 방법을 한 문장으로 덧붙이세요."
 
 
-def test_feedback_for_other_transcript_counts_as_stale(client):
-    """저장된 채점의 전사문 지문이 지금 전사문과 다르면 API·약점 목록 모두 낡은 피드백으로 본다."""
-    h = {"X-User-Id": "user-sha-stale"}
-    q = _experience(client, h, 1)[0]
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
+def test_basic_coaching_reasons_are_not_labeled_ai_and_redrill_caps_at_20(client):
+    h = {"X-User-Id": "user-redrill-basic"}
+    app = client.post("/track/applications", headers=h, json={"company": "테스트회사", "position": "백엔드"}).json()
+    client.post(f"/track/applications/{app['id']}/essays", headers=h,
+                json={"question_text": "성과", "content": "캐시를 도입해 응답 시간을 40% 줄였습니다."})
+    qs = [client.post("/practice/questions", headers=h, json={"category": "직무", "text": f"성과 질문 {i}번"}).json()["id"]
+          for i in range(21)]
+    s = client.post("/practice/sessions", headers=h, json={"mode": "free", "application_id": app["id"],
+                                                          "question_ids": qs}).json()
+    first = s["answers"][0]["id"]
+    client.patch(f"/practice/answers/{first}", json={"transcript": "제가 캐시를 도입했습니다."}, headers=h)
+    report = client.post(f"/practice/answers/{first}/coach", headers=h).json()["coaching_report"]
+    assert report["method"] == "basic"
+    for a in s["answers"][1:]:
+        client.patch(f"/practice/answers/{a['id']}", json={"self_rating": 1}, headers=h)
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert got["redrill"][0]["reasons"] == ["구체성 보완"]  # 기본 점검은 'AI ·'를 붙이지 않는다
+    assert len(got["redrill"]) == 20 and got["redrill"][-1]["order_no"] == 20
+    drill = client.post(f"/practice/sessions/{s['id']}/redrill", headers=h).json()
+    assert len(drill["answers"]) == 20
+    assert [t["answer_id"] for t in drill["context_snapshot"]["drill_targets"]] == [w["answer_id"] for w in got["redrill"]]
+
+
+def test_redrill_nothing_qualifies_and_other_user(client):
+    h, other = {"X-User-Id": "user-redrill-none"}, {"X-User-Id": "user-redrill-other"}
+    s = _session(client, h, 1)
     aid = s["answers"][0]["id"]
-    client.patch(f"/practice/answers/{aid}", json={"transcript": T1}, headers=h)
-    fb = {"rubric": "star-v1", "criteria": [{"key": "action", "label": "본인 행동", "band": "부족"}], "stale": False}
-    with SessionLocal() as db:
-        db.get(PracticeAnswer, aid).feedback = {**fb, "transcript_sha": transcript_sha("다른 전사문")}
-        db.commit()
-    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    assert got["answers"][0]["feedback"]["stale"] is True and got["redrill"] == []
-
-    with SessionLocal() as db:
-        db.get(PracticeAnswer, aid).feedback = {**fb, "transcript_sha": transcript_sha(T1)}
-        db.commit()
-    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
-    assert got["answers"][0]["feedback"]["stale"] is False and got["redrill"][0]["reasons"] == ["본인 행동 부족"]
+    client.patch(f"/practice/answers/{aid}", json={"self_rating": 3}, headers=h)
+    r = client.post(f"/practice/sessions/{s['id']}/redrill", headers=h)
+    assert r.status_code == 422 and "보완" in r.json()["detail"] and "자기평가" in r.json()["detail"]
+    assert client.get(f"/practice/sessions/{s['id']}", headers=h).json()["redrill"] == []
+    assert client.post(f"/practice/sessions/{s['id']}/redrill", headers=other).status_code == 404
+    assert client.post(f"/practice/sessions/{s['id']}/debrief", headers=other).status_code == 404
+    assert client.post(f"/practice/sessions/{s['id']}/finish", headers=other).status_code == 404
+    assert client.delete(f"/practice/answers/{aid}/audio", headers=other).status_code == 404
 
 
-def test_manual_grade_is_not_saved_when_transcript_changes_meanwhile(client, monkeypatch):
-    h = {"X-User-Id": "user-grade-race"}
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    q = _experience(client, h, 1)[0]
-    s = client.post("/practice/sessions", json={"mode": "free", "question_ids": [q["id"]]}, headers=h).json()
-    aid = s["answers"][0]["id"]
-    client.patch(f"/practice/answers/{aid}", json={"transcript": T1}, headers=h)
-    grade = _grader([])
+def test_rubric_endpoint_serves_coaching_criteria_with_anchors(client):
+    r = client.get("/practice/rubric", headers={"X-User-Id": "user-rubric"}).json()
+    assert [c["key"] for c in r["criteria"]] == ["specificity", "relevance", "consistency"]
+    assert [c["label"] for c in r["criteria"]] == ["구체성", "질문 적합성", "제출본 연결"]
+    assert {c["key"]: c["label"] for c in r["criteria"]} == coaching.LABELS
+    for c in r["criteria"]:
+        assert c["checks"] and set(c["anchors"]) == {"충분", "보완"}
+        for anchor in c["anchors"].values():
+            assert anchor in coaching.SYSTEM  # 화면에 보이는 앵커와 프롬프트의 앵커가 같다
+    star = r["criteria"][0]["star"]
+    assert star["when"] == "과거 경험을 묻는 질문"
+    assert [a.split(":")[0] for a in star["anchors"]] == ["상황·과제", "본인 몫과 판단 근거", "결과와 배운 점"]
+    assert all(a in coaching.SYSTEM for a in star["anchors"])
+    assert set(r["statuses"]) == {"충분", "보완", "판단유보"}
+    assert "τ=.19–.44" in r["note"] and "정답 여부" in r["note"]
+    assert r["version"] == coaching.RUBRIC_VERSION
 
-    def racing(system, user, json_mode=False, **kwargs):
-        _edit_transcript(aid, "채점 중에 고친 전사문입니다.")
-        return grade(system, user, json_mode, **kwargs)
 
-    monkeypatch.setattr(llm, "_chat", racing)
-    r = client.post(f"/practice/answers/{aid}/feedback", headers=h)
-    assert r.status_code == 409
-    a = client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"][0]
-    assert a["transcript"] == "채점 중에 고친 전사문입니다." and a["feedback"] is None
+def test_coaching_prompt_rules():
+    system = coaching.SYSTEM
+    assert "후하게 주지 마라" in system and "관대" in system  # 엄격하게
+    assert "꼬리질문에도" in system and "지어내지 마라" in system  # 장점·사실·수치를 지어내지 않음
+    assert "목소리, 감정, 성격" in system  # 내용만
+    assert "말버릇" in system  # 말버릇 무시
+    assert "'우리'를 '저'로 바꾸라는 조언은 하지 마라" in system
+    assert "'우리'를 '저'로 바꾸라는 조언은 하지 않는다" in llm._DEBRIEF_SYSTEM
+
+
+@pytest.mark.parametrize("quote,transcript,expected", [
+    ("정산 시간을 절반으로", "저는 음, 정산 시간을 절반으로 줄였습니다", ("정산 시간을 절반으로", True)),
+    ("“정산 시간을, 절반으로”", "저는 정산 시간을 절반으로 줄였습니다", ("정산 시간을 절반으로", True)),
+    ("지어낸 문장입니다", "저는 정산 시간을 절반으로 줄였습니다", (None, False)),
+    ("저는", "저는 정산 시간을 절반으로 줄였습니다", (None, False)),
+    ("", "저는", (None, None)),
+])
+def test_verify_quote(quote, transcript, expected):
+    assert llm.verify_quote(quote, transcript) == expected
+
+
+def test_debrief_summary_keeps_only_verified_moments(monkeypatch):
+    raw = {"lesson": "교훈", "next_action": "행동",
+           "moments": [{"order_no": 9, "quote": "정산 시간을 절반으로", "why": "없는 답변"},
+                       {"order_no": "1", "quote": "“정산 시간을 절반으로”", "why": "수치"},
+                       {"order_no": 1, "quote": "지어낸 인용입니다", "why": "지어냄"}]}
+    monkeypatch.setattr(llm, "_chat", lambda *a, **k: json.dumps(raw, ensure_ascii=False))
+    items = [{"answer_id": "a1", "order_no": 1, "question": "Q", "transcript": T1, "self_rating": 2,
+              "reflection_note": None, "coaching_method": None, "coaching": {}}]
+    out = llm.debrief_summary(items, {"구체성": "막연하지 않은가"})
+    assert out == {"lesson": "교훈", "next_action": "행동",
+                   "moments": [{"answer_id": "a1", "order_no": 1, "quote": "정산 시간을 절반으로", "why": "수치"}]}
+    monkeypatch.setattr(llm, "_chat", lambda *a, **k: json.dumps({"moments": []}))
+    with pytest.raises(llm.AIResponseError):
+        llm.debrief_summary(items, {})

@@ -1,20 +1,19 @@
--- JobSeeker ② Practice P0: 녹음 동의·원본 보관 기한, 루브릭 피드백, 세션 디브리프·약점 재연습
+-- JobSeeker ② Practice P0: 녹음 동의·원본 보관 기한, 세션 종료 자동 디브리프
 -- 이미 schema.sql을 실행한 Supabase 프로젝트에서 SQL Editor로 한 번 실행하세요. 다시 실행해도 안전합니다.
 -- (새로 만드는 프로젝트는 schema.sql만 실행하면 이 내용이 모두 들어 있습니다.)
+-- 면접 코칭 테이블은 20261015_interview_coaching.sql이 만듭니다. 두 파일은 서로 의존하지 않습니다.
 
--- ───────── 세션: 디브리프·재연습 ─────────
+-- ───────── 세션: 자동 디브리프 ─────────
 alter table practice_sessions add column if not exists debrief jsonb;
 alter table practice_sessions add column if not exists debrief_status text not null default 'none';
 alter table practice_sessions add column if not exists debrief_started_at timestamptz;
-alter table practice_sessions add column if not exists redrill_of uuid references practice_sessions(id) on delete set null;
 do $$ begin
   alter table practice_sessions add constraint practice_sessions_debrief_status_check
     check (debrief_status in ('none','pending','done','failed','unavailable'));
 exception when duplicate_object then null;
 end $$;
 
--- ───────── 답변: 루브릭 피드백·녹음 보관 ─────────
-alter table practice_answers add column if not exists feedback jsonb;
+-- ───────── 답변: 녹음 시각·원본 보관 기한 ─────────
 alter table practice_answers add column if not exists recorded_at timestamptz;
 alter table practice_answers add column if not exists audio_expires_at timestamptz;
 alter table practice_answers add column if not exists audio_deleted_at timestamptz;
@@ -25,7 +24,7 @@ create index if not exists practice_answers_audio_expiry_idx
 create table if not exists user_settings (
   user_id       uuid primary key references auth.users(id) on delete cascade,
   consented_at  timestamptz,                -- null = 녹음 미동의(또는 철회)
-  keep_audio    boolean not null default false,
+  keep_audio    boolean not null default false,  -- true면 전사 후에도 원본 보관(보관 기한 뒤 자동 삭제)
   updated_at    timestamptz not null default now()
 );
 alter table user_settings enable row level security;

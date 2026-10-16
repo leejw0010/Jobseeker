@@ -38,6 +38,13 @@ class Question(Base):
     source: Mapped[str] = mapped_column(String(10), default="bank")
     application_id: Mapped[str | None] = mapped_column(ID)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    private_scope: Mapped["PracticePrivateQuestion | None"] = relationship(cascade="all, delete-orphan")
+
+
+class PracticePrivateQuestion(Base):
+    """An answer-dependent question never becomes reusable after its session is deleted."""
+    __tablename__ = "practice_private_questions"
+    question_id: Mapped[str] = mapped_column(ID, ForeignKey("questions.id", ondelete="CASCADE"), primary_key=True)
 
 
 class PracticeSession(Base):
@@ -54,13 +61,21 @@ class PracticeSession(Base):
     # 세션 종료 후 자동 디브리프(핵심 교훈·다음 행동·주목할 순간)
     debrief: Mapped[dict | None] = mapped_column(JSONType)
     debrief_status: Mapped[str] = mapped_column(String(12), default="none", server_default="none")
-    # 디브리프 작업을 시작한 시각. 'pending'이 오래 이어지면(서버 재시작 등) 작업이 사라진 것으로 보고 다시 시작한다
+    # 디브리프 작업(답변 코칭 + 요약)을 시작한 시각. 작업이 끝나면 비운다.
+    # 오래 남아 있으면(서버 재시작 등) 작업이 사라진 것으로 보고 다시 시작한다
     debrief_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # 약점 재연습 세션이면 원래 세션 id
-    redrill_of: Mapped[str | None] = mapped_column(ID)
     answers: Mapped[list["PracticeAnswer"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="PracticeAnswer.order_no"
     )
+    context: Mapped["PracticeContext | None"] = relationship(cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def context_snapshot(self) -> dict | None:
+        return self.context.snapshot if self.context else None
+
+    @property
+    def followups_enabled(self) -> bool:
+        return bool(self.context and self.context.followups_enabled)
 
 
 class PracticeAnswer(Base):
@@ -75,15 +90,47 @@ class PracticeAnswer(Base):
     stt_status: Mapped[str] = mapped_column(String(12), default="none")
     self_rating: Mapped[int | None] = mapped_column(Integer)
     reflection_note: Mapped[str | None] = mapped_column(Text)
-    ai_feedback: Mapped[str | None] = mapped_column(Text)  # 예전 자유 서술 피드백(새 채점은 feedback에 저장)
-    feedback: Mapped[dict | None] = mapped_column(JSONType)  # 루브릭 피드백(rubric.py)
-    # 녹음한 시각. "이 질문에 답했다"는 audio_path가 아니라 이 값으로 판단한다(원본은 지워질 수 있음)
+    ai_feedback: Mapped[str | None] = mapped_column(Text)
+    # 녹음한 시각. "이 질문에 녹음으로 답했다"는 audio_path가 아니라 이 값으로 판단한다(원본은 전사 후 지워질 수 있음)
     recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     audio_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     audio_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     session: Mapped[PracticeSession] = relationship(back_populates="answers")
     question: Mapped[Question] = relationship()
+    coaching: Mapped["AnswerCoaching | None"] = relationship(
+        foreign_keys="AnswerCoaching.answer_id", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    @property
+    def coaching_report(self) -> dict | None:
+        return self.coaching.report if self.coaching else None
+
+    @property
+    def parent_answer_id(self) -> str | None:
+        return self.coaching.parent_answer_id if self.coaching else None
+
+    @property
+    def followup_reason(self) -> str | None:
+        return self.coaching.followup_reason if self.coaching else None
+
+
+class PracticeContext(Base):
+    """Separate tables also upgrade existing SQLite databases without ALTERs."""
+    __tablename__ = "practice_contexts"
+    session_id: Mapped[str] = mapped_column(ID, ForeignKey("practice_sessions.id", ondelete="CASCADE"), primary_key=True)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    followups_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AnswerCoaching(Base):
+    __tablename__ = "answer_coaching"
+    answer_id: Mapped[str] = mapped_column(ID, ForeignKey("practice_answers.id", ondelete="CASCADE"), primary_key=True)
+    parent_answer_id: Mapped[str | None] = mapped_column(
+        ID, ForeignKey("practice_answers.id", ondelete="SET NULL"), unique=True
+    )
+    followup_reason: Mapped[str | None] = mapped_column(Text)
+    report: Mapped[dict | None] = mapped_column(JSON)
 
 
 class UserSettings(Base):

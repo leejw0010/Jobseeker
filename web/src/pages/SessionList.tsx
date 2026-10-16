@@ -26,11 +26,7 @@ export default function SessionList() {
             <tbody>
               {rows.map((r) => (
                 <tr key={r.id} className="click" onClick={() => nav(`/practice/sessions/${r.id}`)}>
-                  <td>
-                    {r.title}
-                    {r.redrill_of && <span className="chip accent" style={{ marginLeft: 6 }}>다시 연습</span>}
-                    {!r.finished_at && <span className="chip" style={{ marginLeft: 6 }}>진행 중</span>}
-                  </td>
+                  <td>{r.title}{!r.finished_at && <span className="chip" style={{ marginLeft: 6 }}>진행 중</span>}</td>
                   <td>{r.mode === "mock" ? "모의시험" : "자유 연습"}</td>
                   <td>{r.recorded_count} / {r.answer_count}</td>
                   <td>{r.avg_rating != null ? `★ ${r.avg_rating.toFixed(1)}` : "–"}</td>

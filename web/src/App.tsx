@@ -33,7 +33,7 @@ export default function App() {
         {down && <div className="card err">백엔드 서버에 연결할 수 없습니다. backend 폴더에서 서버를 실행했는지 확인하세요.</div>}
         {health && !health.openai && (
           <div className="card small muted">
-            OpenAI API 키가 없어 맞춤 질문은 템플릿으로 만들고, 음성 전사·AI 피드백은 꺼져 있습니다. 전사문은 직접 입력할 수 있어요.
+            현재 자동 음성 전사와 AI 코칭은 연결되어 있지 않아요. 녹음·글 답변·기본 점검은 사용할 수 있어요.
           </div>
         )}
         <Routes>

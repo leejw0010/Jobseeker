@@ -1,40 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api } from "../api";
-import ConsentPanel from "../components/ConsentPanel";
-import RubricView, { bandClass } from "../components/RubricView";
 import Stars from "../components/Stars";
-import type { PracticeAnswer, PracticeSession, PracticeSettings, Rubric } from "../types";
+import CoachingPanel from "../components/CoachingPanel";
+import ConsentPanel from "../components/ConsentPanel";
+import InterviewContext from "../components/InterviewContext";
+import type { CoachingRubric, InterviewContext as Context, PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
 
-const STT_LABEL = { none: "녹음 없음", done: "전사 완료", failed: "전사 실패", unavailable: "전사 꺼짐" } as const;
+const STT_LABEL = { none: "녹음 없음", done: "음성 인식 완료", failed: "음성 인식 재시도 필요", unavailable: "자동 전사 미연결" } as const;
 const POLL_MS = 2500;
 const POLL_GIVE_UP_MS = 120_000;
 
 /** 자동 삭제까지 남은 날짜(올림) */
 const daysLeft = (iso: string) => Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000);
 
-/** 약점 사유 → 칩 색상 */
-const reasonClass = (r: string) => (r.endsWith("부족") ? "band-bad" : r === "건너뜀" ? "band-na" : "band-warn");
-/** 루브릭 '부족'에서 온 사유는 AI 채점 결과라고 표시한다(자기평가·건너뜀은 그대로) */
-const reasonText = (r: string) => (r.endsWith("부족") ? `AI · ${r}` : r);
-
-/** 다시 연습한 세션에서, 원래 세션의 같은 질문 결과를 한 줄로 보여준다. */
-function PrevLine({ prev }: { prev: PracticeAnswer }) {
-  const criteria = prev.feedback?.criteria ?? [];
-  return (
-    <div className="row small muted" style={{ gap: 6, marginTop: 6 }}>
-      <span>지난번</span>
-      {criteria.map((c) => <span key={c.key} className={`chip ${bandClass(c.band)}`}>AI · {c.label} {c.band}</span>)}
-      {prev.self_rating != null && <span>자기평가 {prev.self_rating}점</span>}
-      {criteria.length === 0 && prev.self_rating == null && <span>평가 없음</span>}
-    </div>
-  );
-}
-
-function AnswerCard({ a, rubric, prev, onChange, onReload }: {
+function AnswerCard({ a, context, rubric, onChange, onReload }: {
   a: PracticeAnswer;
-  rubric: Rubric | null;
-  prev?: PracticeAnswer;
+  context: Context | null;
+  rubric: CoachingRubric | null;
   onChange: (a: PracticeAnswer) => void;
   /** 실패했을 때 서버 상태로 다시 맞춘다(중간 단계가 이미 저장됐을 수 있다) */
   onReload: () => void;
@@ -45,7 +28,7 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
   const [note, setNote] = useState(a.reflection_note ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // 전사 다시 시도가 403(녹음 동의 없음)이면 지금 설정으로 동의 패널을 띄운다
+  // 음성 인식 다시 시도가 403(녹음 동의 없음)이면 지금 설정으로 동의 패널을 띄운다
   const [needConsent, setNeedConsent] = useState<PracticeSettings | null>(null);
 
   useEffect(() => {
@@ -83,18 +66,15 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
     }
   };
 
-  const textDirty = transcript !== (a.transcript ?? "");
-  const dirty = textDirty || note !== (a.reflection_note ?? "");
+  const dirty = transcript !== (a.transcript ?? "") || note !== (a.reflection_note ?? "");
   const hasTranscript = !!a.transcript?.trim();
   // 한국어 발화 속도 참고용: 전사 글자 수 / 분
   const cpm = a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
 
-  // 고친 전사문이 있으면 먼저 저장하고(바로 화면에 반영) 채점한다. 채점이 실패해도 저장한 전사문과 낡은 피드백 표시는 맞게 남는다
-  const grade = () =>
-    act(async () => {
-      if (textDirty) onChange(await api.reflect(a.id, { transcript: transcript || null }));
-      return api.feedback(a.id);
-    });
+  const retranscribe = () => act(async () => {
+    if (dirty) onChange(await api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null }));
+    return api.retryTranscribe(a.id);
+  }, true);
 
   const removeAudio = () => {
     const ask = hasTranscript ? "원본 녹음을 지울까요? 전사문은 남아요." : "전사문이 없어 지우면 이 답변 내용이 남지 않아요. 원본 녹음을 지울까요?";
@@ -106,8 +86,8 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
       <div className="row">
         <h3 className="grow" style={{ margin: 0 }}>Q{a.order_no}. {a.question.text}</h3>
         <span className="chip">{a.question.category}</span>
+        {a.parent_answer_id && <span className="chip accent">꼬리질문</span>}
       </div>
-      {prev && <PrevLine prev={prev} />}
       <div className="spacer" />
       {a.audio_available ? (
         <>
@@ -128,13 +108,20 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
         <span>{STT_LABEL[a.stt_status]}</span>
         {a.duration_sec != null && <span>· {Math.round(a.duration_sec)}초</span>}
         {cpm != null && <span>· 분당 약 {cpm}자</span>}
-        {a.stt_status === "failed" && a.audio_available && (
-          <button disabled={busy} onClick={() => act(() => api.retryTranscribe(a.id), true)}>전사 다시 시도</button>
-        )}
+        {a.audio_available && (a.stt_status === "failed" || a.stt_status === "unavailable") && <button disabled={busy} onClick={retranscribe}>음성 인식 다시 시도</button>}
       </div>
+      {needConsent && (
+        <ConsentPanel
+          retentionDays={needConsent.retention_days}
+          initialKeepAudio={needConsent.keep_audio}
+          notice="녹음을 다시 전사하려면 먼저 녹음 동의가 필요해요."
+          buttonLabel="동의하고 다시 전사"
+          onConsented={retranscribe}
+        />
+      )}
       <div className="spacer" />
       <label>전사문 (직접 고칠 수 있어요)
-        <textarea value={transcript} onChange={(e) => setTranscript(e.target.value)} placeholder="전사문이 없으면 기억나는 대로 적어 두세요." />
+        <textarea disabled={busy} value={transcript} onChange={(e) => setTranscript(e.target.value)} placeholder="전사문이 없으면 기억나는 대로 적어 두세요." />
       </label>
       <div className="spacer" />
       <div className="row">
@@ -147,34 +134,19 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
       <div className="spacer" />
       <div className="row">
         <button className="primary" disabled={busy || !dirty} onClick={() => act(() => api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null }))}>저장</button>
-        <button disabled={busy || !transcript.trim()} onClick={grade}>{a.feedback ? "다시 채점" : "루브릭 피드백 받기"}</button>
+        <button disabled={busy || !transcript.trim()} onClick={() => act(async () => {
+          if (dirty) await api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null });
+          return api.coach(a.id);
+        })}>{busy ? "점검 중…" : "답변 점검"}</button>
       </div>
-      {a.feedback ? (
+      {a.coaching_report && <CoachingPanel report={a.coaching_report} context={context} rubric={rubric} />}
+      {a.ai_feedback && !a.coaching_report && (
         <>
           <div className="spacer" />
-          <RubricView feedback={a.feedback} rubric={rubric} />
-        </>
-      ) : (
-        a.ai_feedback && (
-          <>
-            <div className="spacer" />
-            <div className="card" style={{ marginBottom: 0 }}>
-              <span className="chip accent">AI 생성 · 참고용</span>
-              <div style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{a.ai_feedback}</div>
-            </div>
-          </>
-        )
-      )}
-      {needConsent && (
-        <>
-          <div className="spacer" />
-          <ConsentPanel
-            retentionDays={needConsent.retention_days}
-            initialKeepAudio={needConsent.keep_audio}
-            notice="녹음을 다시 전사하려면 먼저 녹음 동의가 필요해요."
-            buttonLabel="동의하고 다시 전사"
-            onConsented={() => act(() => api.retryTranscribe(a.id), true)}
-          />
+          <div className="card" style={{ marginBottom: 0 }}>
+            <span className="chip accent">AI 생성</span>
+            <div style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{a.ai_feedback}</div>
+          </div>
         </>
       )}
       {err && <p className="err">{err}</p>}
@@ -182,8 +154,8 @@ function AnswerCard({ a, rubric, prev, onChange, onReload }: {
   );
 }
 
-/** 세션 끝 자동 디브리프 + 약점 질문 다시 연습 */
-function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry, onRedrill }: {
+/** 세션을 마치면 자동으로 만드는 디브리프(답변 코칭 위에서). 키가 없으면 기본 점검만 돈다. */
+function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry }: {
   s: PracticeSession;
   gaveUp: boolean;
   busy: boolean;
@@ -191,15 +163,14 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry, onRedrill }: {
   onDebrief: () => void;
   /** 오래 걸려 확인을 멈춘 뒤의 '다시 시도' */
   onRetry: () => void;
-  onRedrill: () => void;
 }) {
   const d = s.debrief;
   const status = s.debrief_status;
-  const hasTranscript = s.answers.some((a) => a.transcript);
-  const hasFeedback = s.answers.some((a) => a.feedback);
+  const hasTranscript = s.answers.some((a) => a.transcript?.trim());
+  const hasCoaching = s.answers.some((a) => a.coaching_report);
 
   return (
-    <section className="card">
+    <section className="card debrief-card">
       <div className="row">
         <h2 className="grow" style={{ margin: 0 }}>세션 디브리프</h2>
         {status === "done" && d && <span className="chip accent">AI 생성</span>}
@@ -212,7 +183,7 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry, onRedrill }: {
             <button disabled={busy} onClick={onRetry}>다시 시도</button>
           </div>
         ) : (
-          <p className="muted small" style={{ margin: 0 }}>세션 디브리프를 만드는 중이에요…</p>
+          <p className="muted small" role="status" style={{ margin: 0 }}>답변을 점검하고 세션 디브리프를 만드는 중이에요…</p>
         ))}
       {status === "done" && d && (
         <>
@@ -243,51 +214,32 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry, onRedrill }: {
             </>
           )}
           <div className="row">
-            <span className="small muted grow">AI 요약은 참고용이에요. 전사문을 고쳤다면 다시 만들어 보세요.</span>
+            <span className="small muted grow">AI 요약은 참고용이에요. 답변을 고쳤다면 다시 만들어 보세요.</span>
             <button className="small" disabled={busy} onClick={onDebrief}>다시 만들기</button>
           </div>
         </>
       )}
       {status === "failed" && (
         <div className="row">
-          <span className="err grow">
-            디브리프를 만들지 못했어요.{hasFeedback && " 루브릭 채점 결과는 아래 답변에 남아 있어요."}
-          </span>
+          <span className="err grow">디브리프를 만들지 못했어요.{hasCoaching && " 답변 코칭 결과는 아래 답변에 남아 있어요."}</span>
           <button disabled={busy} onClick={onDebrief}>다시 만들기</button>
         </div>
       )}
       {status === "unavailable" && (
-        <p className="muted small" style={{ margin: 0 }}>
-          OpenAI 키가 없어 자동 디브리프는 꺼져 있어요. 자기평가로 고른 약점 질문은 아래에서 다시 연습할 수 있어요.
-        </p>
+        <>
+          <p className="muted small" style={{ margin: 0 }}>
+            OpenAI 키가 없어 자동 디브리프는 꺼져 있어요. 면접을 마치면 전사문이 있는 답변마다 기본 점검이 붙고, 보완 항목이 있거나 자기평가가 1~2점인
+            답변은 아래에서 다시 연습할 수 있어요.
+          </p>
+          {s.debrief_running && !gaveUp && <p className="muted small" role="status">답변을 기본 점검하는 중이에요…</p>}
+        </>
       )}
       {status === "none" &&
         (hasTranscript ? (
           <button disabled={busy} onClick={onDebrief}>디브리프 만들기</button>
         ) : (
-          <p className="muted small" style={{ margin: 0 }}>전사문이 생기면 디브리프를 만들 수 있어요.</p>
+          <p className="muted small" style={{ margin: 0 }}>답변이 생기면 디브리프를 만들 수 있어요.</p>
         ))}
-
-      <div className="divider" />
-      <h3>약점 다시 연습</h3>
-      {s.redrill.length === 0 ? (
-        <p className="muted small" style={{ margin: 0 }}>자기평가 2점 이하이거나 루브릭에 ‘부족’이 있는 질문이 여기에 모여요.</p>
-      ) : (
-        <>
-          <ul className="plain">
-            {s.redrill.map((w) => (
-              <li key={w.answer_id}>
-                <div className="small"><a href={`#answer-${w.answer_id}`}>Q{w.order_no}.</a> {w.question_text}</div>
-                <div className="row small" style={{ gap: 6, marginTop: 4 }}>
-                  {w.reasons.map((r) => <span key={r} className={`chip ${reasonClass(r)}`}>{reasonText(r)}</span>)}
-                </div>
-              </li>
-            ))}
-          </ul>
-          <div className="spacer" />
-          <button className="primary" disabled={busy} onClick={onRedrill}>약점 {s.redrill.length}개 다시 연습</button>
-        </>
-      )}
       {err && <p className="err">{err}</p>}
     </section>
   );
@@ -298,13 +250,11 @@ export default function SessionReview() {
   const nav = useNavigate();
   const [s, setS] = useState<PracticeSession | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [rubric, setRubric] = useState<Rubric | null>(null);
-  const [source, setSource] = useState<PracticeSession | null>(null);
-  const [sourceGone, setSourceGone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [rubric, setRubric] = useState<CoachingRubric | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   const [cardBusy, setCardBusy] = useState(false);
   const [cardErr, setCardErr] = useState<string | null>(null);
-  const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
   // 늦게 온 이전 응답이 새 결과를 덮지 않도록 요청 순번을 센다
   const seq = useRef(0);
@@ -333,25 +283,10 @@ export default function SessionReview() {
     api.rubric().then(setRubric).catch(() => {});
   }, []);
 
-  // 다시 연습한 세션이면 원래 세션을 한 번 불러와 "지난번" 결과를 보여준다
-  const sourceId = s?.redrill_of ?? null;
+  // 답변 점검·디브리프 작업이 도는 동안 2.5초마다 확인하고, 2분이 지나면 멈춘다
+  const waiting = s?.debrief_status === "pending" || !!s?.debrief_running;
   useEffect(() => {
-    setSource(null);
-    setSourceGone(false);
-    if (!sourceId) return;
-    let alive = true;
-    api.session(sourceId)
-      .then((x) => alive && setSource(x))
-      .catch(() => alive && setSourceGone(true));
-    return () => {
-      alive = false;
-    };
-  }, [sourceId]);
-
-  // 디브리프를 만드는 동안 2.5초마다 확인하고, 2분이 지나면 멈춘다
-  const pending = s?.debrief_status === "pending";
-  useEffect(() => {
-    if (!pending || gaveUp) return;
+    if (!waiting || gaveUp) return;
     const until = Date.now() + POLL_GIVE_UP_MS;
     let alive = true;
     let t = 0;
@@ -369,7 +304,7 @@ export default function SessionReview() {
       alive = false;
       window.clearTimeout(t);
     };
-  }, [pending, gaveUp, load]);
+  }, [waiting, gaveUp, load]);
 
   const cardAct = async (fn: () => Promise<void>) => {
     setCardBusy(true);
@@ -395,13 +330,8 @@ export default function SessionReview() {
       apply(cur.debrief_status === "pending" && !cur.debrief_running ? await api.debrief(id) : cur);
       setGaveUp(false);
     });
-  const redrill = () =>
-    cardAct(async () => {
-      const next = await api.redrill(id);
-      nav(`/practice/sessions/${next.id}/run`);
-    });
 
-  /** 답변이 바뀌면 바로 반영하고, 약점 목록이 맞도록 세션을 다시 불러온다. */
+  /** 답변이 바뀌면 바로 반영하고, 다시 연습할 답변 목록이 맞도록 세션을 다시 불러온다. */
   const onAnswer = (next: PracticeAnswer) => {
     setS((cur) => cur && { ...cur, answers: cur.answers.map((x) => (x.id === next.id ? next : x)) });
     load().catch(() => {});
@@ -412,42 +342,59 @@ export default function SessionReview() {
 
   const removeSession = async () => {
     if (!confirm("이 연습 기록을 삭제할까요? 전사문과 원본 녹음도 함께 지워져요.")) return;
-    setDeleteErr(null);
+    setErr(null);
     try {
       await api.deleteSession(id);
       nav("/practice/history");
     } catch (e) {
-      setDeleteErr((e as Error).message);
+      setErr((e as Error).message);
     }
   };
 
-  if (err) return <p className="err">{err}</p>;
+  if (err && !s) return <p className="err">{err}</p>;
   if (!s) return <p className="muted">불러오는 중…</p>;
-  const remaining = s.answers.filter((a) => !a.recorded_at).length;
-  const prevByQuestion = new Map(source?.answers.map((a) => [a.question.id, a]) ?? []);
+  // 원본 녹음은 전사가 끝나면 지워질 수 있으니 녹음 여부는 recorded_at으로 본다
+  const remaining = s.answers.filter((a) => !a.recorded_at && !a.transcript?.trim()).length;
+  const weak = s.redrill.length;
 
   return (
     <>
       <div className="row">
         <h1 className="grow" style={{ margin: 0 }}>{s.title}</h1>
-        {remaining > 0 && <Link to={`/practice/sessions/${s.id}/run`}>남은 {remaining}개 이어서 연습</Link>}
+        {!s.finished_at && <Link to={`/practice/sessions/${s.id}/run`}>{remaining > 0 ? `남은 ${remaining}개 이어서 연습` : "면접 이어서 마치기"}</Link>}
         <button className="danger" onClick={removeSession}>삭제</button>
       </div>
-      {deleteErr && <p className="err">{deleteErr}</p>}
       <p className="muted small">{new Date(s.created_at).toLocaleString("ko-KR")} · {s.mode === "mock" ? `모의시험 (준비 ${s.prep_sec}초 / 답변 ${s.answer_sec}초)` : "자유 연습"}</p>
-      {s.redrill_of && (
-        <p className="small row" style={{ gap: 6 }}>
-          <span className="chip accent">다시 연습</span>
-          {sourceGone ? (
-            <span className="muted">원래 세션은 삭제됐어요.</span>
-          ) : (
-            <Link to={`/practice/sessions/${s.redrill_of}`}>원래 세션{source ? ` 「${source.title}」` : ""} 보기 →</Link>
-          )}
-        </p>
-      )}
-      <DebriefCard s={s} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} onRedrill={redrill} />
+      {err && <p className="err">{err}</p>}
+      <DebriefCard s={s} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
+      <InterviewContext context={s.context_snapshot} />
+      <section className="card review-summary">
+        <h2>다음 연습으로 연결하기</h2>
+        <p className="small muted">답변을 점검하면 보완할 부분을 확인할 수 있어요. 이전 기록은 보관하고 같은 기준 자료로 다시 연습해요.</p>
+        {weak === 0 ? (
+          <p className="muted small">코칭에 ‘보완’이 있거나 자기평가가 1~2점인 답변이 여기에 모여요.</p>
+        ) : (
+          <ul className="plain weak-list">
+            {s.redrill.map((w) => (
+              <li key={w.answer_id}>
+                <div className="small"><a href={`#answer-${w.answer_id}`}>Q{w.order_no}.</a> {w.question_text}</div>
+                <div className="row small" style={{ gap: 6, marginTop: 4 }}>
+                  {w.reasons.map((r) => <span key={r} className={`chip ${r.endsWith("보완") ? "needs-work" : ""}`}>{r}</span>)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="spacer" />
+        <button className="primary" disabled={busy || !weak} onClick={async () => {
+          setBusy(true); setErr(null);
+          try { const drill = await api.redrill(s.id); nav(`/practice/sessions/${drill.id}/run`); }
+          catch (e) { setErr((e as Error).message); }
+          finally { setBusy(false); }
+        }}>보완 항목 {weak}개 다시 연습</button>
+      </section>
       {s.answers.map((a) => (
-        <AnswerCard key={a.id} a={a} rubric={rubric} prev={prevByQuestion.get(a.question.id)} onChange={onAnswer} onReload={reload} />
+        <AnswerCard key={a.id} a={a} context={s.context_snapshot} rubric={rubric} onChange={onAnswer} onReload={reload} />
       ))}
     </>
   );
