@@ -14,6 +14,13 @@ const POLL_GIVE_UP_MS = 120_000;
 /** 자동 삭제까지 남은 날짜(올림) */
 const daysLeft = (iso: string) => Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000);
 
+/** 음성 인식 상태. 전사하지 못한 녹음의 원본이 없으면 다시 시도할 수 없으니 '재시도 필요'라고 하지 않는다 */
+function sttLabel(a: PracticeAnswer) {
+  if (a.audio_available || (a.stt_status !== "failed" && a.stt_status !== "unavailable")) return STT_LABEL[a.stt_status];
+  const what = a.stt_status === "failed" ? "음성 인식 실패" : "자동 전사 안 됨";
+  return a.audio_deleted_at ? `${what} · 원본 녹음 삭제됨` : what;
+}
+
 function AnswerCard({ a, context, rubric, onChange, onReload }: {
   a: PracticeAnswer;
   context: Context | null;
@@ -105,12 +112,13 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
         <p className="muted small">녹음이 없습니다.</p>
       )}
       <div className="row small muted">
-        <span>{STT_LABEL[a.stt_status]}</span>
+        <span>{sttLabel(a)}</span>
         {a.duration_sec != null && <span>· {Math.round(a.duration_sec)}초</span>}
         {cpm != null && <span>· 분당 약 {cpm}자</span>}
         {a.audio_available && (a.stt_status === "failed" || a.stt_status === "unavailable") && <button disabled={busy} onClick={retranscribe}>음성 인식 다시 시도</button>}
       </div>
-      {needConsent && (
+      {/* 다시 불러온 답변에 원본이 없으면(그 사이 지움) 동의해도 다시 전사할 수 없으니 동의를 묻지 않는다 */}
+      {needConsent && a.audio_available && (
         <ConsentPanel
           retentionDays={needConsent.retention_days}
           initialKeepAudio={needConsent.keep_audio}
@@ -155,19 +163,31 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
 }
 
 /** 세션을 마치면 자동으로 만드는 디브리프(답변 코칭 위에서). 키가 없으면 기본 점검만 돈다. */
-function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry }: {
+function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
   s: PracticeSession;
+  /** 지금 서버에 OpenAI 키가 있는가(/health). 아직 모르면 null이고, 그때는 저장된 상태만 보고 판단한다 */
+  ai: boolean | null;
   gaveUp: boolean;
   busy: boolean;
   err: string | null;
   onDebrief: () => void;
-  /** 오래 걸려 확인을 멈춘 뒤의 '다시 시도' */
+  /** 작업이 사라졌거나 오래 걸려 확인을 멈춘 뒤의 '다시 시도' */
   onRetry: () => void;
 }) {
   const d = s.debrief;
   const status = s.debrief_status;
   const hasTranscript = s.answers.some((a) => a.transcript?.trim());
   const hasCoaching = s.answers.some((a) => a.coaching_report);
+  // 저장된 'unavailable'은 마칠 때 키가 없었다는 뜻일 뿐이다. 지금 키가 있으면 만들 수 있고, 지금 키가 없으면 어떤 상태든 만들 수 없다
+  const noKey = ai === false || (ai === null && status === "unavailable");
+  // 'pending'인데 서버가 도는 작업이 없다고 하면 작업이 사라진 것(서버 재시작 등)이다: 기다리게 하지 않고 바로 다시 시도를 보인다
+  const lost = status === "pending" && !s.debrief_running;
+  const noKeyText = (
+    <p className="muted small" style={{ margin: 0 }}>
+      OpenAI 키가 없어 자동 디브리프는 꺼져 있어요. 면접을 마치면 전사문이 있는 답변마다 기본 점검이 붙고, 보완 항목이 있거나 자기평가가 1~2점인
+      답변은 아래에서 다시 연습할 수 있어요.
+    </p>
+  );
 
   return (
     <section className="card debrief-card">
@@ -177,9 +197,9 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry }: {
       </div>
       <div className="spacer" />
       {status === "pending" &&
-        (gaveUp ? (
+        (lost || gaveUp ? (
           <div className="row">
-            <span className="small muted grow">디브리프가 오래 걸리고 있어요.</span>
+            <span className="small muted grow">{lost ? "디브리프 작업이 중간에 멈췄어요." : "디브리프가 오래 걸리고 있어요."}</span>
             <button disabled={busy} onClick={onRetry}>다시 시도</button>
           </div>
         ) : (
@@ -214,29 +234,40 @@ function DebriefCard({ s, gaveUp, busy, err, onDebrief, onRetry }: {
             </>
           )}
           <div className="row">
-            <span className="small muted grow">AI 요약은 참고용이에요. 답변을 고쳤다면 다시 만들어 보세요.</span>
-            <button className="small" disabled={busy} onClick={onDebrief}>다시 만들기</button>
+            {noKey ? (
+              <span className="small muted grow">AI 요약은 참고용이에요. 지금은 OpenAI 키가 없어 다시 만들 수 없어요.</span>
+            ) : (
+              <>
+                <span className="small muted grow">AI 요약은 참고용이에요. 답변을 고쳤다면 다시 만들어 보세요.</span>
+                <button className="small" disabled={busy} onClick={onDebrief}>다시 만들기</button>
+              </>
+            )}
           </div>
         </>
       )}
-      {status === "failed" && (
-        <div className="row">
-          <span className="err grow">디브리프를 만들지 못했어요.{hasCoaching && " 답변 코칭 결과는 아래 답변에 남아 있어요."}</span>
-          <button disabled={busy} onClick={onDebrief}>다시 만들기</button>
-        </div>
-      )}
-      {status === "unavailable" && (
-        <>
-          <p className="muted small" style={{ margin: 0 }}>
-            OpenAI 키가 없어 자동 디브리프는 꺼져 있어요. 면접을 마치면 전사문이 있는 답변마다 기본 점검이 붙고, 보완 항목이 있거나 자기평가가 1~2점인
-            답변은 아래에서 다시 연습할 수 있어요.
-          </p>
-          {s.debrief_running && !gaveUp && <p className="muted small" role="status">답변을 기본 점검하는 중이에요…</p>}
-        </>
-      )}
-      {status === "none" &&
-        (hasTranscript ? (
-          <button disabled={busy} onClick={onDebrief}>디브리프 만들기</button>
+      {status === "failed" &&
+        (noKey ? (
+          <>
+            <p className="err" style={{ marginTop: 0 }}>디브리프를 만들지 못했어요.{hasCoaching && " 답변 코칭 결과는 아래 답변에 남아 있어요."}</p>
+            {noKeyText}
+          </>
+        ) : (
+          <div className="row">
+            <span className="err grow">디브리프를 만들지 못했어요.{hasCoaching && " 답변 코칭 결과는 아래 답변에 남아 있어요."}</span>
+            <button disabled={busy} onClick={onDebrief}>다시 만들기</button>
+          </div>
+        ))}
+      {(status === "unavailable" || status === "none") &&
+        (noKey ? (
+          <>
+            {noKeyText}
+            {s.debrief_running && !gaveUp && <p className="muted small" role="status">답변을 기본 점검하는 중이에요…</p>}
+          </>
+        ) : hasTranscript ? (
+          <div className="row">
+            {status === "unavailable" && <span className="small muted grow">면접을 마칠 때 OpenAI 키가 없어 디브리프를 만들지 않았어요.</span>}
+            <button disabled={busy} onClick={onDebrief}>디브리프 만들기</button>
+          </div>
         ) : (
           <p className="muted small" style={{ margin: 0 }}>답변이 생기면 디브리프를 만들 수 있어요.</p>
         ))}
@@ -252,6 +283,7 @@ export default function SessionReview() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [rubric, setRubric] = useState<CoachingRubric | null>(null);
+  const [ai, setAi] = useState<boolean | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   const [cardBusy, setCardBusy] = useState(false);
   const [cardErr, setCardErr] = useState<string | null>(null);
@@ -281,10 +313,13 @@ export default function SessionReview() {
 
   useEffect(() => {
     api.rubric().then(setRubric).catch(() => {});
+    // 디브리프를 만들 수 있는지는 저장된 상태가 아니라 지금 키가 있는지로 정한다
+    api.health().then((h) => setAi(h.openai)).catch(() => {});
   }, []);
 
-  // 답변 점검·디브리프 작업이 도는 동안 2.5초마다 확인하고, 2분이 지나면 멈춘다
-  const waiting = s?.debrief_status === "pending" || !!s?.debrief_running;
+  // 답변 점검·디브리프 작업이 도는 동안 2.5초마다 확인하고, 2분이 지나면 멈춘다.
+  // 'pending'이어도 서버가 도는 작업이 없다고 하면(작업이 사라짐) 기다리지 않는다: 카드가 바로 '다시 시도'를 보인다
+  const waiting = !!s?.debrief_running;
   useEffect(() => {
     if (!waiting || gaveUp) return;
     const until = Date.now() + POLL_GIVE_UP_MS;
@@ -322,8 +357,8 @@ export default function SessionReview() {
       apply(await api.debrief(id));
       setGaveUp(false);
     });
-  // 확인을 멈춘 뒤 '다시 시도': 먼저 지금 상태를 다시 확인한다. 작업이 아직 돌고 있으면(마지막 진행 신호가 5분 안) 재생성을 요청하지 않고
-  // 확인만 이어 가고, 'pending'인데 작업이 사라졌을 때(서버 재시작 등)만 다시 만들기를 요청한다.
+  // '다시 시도'(작업이 사라졌거나 확인을 멈춘 뒤): 먼저 지금 상태를 다시 확인한다. 작업이 아직 돌고 있으면(마지막 진행 신호가 5분 안)
+  // 재생성을 요청하지 않고 확인만 이어 가고, 'pending'인데 작업이 사라졌을 때(서버 재시작 등)만 다시 만들기를 요청한다.
   const retryDebrief = () =>
     cardAct(async () => {
       const cur = await api.session(id);
@@ -356,6 +391,8 @@ export default function SessionReview() {
   // 원본 녹음은 전사가 끝나면 지워질 수 있으니 녹음 여부는 recorded_at으로 본다
   const remaining = s.answers.filter((a) => !a.recorded_at && !a.transcript?.trim()).length;
   const weak = s.redrill.length;
+  // '보완 항목 N개'(PR #2 문구)는 고른 답변마다 코칭의 보완이 있을 때만 맞다. 자기평가만으로 고른 답변이 있으면 답변 수로 말한다
+  const allNeedWork = s.redrill.every((w) => w.reasons.some((r) => r.endsWith("보완")));
 
   return (
     <>
@@ -366,7 +403,7 @@ export default function SessionReview() {
       </div>
       <p className="muted small">{new Date(s.created_at).toLocaleString("ko-KR")} · {s.mode === "mock" ? `모의시험 (준비 ${s.prep_sec}초 / 답변 ${s.answer_sec}초)` : "자유 연습"}</p>
       {err && <p className="err">{err}</p>}
-      <DebriefCard s={s} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
+      <DebriefCard s={s} ai={ai} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
       <InterviewContext context={s.context_snapshot} />
       <section className="card review-summary">
         <h2>다음 연습으로 연결하기</h2>
@@ -391,7 +428,7 @@ export default function SessionReview() {
           try { const drill = await api.redrill(s.id); nav(`/practice/sessions/${drill.id}/run`); }
           catch (e) { setErr((e as Error).message); }
           finally { setBusy(false); }
-        }}>보완 항목 {weak}개 다시 연습</button>
+        }}>{allNeedWork ? `보완 항목 ${weak}개 다시 연습` : `답변 ${weak}개 다시 연습`}</button>
       </section>
       {s.answers.map((a) => (
         <AnswerCard key={a.id} a={a} context={s.context_snapshot} rubric={rubric} onChange={onAnswer} onReload={reload} />

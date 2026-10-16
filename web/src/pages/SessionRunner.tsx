@@ -114,6 +114,7 @@ export default function SessionRunner() {
     setErr(null);
     setDraft("");
     setUploadFailed(false);
+    setConsentFor(null); // 앞 질문에서 띄운 동의 패널(다시 전사 등)은 이 질문과 상관없다
     try { if (inputMode === "audio") await ensureStream(); } catch { return; }
     if (mock && session.prep_sec > 0) {
       deadline.current = performance.now() + session.prep_sec * 1000;
@@ -149,6 +150,11 @@ export default function SessionRunner() {
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) askConsent("transcribe");
       else setErr((e as Error).message);
+      // 서버 상태로 다시 맞춘다: 그 사이 원본이 지워졌으면(404) '녹음은 보관되어 있어요'와 다시 시도 버튼을 내린다
+      api.session(id).then((s) => {
+        const cur = s.answers.find((x) => x.id === answer.id);
+        if (cur) updateAnswer(cur);
+      }).catch(() => {});
     }
     finally { processing.current = false; setBusy(false); }
   };
@@ -178,6 +184,7 @@ export default function SessionRunner() {
         return;
       }
       setDraft("");
+      setConsentFor(null); // 앞 답변의 동의 패널을 다음 질문에 남기지 않는다
       setPhase("ready");
     } catch (e) { setErr((e as Error).message); }
     finally { processing.current = false; setBusy(false); }
@@ -217,9 +224,11 @@ export default function SessionRunner() {
             {prefs && ` 원본은 ${prefs.retention_days}일이 지나면 자동으로 지워져요.`}</p>
           <button disabled={busy || uploadFailed} onClick={retranscribe}>음성 인식 다시 시도</button>
         </div>}
-        {answer.recorded_at && answer.audio_deleted_at && <p className="small muted">원본 녹음은 지웠어요. 전사문만 남겨요.</p>}
+        {answer.recorded_at && answer.audio_deleted_at && <p className="small muted">
+          {answer.transcript?.trim() ? "원본 녹음은 지웠어요. 전사문만 남겨요." : "원본 녹음은 지웠어요. 답변을 직접 입력해 주세요."}</p>}
         {consentFor === "upload" && uploadFailed && consentPanel("녹음을 저장하려면 먼저 동의가 필요해요. 동의하면 방금 녹음을 저장해요.", "동의하고 녹음 저장", () => void finishAnswer())}
-        {consentFor === "transcribe" && consentPanel("녹음을 다시 전사하려면 먼저 녹음 동의가 필요해요.", "동의하고 다시 전사", () => void retranscribe())}
+        {/* 다시 전사할 원본이 있을 때만 묻는다(글 답변이거나 원본을 지웠으면 동의해도 할 일이 없다) */}
+        {consentFor === "transcribe" && answer.audio_available && consentPanel("녹음을 다시 전사하려면 먼저 녹음 동의가 필요해요.", "동의하고 다시 전사", () => void retranscribe())}
         <label>답변 확인 · 전사문을 고칠 수 있어요<textarea disabled={busy} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="녹음의 전사문이 없으면 답변을 직접 입력해 주세요." /></label>
         <p className="small muted">확인한 답변을 저장하고 다음 단계로 진행해요.</p>
         {uploadFailed && consentFor !== "upload" && <button onClick={finishAnswer}>녹음 저장 다시 시도</button>}

@@ -43,7 +43,9 @@ export default function CoachingPanel({ report, context, rubric }: { report: Coa
           </details>;
         })}
       </div>
-      {rubric && <RubricDetails rubric={rubric} />}
+      {/* 채점 기준(앵커)과 일치도 안내는 AI 코칭에만 해당한다. 기본 점검은 규칙으로만 본다(coaching._basic) */}
+      {report.method === "ai" && rubric && <RubricDetails rubric={rubric} />}
+      {report.method === "basic" && <p className="small muted">기본 점검은 답변·자소서에 숫자가 있는지와 ‘제가·직접’ 같은 표현만 봐요. AI 코칭의 채점 기준으로 채점하지 않아요.</p>}
     </div>
   );
 }

@@ -49,8 +49,22 @@ test("submitted source → text answer → follow-up → evidence review → foc
   await page.getByRole("button", { name: "면접 마치고 회고 보기" }).click();
   await expect(page.locator(".coaching-panel").first()).toContainText("기본 점검");
   await expect(page.locator(".criterion").first()).toContainText("프로젝트에서 제가 개선했습니다.");
-  await page.getByRole("button", { name: "답변 점검", exact: true }).last().click();
+  // 면접을 마치면 자동 디브리프가 아직 점검하지 않은 꼬리질문 답변도 기본 점검한다(P0). 그 작업이 끝난 뒤 이 답변의
+  // 전사문을 고쳐 보고서를 지우면, 두 번째 패널은 '답변 점검' 클릭(POST /coach)에서만 다시 생길 수 있다
   await expect(page.locator(".coaching-panel")).toHaveCount(2);
+  const sessionId = page.url().split("/").at(-1);
+  await expect.poll(async () => (await (await request.get(`${API}/practice/sessions/${sessionId}`)).json()).debrief_running).toBe(false);
+  const last = page.locator("section.card[id^=answer-]").last();
+  const revised = "동일한 요청 1000개를 보내 제가 응답 시간을 측정했습니다. 평균 500ms에서 250ms로 감소했습니다.";
+  await last.getByLabel("전사문 (직접 고칠 수 있어요)").fill(revised);
+  await last.getByRole("button", { name: "저장", exact: true }).click();
+  await expect(last.locator(".coaching-panel")).toHaveCount(0);
+  await expect(page.locator(".coaching-panel")).toHaveCount(1);
+  const coached = page.waitForResponse((r) => r.request().method() === "POST" && /\/practice\/answers\/[^/]+\/coach$/.test(r.url()));
+  await page.getByRole("button", { name: "답변 점검", exact: true }).last().click();
+  expect((await coached).status()).toBe(200);
+  await expect(page.locator(".coaching-panel")).toHaveCount(2);
+  await expect(last.locator(".coaching-panel .criterion").first()).toContainText(revised);
   await expect(page.getByRole("button", { name: "보완 항목 1개 다시 연습" })).toBeEnabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: `../docs/screenshots/coaching-review-${testInfo.project.name}.png`, fullPage: true });
