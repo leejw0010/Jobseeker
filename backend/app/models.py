@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import date, datetime, timezone
 
@@ -20,6 +21,20 @@ ID = String(36).with_variant(UUID(as_uuid=False), "postgresql")
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+def valid_id(value) -> bool:
+    """uuid로 읽을 수 있는 id인가. 아니면 DB에 보내지 않고 '찾을 수 없음'으로 답한다(Postgres는 uuid 컬럼에 넣으면 오류)."""
+    try:
+        uuid.UUID(value)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return True
+
+
+def transcript_hash(text: str | None) -> str:
+    """코칭 보고서가 채점한 전사문의 지문(보고서에 함께 저장한다)."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 def _now() -> datetime:
@@ -61,9 +76,13 @@ class PracticeSession(Base):
     # 세션 종료 후 자동 디브리프(핵심 교훈·다음 행동·주목할 순간)
     debrief: Mapped[dict | None] = mapped_column(JSONType)
     debrief_status: Mapped[str] = mapped_column(String(12), default="none", server_default="none")
-    # 디브리프 작업(답변 코칭 + 요약)을 시작한 시각. 작업이 끝나면 비운다.
-    # 오래 남아 있으면(서버 재시작 등) 작업이 사라진 것으로 보고 다시 시작한다
+    # 디브리프 작업(답변 코칭 + 요약)을 시작한 시각. 작업이 끝나면 비운다. 작업마다 달라 그 작업의 표시로도 쓴다
     debrief_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 작업이 마지막으로 살아 있다고 알린 시각(답변 하나를 점검할 때마다, 요약 전에).
+    # 이 시각이 오래되면(서버 재시작 등) 작업이 사라진 것으로 보고 다시 시작한다
+    debrief_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 작업이 도는 동안 들어온 종료·재생성 요청 시각. 작업은 결과를 쓰기 전에 보고 한 바퀴 더 돈다
+    debrief_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     answers: Mapped[list["PracticeAnswer"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="PracticeAnswer.order_no"
     )
@@ -104,7 +123,12 @@ class PracticeAnswer(Base):
 
     @property
     def coaching_report(self) -> dict | None:
-        return self.coaching.report if self.coaching else None
+        """지금 전사문을 채점한 보고서. 다른 전사문을 채점한 보고서(점검과 수정이 겹친 경우)는 없는 것으로 본다.
+        지문이 없는 보고서(main이 만든 것)는 지금 전사문의 것으로 본다."""
+        report = self.coaching.report if self.coaching else None
+        if report and report.get("transcript_sha256") not in (None, transcript_hash(self.transcript)):
+            return None
+        return report
 
     @property
     def parent_answer_id(self) -> str | None:
@@ -140,6 +164,9 @@ class UserSettings(Base):
     user_id: Mapped[str] = mapped_column(ID, primary_key=True)
     consented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     keep_audio: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    # 전체 삭제·동의 철회 때 답변이 가리키지 않는 저장소 파일을 못 지웠으면 그 요청 시각.
+    # 다음 만료 정리가 이 시각 전에 저장된 그런 파일을 다시 지우고, 다 지우면 비운다
+    sweep_audio_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 

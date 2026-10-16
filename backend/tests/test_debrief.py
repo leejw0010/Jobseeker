@@ -1,10 +1,13 @@
 """세션 종료 자동 디브리프(답변 코칭 위에서)와 다시 연습할 답변 고르기."""
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Event
 
+import httpx
 import pytest
 
-from app import coaching, llm
+from app import coaching, debrief, llm
 from app.config import settings
 from app.db import SessionLocal
 from app.models import PracticeAnswer, PracticeSession
@@ -342,3 +345,245 @@ def test_debrief_summary_keeps_only_verified_moments(monkeypatch):
     monkeypatch.setattr(llm, "_chat", lambda *a, **k: json.dumps({"moments": []}))
     with pytest.raises(llm.AIResponseError):
         llm.debrief_summary(items, {})
+
+
+# ───────── 다른 전사문을 채점한 보고서 ─────────
+
+def test_report_for_an_older_transcript_counts_as_missing(client, monkeypatch):
+    """전사문을 고치는 요청이 보고서보다 먼저 답변을 읽고 나중에 저장하면(_invalidate_coaching이 지울 보고서를 못 봄)
+    남은 보고서는 옛 전사문을 채점한 것이다. 응답·다시 연습할 답변·재연습·디브리프는 그 보고서를 없는 것으로 본다."""
+    h = {"X-User-Id": "user-stale-report"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    calls: list = []
+    monkeypatch.setattr(llm, "_chat", _fake(calls))
+    s = _session(client, h, 1)
+    aid = s["answers"][0]["id"]
+    client.patch(f"/practice/answers/{aid}", json={"transcript": T1}, headers=h)
+    with SessionLocal() as edit:  # '저장'(또는 다시 전사) 요청: 보고서가 생기기 전에 답변을 읽었다
+        a = edit.get(PracticeAnswer, aid)
+        assert a.coaching_report is None
+        assert client.post(f"/practice/answers/{aid}/coach", headers=h).json()["coaching_report"]["method"] == "ai"
+        practice._invalidate_coaching(a)  # 이 요청이 읽은 답변에는 보고서가 없다
+        a.transcript = T2
+        edit.commit()
+
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert got["answers"][0]["transcript"] == T2 and got["answers"][0]["coaching_report"] is None
+    assert got["redrill"] == []
+    assert client.post(f"/practice/sessions/{s['id']}/redrill", headers=h).status_code == 422
+    # 디브리프는 이 답변을 지금 전사문으로 다시 점검하고, 요약에도 옛 보고서를 쓰지 않는다
+    client.post(f"/practice/sessions/{s['id']}/finish", headers=h)
+    coached = [json.loads(c["user"])["answer"] for c in calls if c["system"] == coaching.SYSTEM]
+    assert coached == [T1, T2]
+    report = client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"][0]["coaching_report"]
+    assert report["criteria"][0]["answer_quote"] == T2[:10]
+
+
+def test_reports_carry_the_current_rubric_version_and_old_reports_are_kept(client, monkeypatch):
+    """PR #2의 기준에 STAR 앵커와 판단 규칙이 더해졌으므로 새 보고서는 새 버전을 찍는다. main이 만든 보고서는 그대로 둔다."""
+    assert coaching.RUBRIC_VERSION != "2026-10-15"
+    h = {"X-User-Id": "user-rubric-version"}
+    s = _session(client, h, 2)
+    a1, a2 = (a["id"] for a in s["answers"])
+    client.patch(f"/practice/answers/{a1}", json={"transcript": T1}, headers=h)
+    client.patch(f"/practice/answers/{a2}", json={"transcript": T2}, headers=h)
+    basic = client.post(f"/practice/answers/{a1}/coach", headers=h).json()["coaching_report"]
+    assert basic["method"] == "basic" and basic["rubric_version"] == coaching.RUBRIC_VERSION
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    calls: list = []
+    monkeypatch.setattr(llm, "_chat", _fake(calls))
+    ai = client.post(f"/practice/answers/{a2}/coach", headers=h).json()["coaching_report"]
+    assert ai["method"] == "ai" and ai["rubric_version"] == coaching.RUBRIC_VERSION
+    assert client.get("/practice/rubric").json()["version"] == coaching.RUBRIC_VERSION
+
+    # main이 만든 보고서(2026-10-15, 전사문 지문 없음)는 지금 전사문의 것으로 보고 다시 점검하지 않는다
+    old = {**_coach_reply(T1), "method": "ai", "rubric_version": "2026-10-15"}
+    with SessionLocal() as db:
+        db.get(PracticeAnswer, a1).coaching.report = old
+        db.commit()
+    n = len(calls)
+    client.post(f"/practice/sessions/{s['id']}/finish", headers=h)
+    assert _kinds(calls[n:]) == ["debrief"]
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"][0]["coaching_report"]
+    assert got["rubric_version"] == "2026-10-15" and got["method"] == "ai"
+
+
+# ───────── AI 점검 실패로 대신 붙은 기본 점검 ─────────
+
+def test_basic_fallback_after_an_ai_error_is_coached_again_by_the_next_debrief(client, monkeypatch):
+    h = {"X-User-Id": "user-debrief-fallback"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    calls: list = []
+    fake = _fake(calls)
+    down = {"on": True}
+
+    def flaky(system, user, json_mode=False, **kwargs):
+        if system == coaching.SYSTEM and json.loads(user)["answer"] == T2 and down["on"]:
+            calls.append({"system": system, "user": user})
+            raise httpx.HTTPStatusError("429", request=httpx.Request("POST", "https://x"),
+                                        response=httpx.Response(429))
+        return fake(system, user, json_mode, **kwargs)
+
+    monkeypatch.setattr(llm, "_chat", flaky)
+    s = _session(client, h, 2)
+    a1, a2 = (a["id"] for a in s["answers"])
+    client.patch(f"/practice/answers/{a1}", json={"transcript": T1}, headers=h)
+    client.patch(f"/practice/answers/{a2}", json={"transcript": T2}, headers=h)
+    client.post(f"/practice/sessions/{s['id']}/finish", headers=h)
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert [a["coaching_report"]["method"] for a in got["answers"]] == ["ai", "basic"]
+    assert _kinds(calls) == ["coach", "coach", "debrief"]  # 한 작업 안에서는 실패한 점검을 되풀이하지 않는다
+
+    # /coach는 그대로 기본 점검을 돌려준다
+    assert client.post(f"/practice/answers/{a2}/coach", headers=h).json()["coaching_report"]["method"] == "basic"
+    down["on"] = False
+    n = len(calls)
+    client.post(f"/practice/sessions/{s['id']}/debrief", headers=h)  # '다시 만들기'
+    assert _kinds(calls[n:]) == ["coach", "debrief"]
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert [a["coaching_report"]["method"] for a in got["answers"]] == ["ai", "ai"]
+    assert [w["answer_id"] for w in got["redrill"]] == [a1, a2]
+
+    # 키 없이 만든 기본 점검(실패가 아님)은 키가 생겨도 다시 점검하지 않는다
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    s2 = _session(client, h, 1)
+    b1 = s2["answers"][0]["id"]
+    client.patch(f"/practice/answers/{b1}", json={"transcript": T1}, headers=h)
+    assert client.post(f"/practice/answers/{b1}/coach", headers=h).json()["coaching_report"]["method"] == "basic"
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    n = len(calls)
+    client.post(f"/practice/sessions/{s2['id']}/finish", headers=h)
+    assert _kinds(calls[n:]) == ["debrief"]
+
+
+# ───────── 오래 걸리는 작업과 작업 중에 들어온 요청 ─────────
+
+class _Clock:
+    """디브리프 모듈이 보는 시각을 테스트가 정한다(실제로 몇 분씩 기다리지 않고 오래 걸리는 작업을 흉내 낸다)."""
+
+    def __init__(self, monkeypatch):
+        self.now = datetime.now(timezone.utc)
+        clock = self
+
+        class Fixed(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock.now if tz else clock.now.replace(tzinfo=None)
+
+        monkeypatch.setattr(debrief, "datetime", Fixed)
+
+
+def test_long_job_keeps_a_heartbeat_so_retry_does_not_start_a_second_job(client, monkeypatch):
+    h = {"X-User-Id": "user-debrief-heartbeat"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    clock = _Clock(monkeypatch)
+    calls: list = []
+    fake = _fake(calls)
+    entered, resume = Event(), Event()
+
+    def slow(system, user, json_mode=False, **kwargs):
+        out = fake(system, user, json_mode, **kwargs)
+        if system == coaching.SYSTEM:
+            clock.now += timedelta(minutes=4)
+            if _kinds(calls).count("coach") == 2:
+                entered.set()
+                assert resume.wait(5)
+        return out
+
+    monkeypatch.setattr(llm, "_chat", slow)
+    s = _session(client, h, 3)
+    for a, t in zip(s["answers"], (T1, T2, T1)):
+        client.patch(f"/practice/answers/{a['id']}", json={"transcript": t}, headers=h)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        finish = pool.submit(client.post, f"/practice/sessions/{s['id']}/finish", headers=h)
+        assert entered.wait(5)
+        try:
+            # 작업을 시작한 지 8분: 시작 시각만 보면 사라진 작업이지만, 4분 전에 신호를 남겼으니 도는 중이다
+            mid = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+            again = client.post(f"/practice/sessions/{s['id']}/debrief", headers=h).json()
+        finally:
+            resume.set()
+        finish.result(timeout=10)
+    assert mid["debrief_status"] == "pending" and mid["debrief_running"] is True
+    assert again["debrief_running"] is True
+    assert _kinds(calls).count("coach") == 3  # 같은 답변을 두 작업이 점검하지 않는다
+    done = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert done["debrief_status"] == "done" and done["debrief_running"] is False
+    with SessionLocal() as db:
+        x = db.get(PracticeSession, s["id"])
+        assert (x.debrief_started_at, x.debrief_heartbeat_at, x.debrief_requested_at) == (None, None, None)
+
+
+def test_lost_job_that_comes_back_does_not_overwrite_the_new_job(client, monkeypatch):
+    """신호가 5분 넘게 끊겨 다시 시작했다면, 돌아온 옛 작업은 결과를 쓰지 않고 새 작업의 표시도 지우지 않는다."""
+    h = {"X-User-Id": "user-debrief-takeover"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    clock = _Clock(monkeypatch)
+    calls: list = []
+    fake = _fake(calls)
+    entered, resume = Event(), Event()
+
+    def stuck_once(system, user, json_mode=False, **kwargs):
+        out = fake(system, user, json_mode, **kwargs)
+        if system == coaching.SYSTEM and not entered.is_set():
+            entered.set()
+            assert resume.wait(5)
+        return out
+
+    monkeypatch.setattr(llm, "_chat", stuck_once)
+    s = _session(client, h, 2)
+    for a, t in zip(s["answers"], (T1, T2)):
+        client.patch(f"/practice/answers/{a['id']}", json={"transcript": t}, headers=h)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(client.post, f"/practice/sessions/{s['id']}/finish", headers=h)
+        assert entered.wait(5)
+        try:
+            clock.now += timedelta(minutes=6)
+            assert client.get(f"/practice/sessions/{s['id']}", headers=h).json()["debrief_running"] is False
+            client.post(f"/practice/sessions/{s['id']}/debrief", headers=h)  # 새 작업이 이어받아 끝낸다
+            taken = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+        finally:
+            resume.set()
+        first.result(timeout=10)
+    assert taken["debrief_status"] == "done"
+    assert _kinds(calls).count("debrief") == 1  # 돌아온 옛 작업은 요약을 만들지 않는다
+    after = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert after["debrief"] == taken["debrief"] and after["debrief_status"] == "done"
+
+
+def test_finish_during_a_running_job_makes_the_job_run_again(client, monkeypatch):
+    """작업이 요약을 만드는 동안 마지막 답변을 저장하고 '면접 마치고 회고 보기'를 누르면, 그 요청을 버리지 않고
+    작업이 한 바퀴 더 돌아 그 답변까지 점검하고 요약한다."""
+    h = {"X-User-Id": "user-debrief-rerun"}
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    calls: list = []
+    fake = _fake(calls)
+    entered, resume = Event(), Event()
+
+    def slow_summary(system, user, json_mode=False, **kwargs):
+        out = fake(system, user, json_mode, **kwargs)
+        if system == llm._DEBRIEF_SYSTEM and not entered.is_set():
+            entered.set()
+            assert resume.wait(5)
+        return out
+
+    monkeypatch.setattr(llm, "_chat", slow_summary)
+    s = _session(client, h, 2)
+    a1, a2 = (a["id"] for a in s["answers"])
+    client.patch(f"/practice/answers/{a1}", json={"transcript": T1}, headers=h)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        job = pool.submit(client.post, f"/practice/sessions/{s['id']}/debrief", headers=h)  # 끝내기 전에 '디브리프 만들기'
+        assert entered.wait(5)
+        try:
+            client.patch(f"/practice/answers/{a2}", json={"transcript": T2}, headers=h)
+            fin = client.post(f"/practice/sessions/{s['id']}/finish", headers=h).json()
+        finally:
+            resume.set()
+        job.result(timeout=10)
+    assert fin["debrief_running"] is True  # 작업을 하나 더 붙이지 않는다
+    assert _kinds(calls) == ["coach", "debrief", "coach", "debrief"]
+    got = client.get(f"/practice/sessions/{s['id']}", headers=h).json()
+    assert got["debrief_status"] == "done" and got["finished_at"]
+    assert got["answers"][1]["coaching_report"]["method"] == "ai"
+    last = json.loads(calls[-1]["user"])
+    assert [x["transcript"] for x in last["answers"]] == [T1, T2]

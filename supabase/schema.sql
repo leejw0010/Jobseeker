@@ -33,7 +33,9 @@ create table if not exists practice_sessions (
   debrief         jsonb,
   debrief_status  text not null default 'none'
                   check (debrief_status in ('none','pending','done','failed','unavailable')),
-  debrief_started_at timestamptz           -- 디브리프 작업(답변 점검 + 요약) 시작 시각(오래된 작업은 다시 시작)
+  debrief_started_at   timestamptz,        -- 디브리프 작업(답변 점검 + 요약) 시작 시각. 끝나면 비운다(작업의 표시)
+  debrief_heartbeat_at timestamptz,        -- 작업이 마지막으로 살아 있다고 알린 시각(5분 넘게 없으면 다시 시작)
+  debrief_requested_at timestamptz         -- 작업 중에 들어온 종료·재생성 요청 시각(작업이 한 바퀴 더 돈다)
 );
 
 -- 세션 안의 개별 답변(녹음 → 전사 → 회고)
@@ -62,6 +64,7 @@ create table if not exists user_settings (
   user_id       uuid primary key references auth.users(id) on delete cascade,
   consented_at  timestamptz,                -- null = 녹음 미동의(또는 철회)
   keep_audio    boolean not null default false,  -- true면 전사 후에도 원본 보관(보관 기한 뒤 자동 삭제)
+  sweep_audio_before timestamptz,           -- 전체 삭제·철회 때 못 지운, 답변이 가리키지 않는 파일: 이 시각 전 것을 다음 정리가 지운다
   updated_at    timestamptz not null default now()
 );
 

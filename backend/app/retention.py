@@ -2,19 +2,23 @@
 
 전사문·세션 기록은 남기고 원본 음성만 지운다. 저장소 삭제가 실패하면 보관 기한을 지금으로 당겨
 다음 정리(PURGE_INTERVAL_MIN 안)에 다시 시도한다.
+
+답변 행이 가리키지 않는 저장소 파일(고아 파일: 예전 버전이 세션 행만 지우며 남긴 녹음, 지워진 답변에 올라가던 녹음 등)도
+지운다. 전체 삭제·동의 철회는 사용자 폴더({user_id}/)를 통째로 훑고, 만료 정리는 보관 기간이 지난 고아 파일을 지운다.
 """
 import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.orm import Session
 
 from . import storage
 from .config import settings
 from .db import SessionLocal
-from .models import PracticeAnswer, PracticeSession
+from .models import PracticeAnswer, PracticeSession, UserSettings
 
 log = logging.getLogger(__name__)
 
@@ -82,17 +86,113 @@ def delete_audios(rows, now: datetime | None = None) -> tuple[int, int]:
     return deleted, failed
 
 
-def delete_user_audio(db: Session, user_id: str, now: datetime | None = None) -> tuple[int, int]:
-    """사용자의 원본 녹음을 모두 지운다(커밋은 호출한 쪽에서). (지운 개수, 못 지운 개수)."""
+def delete_object(path: str) -> bool:
+    """행 없이 저장소 파일 하나를 지운다. 이미 없으면 지운 것으로 본다. 실패하면 False(예외 없음)."""
+    try:
+        return storage.delete(path)
+    except Exception:
+        log.exception("녹음 파일 삭제 중 오류(%s)", path)
+        return False
+
+
+def _user_folder(user_id: str) -> str | None:
+    """사용자 폴더 경로. id가 경로 한 칸으로 쓸 수 없는 값이면(개발 모드의 임의 헤더 등) 훑지 않는다."""
+    return f"{user_id}/" if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(user_id)) else None
+
+
+class UserAudioDeleted(NamedTuple):
+    """사용자 원본 녹음 전체 삭제 결과."""
+
+    deleted: int  # 지운 녹음·파일 수
+    failed: int  # 저장소 오류로 못 지운 녹음·파일 수
+    unchecked: bool  # 폴더 목록을 읽지 못해 행이 없는 파일이 남았는지 모른다
+    sweep: bool  # 다음 만료 정리가 폴더를 다시 훑어야 한다(행이 없는 파일을 못 지웠거나 목록을 못 읽음)
+
+
+def delete_user_audio(db: Session, user_id: str, now: datetime | None = None) -> UserAudioDeleted:
+    """사용자의 원본 녹음을 모두 지운다(커밋은 호출한 쪽에서).
+
+    답변 행이 가리키는 녹음을 지운 뒤 사용자 폴더를 훑어 어떤 행도 가리키지 않는 파일까지 지운다. 행이 있는 녹음을
+    못 지우면 보관 기한을 당겨 두고, 행이 없는 파일을 못 지웠거나 폴더 목록을 못 읽으면 sweep이 True: 호출한 쪽이
+    request_sweep으로 표시해 다음 만료 정리가 다시 지우게 한다. 목록을 못 읽으면 남은 수를 모르니 세지 않고 unchecked로 알린다.
+    """
     rows = db.scalars(
         select(PracticeAnswer).join(PracticeSession)
         .where(PracticeSession.user_id == user_id, PracticeAnswer.audio_path.is_not(None))
     ).all()
-    return delete_audios(rows, now)
+    deleted, failed = delete_audios(rows, now)
+    folder = _user_folder(user_id)
+    if folder is None:
+        return UserAudioDeleted(deleted, failed, False, False)
+    kept = {a.audio_path for a in rows if a.audio_path}  # 못 지운 녹음은 위에서 이미 셌다
+    try:
+        objects = storage.list(folder)
+    except Exception:
+        log.exception("녹음 폴더 목록을 읽지 못했습니다(%s)", folder)
+        return UserAudioDeleted(deleted, failed, True, True)
+    orphan_failed = 0
+    for obj in objects:
+        if obj.path in kept:
+            continue
+        if delete_object(obj.path):
+            deleted += 1
+        else:
+            orphan_failed += 1
+    return UserAudioDeleted(deleted, failed + orphan_failed, False, orphan_failed > 0)
+
+
+def request_sweep(db: Session, user_id: str, now: datetime | None = None) -> None:
+    """지금까지 저장된 이 사용자의 고아 파일을 다음 만료 정리가 다시 지우게 표시하고 커밋한다."""
+    now = _utc(now)
+    p = db.get(UserSettings, user_id)
+    if p is None:
+        p = UserSettings(user_id=user_id, keep_audio=False)
+        db.add(p)
+    if p.sweep_audio_before is None or _utc(p.sweep_audio_before) < now:
+        p.sweep_audio_before = now
+    db.commit()
+
+
+def purge_orphans(db: Session, now: datetime | None = None) -> int:
+    """답변 행이 가리키지 않는 저장소 파일을 지우고 커밋한다. 지운 개수.
+
+    보관 기간이 지난 파일, 그리고 전체 삭제·철회 때 못 지워 표시해 둔 사용자의 그 전에 저장된 파일을 지운다.
+    저장 시각을 모르는 파일은 표시가 있을 때만 지운다. 새 파일은 올리는 중인 녹음일 수 있어 기간이 지날 때까지 둔다.
+    """
+    now = _utc(now)
+    owned = {(str(user_id), path) for user_id, path in db.execute(
+        select(PracticeSession.user_id, PracticeAnswer.audio_path).join(PracticeSession)
+        .where(PracticeAnswer.audio_path.is_not(None))).all()}
+    marks = {str(p.user_id): p.sweep_audio_before
+             for p in db.scalars(select(UserSettings).where(UserSettings.sweep_audio_before.is_not(None)))}
+    n = 0
+    failed: set[str] = set()
+    for obj in storage.list(""):
+        user_id = obj.path.split("/", 1)[0] if "/" in obj.path else None
+        if user_id is None or (user_id, obj.path) in owned:
+            continue
+        mark = marks.get(user_id)
+        expired = obj.modified is not None and obj.modified <= now - retention()
+        marked = mark is not None and (obj.modified is None or obj.modified <= _utc(mark))
+        if not (expired or marked):
+            continue
+        # 목록을 읽는 동안 올라간 녹음이 막 행에 연결됐을 수 있다
+        if db.scalar(select(exists().where(PracticeAnswer.audio_path == obj.path))):
+            continue
+        if delete_object(obj.path):
+            n += 1
+        elif mark is not None:
+            failed.add(user_id)
+    for user_id, mark in marks.items():
+        if user_id not in failed:  # 다 지웠다. 그사이 새로 표시했으면 그 표시는 남긴다
+            db.execute(update(UserSettings).where(UserSettings.user_id == user_id, UserSettings.sweep_audio_before == mark)
+                       .values(sweep_audio_before=None), execution_options={"synchronize_session": False})
+    db.commit()
+    return n
 
 
 def purge_expired_audio(db: Session, now: datetime | None = None) -> int:
-    """보관 기한이 지난 원본 녹음을 지우고 커밋한다. 기한이 없는 예전 행은 created_at + 보관 기간으로 본다."""
+    """보관 기한이 지난 원본 녹음과 고아 파일을 지우고 커밋한다. 기한이 없는 예전 행은 created_at + 보관 기간으로 본다."""
     now = _utc(now)
     rows = db.scalars(
         select(PracticeAnswer).where(
@@ -105,6 +205,11 @@ def purge_expired_audio(db: Session, now: datetime | None = None) -> int:
     ).all()
     n = sum(1 for a in rows if delete_audio(a, now))
     db.commit()
+    try:
+        n += purge_orphans(db, now)
+    except Exception:  # 저장소 목록 오류가 행 정리를 되돌리지 않게
+        db.rollback()
+        log.exception("고아 녹음 파일 정리 실패")
     return n
 
 

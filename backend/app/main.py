@@ -2,8 +2,10 @@ import asyncio
 import contextlib
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DataError
 
 from . import llm
 from .config import settings
@@ -41,6 +43,15 @@ app.add_middleware(
 )
 app.include_router(practice.router)
 app.include_router(track.router)
+
+
+@app.exception_handler(DataError)
+async def invalid_id(_: Request, exc: DataError):
+    """uuid가 아닌 id가 Postgres까지 갔을 때(라우터가 미처 거르지 못한 경우) 500 대신 404로 답한다."""
+    orig = exc.orig
+    if getattr(orig, "sqlstate", None) == "22P02" and "uuid" in str(orig):
+        return JSONResponse(status_code=404, content={"detail": "요청한 항목을 찾을 수 없어요"})
+    raise exc
 
 
 @app.get("/health")

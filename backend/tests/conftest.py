@@ -8,6 +8,9 @@ os.environ["OPENAI_API_KEY"] = ""
 os.environ["SUPABASE_URL"] = ""
 os.environ["AUDIO_RETENTION_DAYS"] = "30"
 os.environ["PURGE_INTERVAL_MIN"] = "60"
+# 개발자가 e2e용 가짜 서버로 바꿔 둔 값(.env 포함)이 테스트에 끼어들지 않게 기본값으로 고정한다
+os.environ["OPENAI_BASE_URL"] = "https://api.openai.com/v1"
+os.environ["OPENAI_FEEDBACK_MODEL"] = ""
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

@@ -23,8 +23,17 @@ from ..models import (
     PracticeSession,
     Question,
     UserSettings,
+    valid_id,
 )
-from ..retention import delete_audio, delete_audios, delete_user_audio, owned_audio_path, retention
+from ..retention import (
+    delete_audio,
+    delete_audios,
+    delete_object,
+    delete_user_audio,
+    owned_audio_path,
+    request_sweep,
+    retention,
+)
 from ..schemas import (
     AnswerOut,
     DeletedOut,
@@ -62,7 +71,7 @@ def _visible_questions(user_id: str):
 
 
 def _own_session(db: Session, user_id: str, session_id: str) -> PracticeSession:
-    s = db.scalar(
+    s = valid_id(session_id) and db.scalar(
         select(PracticeSession)
         .where(PracticeSession.id == session_id, PracticeSession.user_id == user_id)
         .options(selectinload(PracticeSession.answers).selectinload(PracticeAnswer.question))
@@ -73,7 +82,7 @@ def _own_session(db: Session, user_id: str, session_id: str) -> PracticeSession:
 
 
 def _own_answer(db: Session, user_id: str, answer_id: str) -> PracticeAnswer:
-    a = db.scalar(
+    a = valid_id(answer_id) and db.scalar(
         select(PracticeAnswer)
         .join(PracticeSession)
         .where(PracticeAnswer.id == answer_id, PracticeSession.user_id == user_id)
@@ -87,7 +96,8 @@ def _own_answer(db: Session, user_id: str, answer_id: str) -> PracticeAnswer:
 def _own_application(db: Session, user_id: str, application_id: str | None) -> Application | None:
     if not application_id:
         return None
-    application = db.scalar(select(Application).where(Application.id == application_id, Application.user_id == user_id))
+    application = valid_id(application_id) and db.scalar(
+        select(Application).where(Application.id == application_id, Application.user_id == user_id))
     if not application:
         raise HTTPException(404, "지원 건을 찾을 수 없습니다")
     return application
@@ -114,12 +124,41 @@ def _prefs_out(p: UserSettings | None) -> PracticeSettingsOut:
                                retention_days=settings.audio_retention_days)
 
 
+NEED_CONSENT = "녹음 전에 동의가 필요합니다"
+ANSWER_NOT_FOUND = "답변을 찾을 수 없습니다"
+
+
 def _require_consent(db: Session, user_id: str) -> UserSettings:
     """녹음을 저장하거나 OpenAI로 보내기 전에 녹음 동의를 확인한다(업로드·전사 다시 시도 공통). 글 답변에는 필요 없다."""
     prefs = _prefs(db, user_id)
     if not prefs or not prefs.consented_at:
-        raise HTTPException(403, "녹음 전에 동의가 필요합니다")
+        raise HTTPException(403, NEED_CONSENT)
     return prefs
+
+
+def _lock_answer(db: Session, answer_id: str) -> bool:
+    """답변 행을 잠근다(짧은 쓰기). 세션·질문 삭제가 이 요청의 커밋을 기다리게 한다. 이미 지워졌으면 False."""
+    r = db.execute(update(PracticeAnswer).where(PracticeAnswer.id == answer_id).values(order_no=PracticeAnswer.order_no),
+                   execution_options={"synchronize_session": False})
+    return r.rowcount == 1
+
+
+def _locked_consent(db: Session, user_id: str) -> UserSettings | None:
+    """동의 설정 행을 잠그고 다시 읽는다. 동의를 철회했으면 None.
+
+    녹음 저장·전사는 오래 걸리므로 그동안 다른 탭에서 철회했을 수 있다. 잠근 뒤에는 철회가 이 요청의 커밋을 기다리고,
+    철회는 동의를 먼저 저장한 다음 녹음을 지우므로 이 요청이 커밋한 녹음도 놓치지 않는다.
+    """
+    db.execute(update(UserSettings).where(UserSettings.user_id == user_id).values(updated_at=UserSettings.updated_at),
+               execution_options={"synchronize_session": False})
+    prefs = db.get(UserSettings, user_id, populate_existing=True)
+    return prefs if prefs and prefs.consented_at else None
+
+
+def _discard(db: Session, user_id: str, path: str) -> None:
+    """이 요청이 저장했지만 답변에 연결하지 않을 녹음 파일을 지운다. 못 지우면 다음 만료 정리가 다시 지우게 표시한다."""
+    if not delete_object(path):
+        request_sweep(db, user_id)
 
 
 def _invalidate_coaching(answer: PracticeAnswer) -> None:
@@ -149,23 +188,31 @@ def _report(answer: PracticeAnswer, db: Session) -> dict:
     return answer.coaching.report
 
 
-def _transcribe(a: PracticeAnswer, data: bytes, filename: str, ctype: str, keep_audio: bool) -> None:
-    """전사하고, 성공했고 원본 보관을 고르지 않았으면 원본 녹음을 바로 지운다.
-
-    빈 전사문(무음 등)과 잘못된 응답은 실패로 본다: '전사 다시 시도'를 할 수 있게 원본을 남기고(보관 기한 뒤 자동 삭제),
-    직접 적어 둔 전사문도 지우지 않는다.
-    """
+def _stt(data: bytes, filename: str, ctype: str) -> str:
+    """전사문. 빈 전사문(무음 등)과 잘못된 응답·오류는 빈 문자열(실패)."""
     try:
-        transcript = (llm.transcribe(data, filename, ctype) or "").strip()
+        return (llm.transcribe(data, filename, ctype) or "").strip()
     except (httpx.HTTPError, llm.TranscriptionError):
-        transcript = ""
-    if not transcript:
-        a.stt_status = "failed"
-        return
+        return ""
+
+
+def _apply_transcript(a: PracticeAnswer, transcript: str) -> None:
     if transcript != a.transcript:
         _invalidate_coaching(a)
     a.transcript = transcript
     a.stt_status = "done"
+
+
+def _apply_stt(a: PracticeAnswer, transcript: str, keep_audio: bool) -> None:
+    """전사 결과를 반영하고, 성공했고 원본 보관을 고르지 않았으면 원본 녹음을 바로 지운다.
+
+    빈 전사문(무음 등)과 잘못된 응답은 실패로 본다: '전사 다시 시도'를 할 수 있게 원본을 남기고(보관 기한 뒤 자동 삭제),
+    직접 적어 둔 전사문도 지우지 않는다.
+    """
+    if not transcript:
+        a.stt_status = "failed"
+        return
+    _apply_transcript(a, transcript)
     if not keep_audio:
         delete_audio(a)  # 실패하면 보관 기한을 당겨 두어 다음 만료 정리가 다시 지운다
 
@@ -203,19 +250,23 @@ def add_question(body: QuestionIn, user_id: str = Depends(current_user_id), db: 
 
 @router.delete("/questions/{question_id}", status_code=204)
 def delete_question(question_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    q = db.scalar(select(Question).where(Question.id == question_id, Question.user_id == user_id))
+    q = valid_id(question_id) and db.scalar(select(Question).where(Question.id == question_id, Question.user_id == user_id))
     if not q:
         raise HTTPException(404, "삭제할 수 있는 질문이 아닙니다(공용 질문은 삭제 불가)")
-    # Supabase는 질문을 지우면 답변 행도 함께 지운다(on delete cascade). 행이 사라지면 만료 정리·전체 삭제로도
-    # 원본 녹음을 찾을 수 없으므로 먼저 지우고, 하나라도 못 지우면 질문을 남긴다
-    answers = db.scalars(
-        select(PracticeAnswer).join(PracticeSession)
-        .where(PracticeAnswer.question_id == q.id, PracticeSession.user_id == user_id,
-               PracticeAnswer.audio_path.is_not(None))
-    ).all()
+    # Supabase(supabase/schema.sql)는 질문을 지우면 답변 행(on delete cascade)과 그 코칭 행(cascade)을 지우고,
+    # 꼬리질문이 가리키던 원 답변 연결은 비운다(on delete set null). 로컬 SQLite는 외래 키를 강제하지 않으므로
+    # 같은 일을 여기서 한다(어디서나 같게). 행이 사라지면 만료 정리로는 원본 녹음을 찾을 수 없으므로 녹음을 먼저 지우고,
+    # 하나라도 못 지우면 질문을 남긴다
+    answers = db.scalars(select(PracticeAnswer).where(PracticeAnswer.question_id == q.id)).all()
     if delete_audios(answers)[1]:
         db.commit()
         raise HTTPException(502, "원본 녹음을 지우지 못해 질문을 삭제하지 않았어요. 잠시 후 다시 시도해 주세요")
+    ids = [a.id for a in answers]
+    if ids:
+        db.execute(update(AnswerCoaching).where(AnswerCoaching.parent_answer_id.in_(ids)).values(parent_answer_id=None),
+                   execution_options={"synchronize_session": False})
+    for a in answers:
+        db.delete(a)  # 코칭 행도 함께(관계 cascade)
     db.delete(q)
     db.commit()
 
@@ -252,7 +303,8 @@ def create_session(body: SessionIn, user_id: str = Depends(current_user_id), db:
     application = _own_application(db, user_id, body.application_id)
     context = coaching.snapshot(application, body.essay_basis, body.job_description)
     if body.question_ids:
-        found = {q.id: q for q in db.scalars(_visible_questions(user_id).where(Question.id.in_(body.question_ids)))}
+        ids = [qid for qid in body.question_ids if valid_id(qid)]
+        found = {q.id: q for q in db.scalars(_visible_questions(user_id).where(Question.id.in_(ids)))} if ids else {}
         missing = [qid for qid in body.question_ids if qid not in found]
         if missing:
             raise HTTPException(404, f"질문을 찾을 수 없습니다: {missing}")
@@ -325,10 +377,13 @@ def finish_session(
     user_id: str = Depends(current_user_id),
     db: Session = Depends(get_db),
 ):
-    """세션을 끝내고 자동 디브리프(답변 점검 + 요약)를 시작한다. 이미 도는 작업이 있으면 하나 더 붙이지 않는다."""
+    """세션을 끝내고 자동 디브리프(답변 점검 + 요약)를 시작한다.
+
+    이미 도는 작업이 있으면 하나 더 붙이지 않고, 그 작업이 결과를 쓰기 전에 한 바퀴 더 돌아 마지막 답변까지 담게 한다.
+    """
     s = _own_session(db, user_id, session_id)
     s.finished_at = s.finished_at or _now()
-    start = prepare_debrief(s)
+    start = prepare_debrief(db, s)
     db.commit()
     if start:
         background.add_task(run_debrief, s.id)
@@ -344,10 +399,10 @@ def regenerate_debrief(
 ):
     """디브리프를 (다시) 만든다. 키가 없으면 'unavailable', 전사문이 없으면 'none'을 바로 돌려준다.
 
-    이미 도는 작업이 있으면 하나 더 붙이지 않고 지금 상태를 돌려준다.
+    이미 도는 작업이 있으면 하나 더 붙이지 않고, 그 작업이 결과를 쓰기 전에 한 바퀴 더 돌게 한다.
     """
     s = _own_session(db, user_id, session_id)
-    start = prepare_debrief(s)
+    start = prepare_debrief(db, s)
     db.commit()
     if start:
         background.add_task(run_debrief, s.id)
@@ -384,23 +439,35 @@ def update_settings(body: PracticeSettingsIn, user_id: str = Depends(current_use
         db.add(p)
     data = body.model_dump(exclude_unset=True)
     deleted = failed = 0
+    unchecked = False
     if data.get("consent") is True:
         p.consented_at = p.consented_at or _now()
     elif data.get("consent") is False:
         p.consented_at = None
-        deleted, failed = delete_user_audio(db, user_id)
     if data.get("keep_audio") is not None:
         p.keep_audio = data["keep_audio"]  # 이미 있는 녹음의 보관 기한은 바꾸지 않는다
+    # 철회는 먼저 저장해 올리는 중인 녹음도 바로 막는다(업로드는 커밋 직전에 동의를 다시 읽는다). 그다음 녹음을 지운다
     db.commit()
-    return PracticeSettingsUpdateOut(**_prefs_out(p).model_dump(), deleted=deleted, failed=failed)
+    if data.get("consent") is False:
+        r = delete_user_audio(db, user_id)
+        db.commit()
+        if r.sweep:
+            request_sweep(db, user_id)
+        deleted, failed, unchecked = r.deleted, r.failed, r.unchecked
+    return PracticeSettingsUpdateOut(**_prefs_out(p).model_dump(), deleted=deleted, failed=failed, unchecked=unchecked)
 
 
 @router.delete("/recordings", response_model=DeletedOut)
 def delete_all_recordings(user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    """내 원본 녹음을 지금 모두 지운다. 전사문과 세션 기록은 남는다. 못 지운 것은 failed로 알리고 곧 다시 지운다."""
-    deleted, failed = delete_user_audio(db, user_id)
+    """내 원본 녹음을 지금 모두 지운다(행이 가리키지 않는 내 폴더의 파일까지). 전사문과 세션 기록은 남는다.
+
+    못 지운 것은 failed로 알리고 다음 만료 정리 때 다시 지운다.
+    """
+    r = delete_user_audio(db, user_id)
     db.commit()
-    return DeletedOut(deleted=deleted, failed=failed)
+    if r.sweep:
+        request_sweep(db, user_id)
+    return DeletedOut(deleted=r.deleted, failed=r.failed, unchecked=r.unchecked)
 
 
 # ───────── 녹음·전사·회고 ─────────
@@ -418,7 +485,7 @@ def upload_audio(
     전사가 실패하면 다시 시도할 수 있게 원본을 남기되, 보관 기한이 지나면 자동으로 지운다.
     """
     a = _own_answer(db, user_id, answer_id)
-    prefs = _require_consent(db, user_id)
+    _require_consent(db, user_id)
     # A synchronous route runs blocking storage/STT calls in FastAPI's worker pool.
     # Read at most the limit plus one byte so an oversized upload is bounded.
     data = file.file.read(MAX_AUDIO_BYTES + 1)
@@ -430,19 +497,44 @@ def upload_audio(
     ctype = _audio_media_type(f"recording.{ext}")
     path = f"{user_id}/{a.session_id}/{a.id}.{ext}"
     # 확장자가 다른 이전 녹음은 먼저 지운다. 못 지우면 경로를 잃지 않게 새 녹음을 받지 않는다
-    if a.audio_path and a.audio_path != path and not delete_audio(a):
-        db.commit()
-        raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
+    if a.audio_path and a.audio_path != path:
+        ok = delete_audio(a)
+        db.commit()  # 지운 것(못 지웠으면 당긴 보관 기한)을 바로 저장한다
+        if not ok:
+            raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
     storage.save(path, data, ctype)
+    transcript = _stt(data, f"{a.id}.{ext}", ctype) if llm.available() else ""
+    # 저장·전사하는 동안 세션·질문이 지워졌거나 동의를 철회했을 수 있다: 잠그고 다시 확인한 뒤에 반영한다
+    if not _lock_answer(db, a.id):
+        db.rollback()
+        _discard(db, user_id, path)
+        raise HTTPException(404, ANSWER_NOT_FOUND)
+    prefs = _locked_consent(db, user_id)
+    db.refresh(a)
+    if prefs is None and not transcript:
+        # 철회했고 전사문도 없다: 이번 녹음은 없던 일로 하고 파일만 지운다
+        if a.audio_path == path:  # 같은 경로의 이전 녹음을 덮어썼다
+            delete_audio(a)
+            db.commit()
+        else:
+            db.commit()
+            _discard(db, user_id, path)
+        raise HTTPException(403, NEED_CONSENT)
     now = _now()
     a.audio_path, a.duration_sec = path, duration_sec
     a.recorded_at, a.audio_expires_at, a.audio_deleted_at = now, now + retention(), None
     _invalidate_coaching(a)
     a.transcript = None
+    if prefs is None:
+        # 철회했다: 원본은 지우고 이미 얻은 전사문만 남긴다(철회해도 전사문은 남는 것과 같다)
+        _apply_transcript(a, transcript)
+        delete_audio(a)  # 못 지우면 보관 기한을 당겨 두어 다음 만료 정리가 지운다
+        db.commit()
+        raise HTTPException(403, NEED_CONSENT)
     if not llm.available():
         a.stt_status = "unavailable"
     else:
-        _transcribe(a, data, f"{a.id}.{ext}", ctype, prefs.keep_audio)
+        _apply_stt(a, transcript, prefs.keep_audio)
     db.commit()
     return a
 
@@ -472,17 +564,46 @@ def delete_answer_audio(answer_id: str, user_id: str = Depends(current_user_id),
 
 @router.post("/answers/{answer_id}/transcribe", response_model=AnswerOut)
 def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    """원본 녹음을 다시 전사한다. 원본 보관은 지금 설정을 따른다.
+
+    다시 전사할 수 없는 경우(원본 삭제, 녹음 없음, 키 없음)는 동의보다 먼저 알린다: 동의해도 할 수 있는 일이 없다.
+    """
     a = _own_answer(db, user_id, answer_id)
-    prefs = _require_consent(db, user_id)  # 녹음을 OpenAI로 보내므로 업로드와 같은 동의가 필요하다
-    if not llm.available():
-        raise HTTPException(503, "OPENAI_API_KEY가 설정되지 않아 전사를 할 수 없습니다")
     if a.audio_deleted_at:
         raise HTTPException(404, "원본 녹음은 삭제됐어요")
     path = owned_audio_path(a)
-    data = storage.load(path) if path else None
+    if not path:
+        raise HTTPException(404, "녹음이 없습니다")
+    if not llm.available():
+        raise HTTPException(503, "OPENAI_API_KEY가 설정되지 않아 전사를 할 수 없습니다")
+    ctype = _audio_media_type(path)
+    data = storage.load(path)
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
-    _transcribe(a, data, path.rsplit("/", 1)[-1], _audio_media_type(path), prefs.keep_audio)
+    _require_consent(db, user_id)  # 녹음을 OpenAI로 보내므로 업로드와 같은 동의가 필요하다
+    recorded_at = a.recorded_at
+    transcript = _stt(data, path.rsplit("/", 1)[-1], ctype)
+    # 전사하는 동안 답변이 지워졌거나, 동의를 철회했거나, 녹음이 바뀌었을 수 있다: 잠그고 다시 확인한 뒤에 반영한다
+    if not _lock_answer(db, a.id):
+        db.rollback()
+        raise HTTPException(404, ANSWER_NOT_FOUND)
+    prefs = _locked_consent(db, user_id)
+    db.refresh(a)
+    if a.recorded_at != recorded_at:
+        db.commit()
+        raise HTTPException(409, "전사하는 동안 새 녹음이 저장됐어요. 새 녹음으로 확인해 주세요")
+    if prefs is None:
+        # 철회했다: 원본은 철회가 지운다(아직 남았으면 여기서 지운다). 이미 얻은 전사문만 남긴다
+        if a.audio_path:
+            delete_audio(a)
+        if transcript:
+            _apply_transcript(a, transcript)
+        db.commit()
+        raise HTTPException(403, NEED_CONSENT)
+    if a.audio_path != path:  # 전사하는 동안 원본을 지웠다
+        db.commit()
+        raise HTTPException(404, "원본 녹음은 삭제됐어요")
+    _apply_stt(a, transcript, prefs.keep_audio)
     db.commit()
     return a
 

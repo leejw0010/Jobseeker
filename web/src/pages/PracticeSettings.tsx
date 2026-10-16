@@ -3,11 +3,13 @@ import { api } from "../api";
 import ConsentPanel from "../components/ConsentPanel";
 import type { DeleteResult, PracticeSettings as Settings } from "../types";
 
-/** 삭제 결과 문구. 저장소 오류로 못 지운 녹음이 있으면 그 수와 자동 재시도(서버의 만료 정리)를 알린다. */
-function deleteMessage({ deleted, failed }: DeleteResult, none: string) {
-  const done = deleted > 0 ? `원본 녹음 ${deleted}개를 지웠어요.` : failed > 0 ? "" : none;
+/** 삭제 결과 문구. 저장소 오류로 못 지운 녹음이 있으면 그 수와 자동 재시도(서버의 만료 정리)를 알린다.
+ *  저장소 목록을 읽지 못했으면 남은 수를 모르니 개수 없이 알린다. */
+function deleteMessage({ deleted, failed, unchecked }: DeleteResult, none: string) {
+  const done = deleted > 0 ? `원본 녹음 ${deleted}개를 지웠어요.` : failed > 0 || unchecked ? "" : none;
   const left = failed > 0 ? `${deleted > 0 ? "나머지" : "원본 녹음"} ${failed}개는 아직 지우지 못했어요. 잠시 뒤 자동으로 다시 지워요.` : "";
-  return { text: [done, left].filter(Boolean).join(" "), warn: failed > 0 };
+  const unknown = unchecked ? "저장소를 다 확인하지 못해 남은 원본 녹음이 있을 수 있어요. 잠시 뒤 자동으로 다시 확인해 지워요." : "";
+  return { text: [done, left, unknown].filter(Boolean).join(" "), warn: failed > 0 || unchecked };
 }
 
 /** 녹음 동의·원본 보관·삭제를 관리하는 화면 */
@@ -103,7 +105,7 @@ export default function PracticeSettings() {
               <input type="checkbox" checked={st.keep_audio} disabled={busy} onChange={(e) => toggleKeep(e.target.checked)} />
               원본 녹음도 보관할래요
             </label>
-            <p className="small muted">바꾸면 새 녹음부터 적용돼요. 이미 저장된 녹음은 원래 삭제 예정일을 따라요.</p>
+            <p className="small muted">바꾸면 새 녹음과 음성 인식을 다시 시도하는 녹음에 적용돼요. 이미 저장된 녹음은 원래 삭제 예정일을 따라요.</p>
           </>
         ) : (
           <p className="small muted">원본 보관 여부는 위 동의 패널에서 골라요.</p>
@@ -125,7 +127,7 @@ export default function PracticeSettings() {
           <li>
             <b>질문·답변 전사문·이 세션의 앞선 질문과 답변·면접을 시작할 때 보관한 자소서·채용 공고·지원 회사/직무</b> → OpenAI 답변 코칭·꼬리질문(키가
             설정된 경우). 다시 연습 세션이면 지난번 보완 항목·자기평가 점수·다음 연습 안내도 함께 보내요. 세션을 마치면 아직 점검하지 않은 답변도
-            자동으로 코칭해요.
+            자동으로 코칭하고, AI 점검에 실패해 기본 점검으로 대신한 답변은 다시 점검해요.
           </li>
           <li>
             <b>질문·답변 전사문·자기평가·회고 메모·코칭 결과</b> → OpenAI 세션 디브리프(키가 설정된 경우). 디브리프는 세션을 마치면 자동으로 만들어요.

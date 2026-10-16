@@ -322,7 +322,7 @@ export default function SessionReview() {
       apply(await api.debrief(id));
       setGaveUp(false);
     });
-  // 확인을 멈춘 뒤 '다시 시도': 먼저 지금 상태를 다시 확인한다. 작업이 아직 돌고 있으면(5분 안) 재생성을 요청하지 않고
+  // 확인을 멈춘 뒤 '다시 시도': 먼저 지금 상태를 다시 확인한다. 작업이 아직 돌고 있으면(마지막 진행 신호가 5분 안) 재생성을 요청하지 않고
   // 확인만 이어 가고, 'pending'인데 작업이 사라졌을 때(서버 재시작 등)만 다시 만들기를 요청한다.
   const retryDebrief = () =>
     cardAct(async () => {

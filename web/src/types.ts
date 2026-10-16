@@ -60,10 +60,12 @@ export interface PracticeSettings {
   retention_days: number;
 }
 
-/** 원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(서버가 곧 다시 지운다) */
+/** 원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(서버가 곧 다시 지운다).
+ *  unchecked는 저장소 폴더 목록을 읽지 못해 남은 파일이 있는지 모른다는 뜻(서버가 곧 다시 확인해 지운다) */
 export interface DeleteResult {
   deleted: number;
   failed: number;
+  unchecked: boolean;
 }
 
 /** PUT /practice/settings 응답. 동의를 철회했으면 삭제 결과가 함께 온다. */
@@ -137,7 +139,7 @@ export interface PracticeSession {
   followups_enabled: boolean;
   debrief: Debrief | null;
   debrief_status: DebriefStatus;
-  /** 디브리프 작업(답변 점검 + 요약)이 아직 도는 중(5분 안). 이때는 다시 요청해도 서버가 새로 시작하지 않는다 */
+  /** 디브리프 작업(답변 점검 + 요약)이 아직 도는 중(마지막 진행 신호가 5분 안). 이때는 다시 요청해도 서버가 새로 시작하지 않는다 */
   debrief_running: boolean;
   redrill: WeakAnswer[];
 }

@@ -7,6 +7,8 @@
 alter table practice_sessions add column if not exists debrief jsonb;
 alter table practice_sessions add column if not exists debrief_status text not null default 'none';
 alter table practice_sessions add column if not exists debrief_started_at timestamptz;
+alter table practice_sessions add column if not exists debrief_heartbeat_at timestamptz;
+alter table practice_sessions add column if not exists debrief_requested_at timestamptz;
 do $$ begin
   alter table practice_sessions add constraint practice_sessions_debrief_status_check
     check (debrief_status in ('none','pending','done','failed','unavailable'));
@@ -27,6 +29,8 @@ create table if not exists user_settings (
   keep_audio    boolean not null default false,  -- true면 전사 후에도 원본 보관(보관 기한 뒤 자동 삭제)
   updated_at    timestamptz not null default now()
 );
+-- 전체 삭제·철회 때 못 지운, 답변이 가리키지 않는 파일: 이 시각 전 것을 다음 만료 정리가 지운다
+alter table user_settings add column if not exists sweep_audio_before timestamptz;
 alter table user_settings enable row level security;
 drop policy if exists us_all on user_settings;
 create policy us_all on user_settings for all using (user_id = auth.uid()) with check (user_id = auth.uid());

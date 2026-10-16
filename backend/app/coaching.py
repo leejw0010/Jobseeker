@@ -6,10 +6,12 @@ import httpx
 from pydantic import ValidationError
 
 from . import llm
-from .models import Application
+from .models import Application, transcript_hash
 from .schemas import CoachingReport
 
-RUBRIC_VERSION = "2026-10-15"
+# 채점 기준 버전. PR #2의 첫 기준(2026-10-15)에 구체성의 STAR 앵커와 판단 규칙(엄격하게, 지어내지 않기 등)을 더했다.
+# 새 보고서와 GET /practice/rubric이 이 값을 쓴다. 예전 보고서는 찍힌 버전 그대로 두고 다시 채점하지 않는다
+RUBRIC_VERSION = "2026-10-16-star"
 # 세 기준의 정의(무엇을 보는지와 충분/보완 앵커). 코칭 프롬프트(SYSTEM)와 GET /practice/rubric이 함께 쓴다
 CRITERIA = [
     {"key": "specificity", "label": "구체성",
@@ -138,6 +140,11 @@ criteria는 specificity(구체성), relevance(질문 적합성), consistency(제
 
 
 def build_report(question: str, transcript: str, context: dict, history: list[dict]) -> dict:
+    """답변 코칭 보고서. 채점한 전사문의 지문(transcript_sha256)을 함께 남긴다: 그사이 전사문이 바뀌면 이 보고서는
+    없는 것으로 본다(PracticeAnswer.coaching_report). 키가 있는데 AI 점검이 실패해 기본 점검으로 대신하면
+    fallback_reason(ai_error: 호출 실패, ai_invalid: 응답이 형식·인용 검증을 통과하지 못함)을 남겨 디브리프가 다시 점검한다."""
+    stamp = {"transcript_sha256": transcript_hash(transcript)}
+    fallback_reason = None
     if llm.available():
         try:
             raw = llm._chat(SYSTEM, json.dumps({"question": question, "answer": transcript,
@@ -163,7 +170,10 @@ def build_report(question: str, transcript: str, context: dict, history: list[di
                     criterion.reason = "비교할 자소서 인용이 없어 판단을 보류했어요."
             report.method = "ai"
             report.rubric_version = RUBRIC_VERSION
-            return report.model_dump()
-        except (httpx.HTTPError, json.JSONDecodeError, ValidationError, ValueError, KeyError, TypeError):
-            pass
-    return CoachingReport.model_validate(_basic(transcript, context)).model_dump()
+            return {**report.model_dump(), **stamp}
+        except httpx.HTTPError:  # 네트워크·시간 초과·429·5xx
+            fallback_reason = "ai_error"
+        except (json.JSONDecodeError, ValidationError, ValueError, KeyError, TypeError):
+            fallback_reason = "ai_invalid"
+    basic = CoachingReport.model_validate(_basic(transcript, context)).model_dump()
+    return {**basic, **stamp, **({"fallback_reason": fallback_reason} if fallback_reason else {})}

@@ -86,6 +86,7 @@ class FollowupSuggestion(BaseModel):
 
 class CoachingReport(BaseModel):
     method: Literal["basic", "ai"] = "basic"
+    # 새 보고서는 coaching.RUBRIC_VERSION을 찍는다. 버전이 없는 보고서는 첫 기준(2026-10-15)으로 본다
     rubric_version: str = "2026-10-15"
     summary: str = Field(min_length=1, max_length=1000)
     next_action: str = Field(min_length=1, max_length=1000)
@@ -165,7 +166,7 @@ class ReflectionIn(BaseModel):
 
 class PracticeSettingsIn(BaseModel):
     consent: bool | None = Field(default=None, description="true=녹음 동의, false=동의 철회(원본 녹음 삭제)")
-    keep_audio: bool | None = Field(default=None, description="원본 녹음 보관(새 녹음부터 적용)")
+    keep_audio: bool | None = Field(default=None, description="원본 녹음 보관(새 녹음과 다시 전사하는 녹음에 적용)")
 
 
 class PracticeSettingsOut(BaseModel):
@@ -175,10 +176,14 @@ class PracticeSettingsOut(BaseModel):
 
 
 class DeletedOut(BaseModel):
-    """원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(다음 만료 정리 때 다시 지운다)."""
+    """원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(다음 만료 정리 때 다시 지운다).
+
+    unchecked는 저장소 폴더 목록을 읽지 못해 행이 없는 파일이 남았는지 모른다는 뜻(다음 만료 정리 때 다시 훑어 지운다).
+    """
 
     deleted: int
     failed: int = 0
+    unchecked: bool = False
 
 
 class PracticeSettingsUpdateOut(PracticeSettingsOut):
@@ -186,6 +191,7 @@ class PracticeSettingsUpdateOut(PracticeSettingsOut):
 
     deleted: int = 0
     failed: int = 0
+    unchecked: bool = False
 
 
 # ───────────── ③ Track ─────────────

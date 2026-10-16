@@ -25,3 +25,8 @@ def test_openai_paths(client, monkeypatch, consent):
     assert a["stt_status"] == "done" and a["transcript"] == "안녕하세요 저는"
     a = client.post(f"/practice/answers/{aid}/feedback", headers=U).json()
     assert a["ai_feedback"].startswith("잘한 점")
+
+
+def test_suite_pins_the_openai_address():
+    """전사 테스트는 요청 주소를 확인한다. 개발자가 OPENAI_BASE_URL(.env 포함)을 가짜 서버로 바꿔 두어도 테스트가 그 값을 쓰지 않는다."""
+    assert settings.openai_base_url == "https://api.openai.com/v1"

@@ -42,12 +42,13 @@ def test_upgrade_old_sqlite_database(tmp_path):
     added = upgrade_sqlite(engine)
     assert set(added) == {"practice_answers.recorded_at", "practice_answers.audio_expires_at",
                           "practice_answers.audio_deleted_at", "practice_sessions.debrief",
-                          "practice_sessions.debrief_status", "practice_sessions.debrief_started_at"}
+                          "practice_sessions.debrief_status", "practice_sessions.debrief_started_at",
+                          "practice_sessions.debrief_heartbeat_at", "practice_sessions.debrief_requested_at"}
     insp = inspect(engine)
     assert {"user_settings", "practice_contexts", "answer_coaching", "practice_private_questions"} <= set(
         insp.get_table_names())
     cols = {c["name"]: c for c in insp.get_columns("practice_sessions")}
-    assert {"debrief", "debrief_status", "debrief_started_at"} <= set(cols)
+    assert {"debrief", "debrief_status", "debrief_started_at", "debrief_heartbeat_at", "debrief_requested_at"} <= set(cols)
     assert cols["debrief_status"]["nullable"] is False
 
     with Session(engine) as db:
@@ -64,6 +65,28 @@ def test_upgrade_old_sqlite_database(tmp_path):
         assert db.get(PracticeSession, "s1").debrief == {"lesson": "교훈", "moments": []}
 
     assert upgrade_sqlite(engine) == []  # 두 번 실행해도 안전
+    engine.dispose()
+
+
+def test_upgrade_adds_later_columns_to_a_p0_branch_database(tmp_path):
+    """P0 브랜치로 만든 로컬 DB(user_settings·debrief_started_at은 이미 있음)에도 나중에 더한 컬럼을 채운다."""
+    from app.db import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'p0.db'}")
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for table, column in (("practice_sessions", "debrief_heartbeat_at"), ("practice_sessions", "debrief_requested_at"),
+                              ("user_settings", "sweep_audio_before")):
+            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+        conn.execute(text("INSERT INTO user_settings (user_id, consented_at, keep_audio, updated_at) "
+                          "VALUES ('u1', '2026-10-15 00:00:00.000000', 1, '2026-10-15 00:00:00.000000')"))
+    assert set(upgrade_sqlite(engine)) == {"practice_sessions.debrief_heartbeat_at",
+                                           "practice_sessions.debrief_requested_at", "user_settings.sweep_audio_before"}
+    from app.models import UserSettings
+    with Session(engine) as db:
+        p = db.get(UserSettings, "u1")
+        assert p.keep_audio is True and p.sweep_audio_before is None
+    assert upgrade_sqlite(engine) == []
     engine.dispose()
 
 
