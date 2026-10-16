@@ -33,6 +33,7 @@ create table if not exists practice_sessions (
   debrief         jsonb,
   debrief_status  text not null default 'none'
                   check (debrief_status in ('none','pending','done','failed','unavailable')),
+  debrief_started_at timestamptz,          -- 디브리프 작업 시작 시각(오래된 'pending'은 다시 시작)
   redrill_of      uuid references practice_sessions(id) on delete set null  -- 약점 재연습이면 원래 세션
 );
 

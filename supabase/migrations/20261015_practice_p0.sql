@@ -5,6 +5,7 @@
 -- ───────── 세션: 디브리프·재연습 ─────────
 alter table practice_sessions add column if not exists debrief jsonb;
 alter table practice_sessions add column if not exists debrief_status text not null default 'none';
+alter table practice_sessions add column if not exists debrief_started_at timestamptz;
 alter table practice_sessions add column if not exists redrill_of uuid references practice_sessions(id) on delete set null;
 do $$ begin
   alter table practice_sessions add constraint practice_sessions_debrief_status_check

@@ -11,9 +11,9 @@ from .. import llm, storage
 from ..auth import current_user_id
 from ..config import settings
 from ..db import get_db
-from ..debrief import job_hint, prepare_debrief, run_debrief, weak_answers
+from ..debrief import job_hint, prepare_debrief, qtype, run_debrief, save_feedback, weak_answers
 from ..models import Application, PracticeAnswer, PracticeSession, Question, UserSettings
-from ..retention import delete_audio, delete_user_audio, retention
+from ..retention import delete_audio, delete_audios, delete_user_audio, owned_audio_path, retention
 from ..rubric import RUBRIC
 from ..schemas import (
     AnswerOut,
@@ -33,6 +33,8 @@ from ..schemas import (
 router = APIRouter(prefix="/practice", tags=["practice"])
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # OpenAI 전사 API의 파일 크기 상한
+# 저장 경로에 쓰는 확장자(OpenAI 전사 API가 받는 형식). 그 밖의 이름은 content-type으로 정한다
+AUDIO_EXTS = {"webm", "m4a", "mp4", "mp3", "mpeg", "mpga", "ogg", "oga", "wav", "flac"}
 
 
 def _visible_questions(user_id: str):
@@ -77,9 +79,17 @@ def _prefs(db: Session, user_id: str) -> UserSettings | None:
     return db.get(UserSettings, user_id)
 
 
-def _prefs_out(p: UserSettings | None) -> PracticeSettingsOut:
+def _prefs_out(p: UserSettings | None, delete_failed: int = 0) -> PracticeSettingsOut:
     return PracticeSettingsOut(consented_at=p.consented_at if p else None, keep_audio=bool(p and p.keep_audio),
-                               retention_days=settings.audio_retention_days)
+                               retention_days=settings.audio_retention_days, delete_failed=delete_failed)
+
+
+def _require_consent(db: Session, user_id: str) -> UserSettings:
+    """녹음을 저장하거나 OpenAI로 보내기 전에 녹음 동의를 확인한다(업로드·전사 다시 시도 공통)."""
+    prefs = _prefs(db, user_id)
+    if not prefs or not prefs.consented_at:
+        raise HTTPException(403, "녹음 전에 동의가 필요합니다")
+    return prefs
 
 
 def _set_transcript(a: PracticeAnswer, text: str | None) -> None:
@@ -92,13 +102,15 @@ def _set_transcript(a: PracticeAnswer, text: str | None) -> None:
 def _transcribe(a: PracticeAnswer, data: bytes, filename: str, ctype: str, keep_audio: bool) -> None:
     """전사하고, 성공했고 원본 보관을 고르지 않았으면 원본 녹음을 바로 지운다."""
     try:
-        _set_transcript(a, llm.transcribe(data, filename, ctype))
-        a.stt_status = "done"
+        text = llm.transcribe(data, filename, ctype)
     except (httpx.HTTPError, ValueError):
         a.stt_status = "failed"
-    # 빈 전사문(무음 등)이면 다시 시도할 수 있게 원본을 남긴다(보관 기한 뒤 자동 삭제)
-    if a.stt_status == "done" and (a.transcript or "").strip() and not keep_audio:
-        delete_audio(a)
+        return
+    _set_transcript(a, text or None)
+    # 빈 전사문(무음 등)은 실패로 본다: '전사 다시 시도'를 할 수 있게 원본을 남기고, 보관 기한 뒤 자동 삭제
+    a.stt_status = "done" if (text or "").strip() else "failed"
+    if a.stt_status == "done" and not keep_audio:
+        delete_audio(a)  # 실패하면 다음 만료 정리가 다시 지운다
 
 
 def _media_type(path: str) -> str:
@@ -141,6 +153,16 @@ def delete_question(question_id: str, user_id: str = Depends(current_user_id), d
     q = db.scalar(select(Question).where(Question.id == question_id, Question.user_id == user_id))
     if not q:
         raise HTTPException(404, "삭제할 수 있는 질문이 아닙니다(공용 질문은 삭제 불가)")
+    # Supabase는 질문을 지우면 답변 행도 함께 지운다(on delete cascade). 행이 사라지면 만료 정리·전체 삭제로도
+    # 원본 녹음을 찾을 수 없으므로 먼저 지우고, 하나라도 못 지우면 질문을 남긴다
+    answers = db.scalars(
+        select(PracticeAnswer).join(PracticeSession)
+        .where(PracticeAnswer.question_id == q.id, PracticeSession.user_id == user_id,
+               PracticeAnswer.audio_path.is_not(None))
+    ).all()
+    if delete_audios(answers)[1]:
+        db.commit()
+        raise HTTPException(502, "원본 녹음을 지우지 못해 질문을 삭제하지 않았어요. 잠시 후 다시 시도해 주세요")
     db.delete(q)
     db.commit()
 
@@ -254,7 +276,7 @@ def finish_session(
     """세션을 끝내고 자동 디브리프를 시작한다. 이미 만드는 중이면 하나 더 붙이지 않는다."""
     s = _own_session(db, user_id, session_id)
     s.finished_at = s.finished_at or _now()
-    start = s.debrief_status != "pending" and prepare_debrief(s) == "pending"
+    start = prepare_debrief(s) == "pending"
     db.commit()
     if start:
         background.add_task(run_debrief, s.id)
@@ -268,7 +290,10 @@ def regenerate_debrief(
     user_id: str = Depends(current_user_id),
     db: Session = Depends(get_db),
 ):
-    """디브리프를 (다시) 만든다. 키가 없으면 'unavailable', 전사문이 없으면 'none'을 바로 돌려준다."""
+    """디브리프를 (다시) 만든다. 키가 없으면 'unavailable', 전사문이 없으면 'none'을 바로 돌려준다.
+
+    이미 만드는 중이면(오래되지 않은 'pending') 작업을 하나 더 붙이지 않고 지금 상태를 돌려준다.
+    """
     s = _own_session(db, user_id, session_id)
     status = prepare_debrief(s)
     db.commit()
@@ -310,10 +335,10 @@ def redrill(
 @router.delete("/sessions/{session_id}", status_code=204)
 def delete_session(session_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     s = _own_session(db, user_id, session_id)
-    # 행이 사라지면 만료 정리로도 못 지우므로 원본 녹음을 먼저 지운다(실패해도 세션은 지움)
-    for a in s.answers:
-        if a.audio_path:
-            storage.delete(a.audio_path)
+    # 행이 사라지면 만료 정리로도 못 지우므로 원본 녹음을 먼저 지운다. 하나라도 못 지우면 세션을 남긴다
+    if delete_audios(s.answers)[1]:
+        db.commit()  # 지운 것은 반영하고, 못 지운 것은 다음 만료 정리가 다시 지운다
+        raise HTTPException(502, "원본 녹음을 지우지 못해 세션을 삭제하지 않았어요. 잠시 후 다시 시도해 주세요")
     # 이 세션을 원본으로 둔 재연습 세션의 연결을 끊는다(Supabase의 on delete set null과 같게)
     db.execute(update(PracticeSession).where(PracticeSession.redrill_of == s.id).values(redrill_of=None))
     db.delete(s)
@@ -335,23 +360,24 @@ def update_settings(body: PracticeSettingsIn, user_id: str = Depends(current_use
         p = UserSettings(user_id=user_id, keep_audio=False)
         db.add(p)
     data = body.model_dump(exclude_unset=True)
+    failed = 0
     if data.get("consent") is True:
         p.consented_at = p.consented_at or _now()
     elif data.get("consent") is False:
         p.consented_at = None
-        delete_user_audio(db, user_id)
+        failed = delete_user_audio(db, user_id)[1]  # 못 지운 녹음은 다음 만료 정리가 다시 지운다
     if data.get("keep_audio") is not None:
         p.keep_audio = data["keep_audio"]  # 이미 있는 녹음의 보관 기한은 바꾸지 않는다
     db.commit()
-    return _prefs_out(p)
+    return _prefs_out(p, delete_failed=failed)
 
 
 @router.delete("/recordings", response_model=DeletedOut)
 def delete_all_recordings(user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    """내 원본 녹음을 지금 모두 지운다. 전사문과 세션 기록은 남는다."""
-    n = delete_user_audio(db, user_id)
+    """내 원본 녹음을 지금 모두 지운다. 전사문과 세션 기록은 남는다. 못 지운 것은 failed로 알리고 곧 다시 지운다."""
+    deleted, failed = delete_user_audio(db, user_id)
     db.commit()
-    return DeletedOut(deleted=n)
+    return DeletedOut(deleted=deleted, failed=failed)
 
 
 # ───────── 녹음·전사·회고 ─────────
@@ -369,20 +395,23 @@ async def upload_audio(
     전사가 실패하면 다시 시도할 수 있게 원본을 남기되, 보관 기한이 지나면 자동으로 지운다.
     """
     a = _own_answer(db, user_id, answer_id)
-    prefs = _prefs(db, user_id)
-    if not prefs or not prefs.consented_at:
-        raise HTTPException(403, "녹음 전에 동의가 필요합니다")
+    prefs = _require_consent(db, user_id)
     data = await file.read()
     if not data:
         raise HTTPException(422, "빈 녹음 파일입니다")
     if len(data) > MAX_AUDIO_BYTES:
         raise HTTPException(413, "녹음 파일이 25MB를 넘습니다")
-    ext = (file.filename or "rec.webm").rsplit(".", 1)[-1].lower()
     ctype = file.content_type or "audio/webm"
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in AUDIO_EXTS:
+        ext = "m4a" if "mp4" in ctype else "webm"
     path = f"{user_id}/{a.session_id}/{a.id}.{ext}"
-    storage.save(path, data, ctype)
     if a.audio_path and a.audio_path != path:
-        storage.delete(a.audio_path)  # 확장자가 다른 이전 녹음
+        # 확장자가 다른 이전 녹음은 먼저 지운다. 못 지우면 경로를 잃지 않게 새 녹음을 받지 않는다
+        if not delete_audio(a):
+            db.commit()
+            raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
+    storage.save(path, data, ctype)
     now = _now()
     a.audio_path, a.duration_sec = path, duration_sec
     a.recorded_at, a.audio_expires_at, a.audio_deleted_at = now, now + retention(), None
@@ -400,10 +429,11 @@ def download_audio(answer_id: str, user_id: str = Depends(current_user_id), db: 
     a = _own_answer(db, user_id, answer_id)
     if a.audio_deleted_at:
         raise HTTPException(404, "원본 녹음은 삭제됐어요")
-    data = storage.load(a.audio_path) if a.audio_path else None
+    path = owned_audio_path(a)
+    data = storage.load(path) if path else None
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
-    return Response(content=data, media_type=_media_type(a.audio_path))
+    return Response(content=data, media_type=_media_type(path))
 
 
 @router.delete("/answers/{answer_id}/audio", response_model=AnswerOut)
@@ -411,7 +441,8 @@ def delete_answer_audio(answer_id: str, user_id: str = Depends(current_user_id),
     """이 답변의 원본 녹음만 지운다. 전사문은 남는다."""
     a = _own_answer(db, user_id, answer_id)
     if a.audio_path and not delete_audio(a):
-        raise HTTPException(502, "녹음을 지우지 못했어요. 잠시 후 다시 시도해 주세요")
+        db.commit()  # 보관 기한을 당겨 둔 것을 저장: 다음 만료 정리가 다시 지운다
+        raise HTTPException(502, "녹음을 지우지 못했어요. 잠시 뒤 자동으로 다시 지워요")
     db.commit()
     return a
 
@@ -419,15 +450,16 @@ def delete_answer_audio(answer_id: str, user_id: str = Depends(current_user_id),
 @router.post("/answers/{answer_id}/transcribe", response_model=AnswerOut)
 def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     a = _own_answer(db, user_id, answer_id)
+    prefs = _require_consent(db, user_id)  # 녹음을 OpenAI로 보내므로 업로드와 같은 동의가 필요하다
     if not llm.available():
         raise HTTPException(503, "OPENAI_API_KEY가 설정되지 않아 전사를 할 수 없습니다")
     if a.audio_deleted_at:
         raise HTTPException(404, "원본 녹음은 삭제됐어요")
-    data = storage.load(a.audio_path) if a.audio_path else None
+    path = owned_audio_path(a)
+    data = storage.load(path) if path else None
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
-    prefs = _prefs(db, user_id)
-    _transcribe(a, data, a.audio_path.rsplit("/", 1)[-1], _media_type(a.audio_path), bool(prefs and prefs.keep_audio))
+    _transcribe(a, data, path.rsplit("/", 1)[-1], _media_type(path), prefs.keep_audio)
     db.commit()
     return a
 
@@ -454,17 +486,22 @@ def get_rubric():
 
 @router.post("/answers/{answer_id}/feedback", response_model=AnswerOut)
 def rubric_feedback(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    """전사문을 루브릭으로 채점한다. 모든 판단에는 전사문 인용이 붙고, 전사문에 없는 인용은 버린다."""
+    """전사문을 루브릭으로 채점한다. 모든 판단에는 전사문 인용이 붙고, 전사문에 없는 인용은 버린다.
+
+    채점하는 동안 전사문이 바뀌면 옛 전사문의 채점을 저장하지 않고 409를 돌려준다.
+    """
     a = _own_answer(db, user_id, answer_id)
     if not (a.transcript or "").strip():
         raise HTTPException(422, "전사문이 있어야 피드백을 받을 수 있습니다")
     if not llm.available():
         raise HTTPException(503, "OPENAI_API_KEY가 설정되지 않아 AI 피드백을 쓸 수 없습니다")
+    graded = a.transcript
     try:
-        a.feedback = llm.grade_answer(a.question.text, a.transcript, job_hint(db, a.session, a.question))
+        fb = llm.grade_answer(a.question.text, graded, job_hint(db, a.session, a.question), qtype(a.question))
     except httpx.HTTPError as e:
         raise HTTPException(502, f"AI 피드백 요청 실패: {e}") from e
     except llm.AIResponseError as e:
         raise HTTPException(502, "AI 응답을 해석하지 못했습니다") from e
-    db.commit()
+    if not save_feedback(db, a, fb, graded):
+        raise HTTPException(409, "채점하는 동안 전사문이 바뀌었어요. 다시 채점해 주세요")
     return a
