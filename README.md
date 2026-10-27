@@ -42,7 +42,7 @@ npm run test:e2e
 ```
 jobseeker/
 ├─ supabase/             Supabase에 붙여 넣을 테이블·RLS·Storage 버킷(schema.sql)과 마이그레이션(migrations/)
-├─ backend/              FastAPI (Practice·Track API, 테스트 80개)
+├─ backend/              FastAPI (Practice·Track API, pytest 136개)
 ├─ web/                  React + TypeScript (Vite) 웹 화면
 ├─ extension-track/      크롬 확장 팝업 (공고 저장, 최근 지원 현황, 대시보드 열기)
 └─ docs/screenshots/     실제 실행 화면
@@ -152,7 +152,7 @@ npm run dev                 # http://localhost:5173
 
 ## 검증한 것
 
-- 백엔드 pytest 126개 통과(사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, 답변 코칭·인용 검증·꼬리질문, 녹음 동의·원본 삭제·만료 정리·삭제 실패 재시도·고아 파일 정리, 업로드·다시 전사 도중 동의 철회와 삭제, 디브리프·다시 연습·작업 중복과 요청 겹침, 잘못된 형식의 id. OpenAI 경로는 모의 응답으로 확인)
+- 백엔드 pytest 136개 통과(2026-10-28 기준. 사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, 답변 코칭·인용 검증·꼬리질문, 녹음 동의·원본 삭제·만료 정리·삭제 실패 재시도·고아 파일 정리, 업로드·다시 전사 도중 동의 철회와 삭제, 디브리프·다시 연습·작업 중복과 요청 겹침, 잘못된 형식의 id. OpenAI 경로는 모의 응답으로 확인)
 - Playwright 브라우저 테스트(`npm run test:e2e`) 데스크톱·모바일 10개 통과
 - 가짜 마이크와 가짜 OpenAI 서버로 동의 → 녹음 → 자동 디브리프(답변 코칭 위) → 다시 연습 → 설정(보관·모두 지우기·동의 철회), 키 없는 모드, 전사 실패·코칭 실패·지어낸 인용·디브리프 실패 같은 실패 경로까지 브라우저에서 145개 항목 확인. 390px 폭에서 가로 스크롤 없음
 - 로컬 Postgres 16(Supabase 흉내)에 새 프로젝트(`schema.sql`)와 예전 프로젝트(이전 스키마 + 두 마이그레이션, 두 번 실행)를 만들어 백엔드 흐름 확인
