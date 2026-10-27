@@ -2,6 +2,8 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 
 const API = "http://127.0.0.1:8011";
 async function seed(request: APIRequestContext, mode: "free" | "mock" = "free") {
+  // 녹음 동의가 없는 상태에서 시작한다(글 답변은 동의 없이, 녹음은 동의 패널을 거쳐야 한다)
+  await request.put(`${API}/practice/settings`, { data: { consent: false } });
   const suffix = `${Date.now()}-${Math.random()}`;
   const app = await (await request.post(`${API}/track/applications`, { data: {
     company: "검증용 소프트웨어", position: "백엔드 개발자", job_category: "개발",
@@ -47,8 +49,22 @@ test("submitted source → text answer → follow-up → evidence review → foc
   await page.getByRole("button", { name: "면접 마치고 회고 보기" }).click();
   await expect(page.locator(".coaching-panel").first()).toContainText("기본 점검");
   await expect(page.locator(".criterion").first()).toContainText("프로젝트에서 제가 개선했습니다.");
-  await page.getByRole("button", { name: "답변 점검", exact: true }).last().click();
+  // 면접을 마치면 자동 디브리프가 아직 점검하지 않은 꼬리질문 답변도 기본 점검한다(P0). 그 작업이 끝난 뒤 이 답변의
+  // 전사문을 고쳐 보고서를 지우면, 두 번째 패널은 '답변 점검' 클릭(POST /coach)에서만 다시 생길 수 있다
   await expect(page.locator(".coaching-panel")).toHaveCount(2);
+  const sessionId = page.url().split("/").at(-1);
+  await expect.poll(async () => (await (await request.get(`${API}/practice/sessions/${sessionId}`)).json()).debrief_running).toBe(false);
+  const last = page.locator("section.card[id^=answer-]").last();
+  const revised = "동일한 요청 1000개를 보내 제가 응답 시간을 측정했습니다. 평균 500ms에서 250ms로 감소했습니다.";
+  await last.getByLabel("전사문 (직접 고칠 수 있어요)").fill(revised);
+  await last.getByRole("button", { name: "저장", exact: true }).click();
+  await expect(last.locator(".coaching-panel")).toHaveCount(0);
+  await expect(page.locator(".coaching-panel")).toHaveCount(1);
+  const coached = page.waitForResponse((r) => r.request().method() === "POST" && /\/practice\/answers\/[^/]+\/coach$/.test(r.url()));
+  await page.getByRole("button", { name: "답변 점검", exact: true }).last().click();
+  expect((await coached).status()).toBe(200);
+  await expect(page.locator(".coaching-panel")).toHaveCount(2);
+  await expect(last.locator(".coaching-panel .criterion").first()).toContainText(revised);
   await expect(page.getByRole("button", { name: "보완 항목 1개 다시 연습" })).toBeEnabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: `../docs/screenshots/coaching-review-${testInfo.project.name}.png`, fullPage: true });
@@ -62,7 +78,8 @@ test("submitted source → text answer → follow-up → evidence review → foc
 test("recording upload failure retains audio for retry and blocks advancing", async ({ page, request }) => {
   const { session } = await seed(request);
   await page.goto(`/practice/sessions/${session.id}/run`);
-  await page.getByRole("button", { name: "답변 시작", exact: true }).click();
+  // 첫 녹음 전에는 녹음 동의가 필요하다(글 답변에는 묻지 않는다). 동의하면 바로 답변을 시작한다
+  await page.getByRole("button", { name: "동의하고 시작" }).click();
   await expect(page.getByText("녹음 중 · 경과 시간")).toBeVisible();
   // A short capture interval supplies actual fake-device audio to MediaRecorder.
   await page.waitForTimeout(750);
@@ -99,7 +116,8 @@ test("mock timer saves the current text once at the deadline", async ({ page, re
 test("permanent audio error can recover to text and unfinished last answer can resume", async ({ page, request }) => {
   const { session } = await seed(request);
   await page.goto(`/practice/sessions/${session.id}/run`);
-  await page.getByRole("button", { name: "답변 시작", exact: true }).click();
+  // 첫 녹음 전에는 녹음 동의가 필요하다(글 답변에는 묻지 않는다). 동의하면 바로 답변을 시작한다
+  await page.getByRole("button", { name: "동의하고 시작" }).click();
   await expect(page.getByText("녹음 중 · 경과 시간")).toBeVisible();
   await page.waitForTimeout(750);
   await page.route("**/practice/answers/*/audio", (route) => route.fulfill({ status: 413, contentType: "application/json", body: '{"detail":"녹음 파일이 너무 큽니다"}' }));
@@ -121,7 +139,8 @@ test("recorded answer can retry transcription and display returned Korean text",
   const { session } = await seed(request);
   const aid = session.answers[0].id;
   await page.goto(`/practice/sessions/${session.id}/run`);
-  await page.getByRole("button", { name: "답변 시작", exact: true }).click();
+  // 첫 녹음 전에는 녹음 동의가 필요하다(글 답변에는 묻지 않는다). 동의하면 바로 답변을 시작한다
+  await page.getByRole("button", { name: "동의하고 시작" }).click();
   await expect(page.getByText("녹음 중 · 경과 시간")).toBeVisible();
   await page.waitForTimeout(750);
   await page.getByRole("button", { name: "답변 끝내기" }).click();

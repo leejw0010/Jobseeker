@@ -1,7 +1,7 @@
-from datetime import date, datetime
-from typing import Literal
+from datetime import date, datetime, timezone
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
 
 Stage = Literal["서류", "인적성", "1차면접", "2차면접", "최종"]
 Status = Literal["진행중", "합격", "불합격", "보류"]
@@ -10,6 +10,14 @@ Category = Literal["인성", "직무", "기업", "상황", "인적성"]
 
 class ORM(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+def _as_utc(v: datetime) -> datetime:
+    # SQLite는 시간대 없는 값을 돌려준다. 저장은 항상 UTC라 UTC로 붙여 내보낸다
+    return v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v
+
+
+UTCDatetime = Annotated[datetime, AfterValidator(_as_utc)]
 
 
 # ───────────── ② Practice ─────────────
@@ -78,6 +86,7 @@ class FollowupSuggestion(BaseModel):
 
 class CoachingReport(BaseModel):
     method: Literal["basic", "ai"] = "basic"
+    # 새 보고서는 coaching.RUBRIC_VERSION을 찍는다. 버전이 없는 보고서는 첫 기준(2026-10-15)으로 본다
     rubric_version: str = "2026-10-15"
     summary: str = Field(min_length=1, max_length=1000)
     next_action: str = Field(min_length=1, max_length=1000)
@@ -99,6 +108,25 @@ class AnswerOut(ORM):
     coaching_report: CoachingReport | None = None
     parent_answer_id: str | None = None
     followup_reason: str | None = None
+    # 녹음한 시각("녹음으로 답했다"의 기준). 원본은 전사가 끝나면 지워질 수 있다
+    recorded_at: UTCDatetime | None = None
+    audio_expires_at: UTCDatetime | None = None
+    audio_deleted_at: UTCDatetime | None = None
+
+    @computed_field
+    @property
+    def audio_available(self) -> bool:
+        return self.audio_path is not None
+
+
+class WeakAnswerOut(BaseModel):
+    """다시 연습할 답변과 그 이유(보완 항목, 자기평가 1~2점)."""
+
+    answer_id: str
+    question_id: str
+    order_no: int
+    question_text: str
+    reasons: list[str]
 
 
 class SessionOut(ORM):
@@ -113,6 +141,10 @@ class SessionOut(ORM):
     answers: list[AnswerOut]
     context_snapshot: dict | None = None
     followups_enabled: bool = False
+    debrief: dict | None = None
+    debrief_status: str = "none"
+    redrill: list[WeakAnswerOut] = Field(default=[], description="다시 연습할 답변(응답마다 다시 계산)")
+    debrief_running: bool = Field(default=False, description="디브리프 작업이 도는 중(다시 요청해도 새로 시작하지 않음)")
 
 
 class SessionSummary(ORM):
@@ -130,6 +162,36 @@ class ReflectionIn(BaseModel):
     self_rating: int | None = Field(default=None, ge=1, le=5)
     reflection_note: str | None = None
     transcript: str | None = Field(default=None, description="전사문 수동 수정")
+
+
+class PracticeSettingsIn(BaseModel):
+    consent: bool | None = Field(default=None, description="true=녹음 동의, false=동의 철회(원본 녹음 삭제)")
+    keep_audio: bool | None = Field(default=None, description="원본 녹음 보관(새 녹음과 다시 전사하는 녹음에 적용)")
+
+
+class PracticeSettingsOut(BaseModel):
+    consented_at: UTCDatetime | None
+    keep_audio: bool
+    retention_days: int
+
+
+class DeletedOut(BaseModel):
+    """원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(다음 만료 정리 때 다시 지운다).
+
+    unchecked는 저장소 폴더 목록을 읽지 못해 행이 없는 파일이 남았는지 모른다는 뜻(다음 만료 정리 때 다시 훑어 지운다).
+    """
+
+    deleted: int
+    failed: int = 0
+    unchecked: bool = False
+
+
+class PracticeSettingsUpdateOut(PracticeSettingsOut):
+    """설정 변경 결과. 동의를 철회했으면 지운·못 지운 원본 녹음 수를 함께 돌려준다."""
+
+    deleted: int = 0
+    failed: int = 0
+    unchecked: bool = False
 
 
 # ───────────── ③ Track ─────────────
