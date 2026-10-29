@@ -26,6 +26,7 @@ export default defineConfig({
         DATABASE_URL: `sqlite:///${join(tmpdir(), `jobseeker-e2e-${process.pid}.db`)}`,
         CORS_ORIGINS: "http://localhost:5179,http://127.0.0.1:5179" } },
     { command: "npm run dev -- --host 127.0.0.1 --port 5179 --strictPort", url: "http://localhost:5179", reuseExistingServer: false,
-      env: { VITE_API_URL: "http://localhost:8011" } },
+      // 카메라 분석은 모델을 내려받지 않는 가짜 검출기로 돌린다(src/video/fakeDetector.ts)
+      env: { VITE_API_URL: "http://localhost:8011", VITE_E2E_FAKE_FACE: "true" } },
   ],
 });

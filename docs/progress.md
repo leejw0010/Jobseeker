@@ -18,6 +18,7 @@
 | P0: 녹음 동의(403), 전사 후 원본 삭제, 보관 기한·만료·고아 파일 정리, 동의 철회, 설정 화면 | `app/retention.py`, `web/src/components/ConsentPanel.tsx`, `web/src/pages/PracticeSettings.tsx` |
 | P0: 자동 디브리프(heartbeat, 중복 작업 방지, 실패 재시도), 자기평가 기반 다시 연습 | `app/debrief.py` |
 | Track: 지원 건·단계·버전·복원·sync·통계 | `routers/track.py` |
+| 카메라 자세 분석(선택, 브라우저 전용·메모리 보관): 얼굴 검출 비율, 화면 이탈 시간, 고개 좌우·숙임 상대 변화 | `web/src/video/`, `web/src/components/useFaceAnalysis.ts`·`CameraPanel.tsx`·`VideoReportCard.tsx` (브랜치 `feature/video-analysis`, 미커밋) |
 | Track: 자소서 버전 단어 단위 diff | 프런트엔드 `web/src/components/Diff.tsx`(백엔드에는 diff 로직 없음) |
 | 인증: JWT(HS256) 검증 후 `sub` 사용, 라우터에서 `user_id` 필터 | `app/auth.py`, `routers/*` ([architecture.md](architecture.md) "인증과 데이터 접근 경계") |
 
@@ -32,6 +33,7 @@
 | STT 요청 형식·재시도·오류 처리 | `test_transcription.py`, e2e 시나리오 5 | 모의 응답. 실제 인식 정확도는 아님 |
 | 잘못된 id → 404 | `test_malformed_ids.py` | |
 | 스키마 | `test_migration.py` | **로컬 SQLite 업그레이드**와 **id 컬럼의 Postgres `UUID` 타입 컴파일**만 검사. Supabase SQL 실행·RLS·Storage 정책은 검사하지 않음 |
+| 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라), `video-metrics.spec.ts`(계산만, 브라우저 없이) | 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
 | Track: 지원 건·단계·버전 중복 방지·복원·sync upsert·통계 | `test_track.py` | 백엔드 API만. 프런트엔드 단어 diff(`Diff.tsx`)는 pytest·e2e 모두 직접 검증하지 않음 |
 
 2026-10-28에 직접 실행한 결과:
@@ -41,11 +43,28 @@
 
 README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로컬 Postgres 16, 확장을 크롬에 올려 본 확인)은 이번에 다시 실행하지 않았습니다.
 
+`feature/video-analysis`(카메라 자세 분석, 2026-10-28): `npm run build` 통과, `npm run test:e2e` → **21 passed, 5 skipped**(계산 테스트는 desktop에서만). 화면을 떠날 때 카메라를 정리하는 코드를 일부러 빼면 `camera.spec.ts`가 실패하는 것도 확인함. 백엔드는 바꾸지 않아 pytest는 실행하지 않음.
+
 ## 3. 외부 서비스 실검증 (아직 안 함)
 
 - OpenAI: 실제 키로 STT 정확도, 코칭·꼬리질문·디브리프 응답 품질, JSON 형식 준수를 확인하지 않음. 테스트는 모두 모의 응답이나 가짜 서버로 돌림.
 - Supabase: 실제 프로젝트에서 `schema.sql`·마이그레이션 실행, RLS 적용 여부와 백엔드 접속 역할의 RLS 우회 여부, 백엔드 연결에서 `auth.uid()` 값, Storage 업로드·목록·삭제와 정책, JWT 인증을 확인하지 않음. 백엔드 Postgres 경로는 로컬 Postgres 16으로만 확인함(README 기록, RLS는 대상 아님).
 - 확장: 실제 채용 사이트(사람인·원티드 등)에서 제목 추출을 시험하지 않음(테스트용 가짜 공고 페이지만).
+- 카메라 자세 분석: 실제 웹캠·실제 MediaPipe 모델로 시험하지 않음. 아래 수동 검증 항목 참고.
+
+### 카메라 자세 분석 수동 검증 항목 (실제 웹캠, 미실행)
+
+1. `npm run dev`(localhost) 면접 화면에서 `동의하고 카메라 켜기` → 권한 허용 → 미리보기가 좌우 반전으로 보이고 "얼굴이 화면 안에 있어요"가 뜨는지. 첫 로딩 시간(모델·WASM 내려받기)을 적는다.
+2. 개발자 도구 Network: 모델(`storage.googleapis.com`)과 앱 에셋 외에 영상·이미지 업로드가 없는지, API 요청 본문에 분석 수치가 없는지. MediaPipe 지표 전송 요청이 있으면 주소를 기록한다.
+3. 정면 30초 답변 → 검출 비율 95% 이상, 벗어난 시간 거의 0, 좌우·숙임 0%에 가까운지.
+4. 답변 중 의자에서 비켜 5초 이상 화면 밖 → 벗어난 시간 약 5초, 1초 이상 벗어난 횟수 1번.
+5. 고개를 옆으로 약 20°, 30°, 45° 돌려 각각 몇 초 유지 → 어느 각도부터 '좌우 회전'에 잡히는지 기록하고 `YAW_THRESHOLD` 조정 여부 결정. 숙임(`PITCH_THRESHOLD`)도 같은 방식. 안경·조명이 어두운 경우도 한 번.
+6. 녹음 답변 + 카메라를 함께 켜 마이크 레벨·녹음 저장·전사가 정상인지(마이크와 카메라는 별도 스트림).
+7. `카메라 끄기`, 회고로 이동, 다른 메뉴로 이동, 탭 닫기 각각에서 브라우저의 카메라 사용 표시등이 꺼지는지.
+8. 권한 거부·카메라를 다른 앱이 사용 중·답변 중 USB 카메라 분리 → 안내 문구가 뜨고 면접은 계속되는지.
+9. 노트북 CPU 사용률(작업 관리자)을 카메라 끔/켬으로 비교. GPU 위임이 실패해 CPU로 돌 때도 확인.
+10. 모바일(Android Chrome, iOS Safari)에서 HTTPS 배포본으로 1~3, 7 확인. 회고 표가 390px 폭에서 읽히는지.
+11. 배포 주소에서 `vision_wasm_internal.wasm`이 `application/wasm`으로 내려오는지(아니면 느린 경로로 동작하거나 실패).
 
 ## 보안 검토 필요
 

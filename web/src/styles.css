@@ -158,6 +158,13 @@ tr.click:hover td { background: var(--accent-soft); }
 
 .check-label { flex-direction: row; align-items: center; gap: 7px; }
 .input-choice { margin-bottom: 18px; }
+.camera-live { align-items: flex-start; margin-top: 10px; }
+.camera-preview { width: 240px; max-width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #000; border-radius: var(--radius); transform: scaleX(-1); }
+.video-metrics { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 12px 0; font-size: 14px; }
+.video-metrics dt { color: var(--text-2); }
+.video-metrics dd { margin: 0; }
+@media (max-width: 720px) { .video-metrics { grid-template-columns: 1fr; } .video-metrics dd { margin-bottom: 6px; } }
+.table-scroll { overflow-x: auto; }
 .source-context { border-top: 3px solid var(--accent); }
 .source-detail { padding: 10px 0; border-top: 1px solid var(--border); }
 summary { cursor: pointer; }

@@ -5,7 +5,9 @@ import Stars from "../components/Stars";
 import CoachingPanel from "../components/CoachingPanel";
 import ConsentPanel from "../components/ConsentPanel";
 import InterviewContext from "../components/InterviewContext";
+import VideoReportCard from "../components/VideoReportCard";
 import type { CoachingRubric, InterviewContext as Context, PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
+import { clearSessionVideo } from "../video/metrics";
 
 const STT_LABEL = { none: "녹음 없음", done: "음성 인식 완료", failed: "음성 인식 재시도 필요", unavailable: "자동 전사 미연결" } as const;
 const POLL_MS = 2500;
@@ -389,6 +391,7 @@ export default function SessionReview() {
     setErr(null);
     try {
       await api.deleteSession(id);
+      clearSessionVideo(id);
       nav("/practice/history");
     } catch (e) {
       setErr((e as Error).message);
@@ -413,6 +416,7 @@ export default function SessionReview() {
       <p className="muted small">{new Date(s.created_at).toLocaleString("ko-KR")} · {s.mode === "mock" ? `모의시험 (준비 ${s.prep_sec}초 / 답변 ${s.answer_sec}초)` : "자유 연습"}</p>
       {err && <p className="err">{err}</p>}
       <DebriefCard s={s} ai={ai} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
+      <VideoReportCard sessionId={s.id} answers={s.answers} />
       <InterviewContext context={s.context_snapshot} />
       <section className="card review-summary">
         <h2>다음 연습으로 연결하기</h2>

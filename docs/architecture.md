@@ -94,7 +94,7 @@ API의 JWT 검증과 DB의 RLS는 서로 다른 장치이고, 현재 코드에�
 
 ## 웹 (`web/src/`)
 
-라우트는 `App.tsx`에 있습니다: `/practice`, `/practice/history`, `/practice/settings`, `/practice/sessions/:id/run`, `/practice/sessions/:id`, `/track`, `/track/stats`, `/track/:id`. API 호출은 모두 `api.ts`를 거칩니다(`VITE_API_URL`, `setAuthTokenProvider`). 녹음은 `components/useRecorder.ts`(MediaRecorder)가 맡습니다. `/health`의 `openai` 값에 따라 AI 기능 안내와 디브리프 생성 버튼을 보여 줍니다.
+라우트는 `App.tsx`에 있습니다: `/practice`, `/practice/history`, `/practice/settings`, `/practice/sessions/:id/run`, `/practice/sessions/:id`, `/track`, `/track/stats`, `/track/:id`. API 호출은 모두 `api.ts`를 거칩니다(`VITE_API_URL`, `setAuthTokenProvider`). 녹음은 `components/useRecorder.ts`(MediaRecorder)가 맡습니다. 선택 기능인 카메라 자세 분석은 `components/useFaceAnalysis.ts`(별도 카메라 스트림, MediaPipe 검출기 `video/detector.ts`)가 답변 구간의 표본을 모으고, `video/metrics.ts`가 요약해 모듈 메모리에 세션별로 둡니다. 회고 화면의 `VideoReportCard`가 그 값을 읽으며 백엔드에는 보내지 않습니다. `/health`의 `openai` 값에 따라 AI 기능 안내와 디브리프 생성 버튼을 보여 줍니다.
 
 ## 현재 구현이 아닌 것 (계획·연동 대기)
 
