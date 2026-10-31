@@ -8,6 +8,7 @@
 - `feature/practice-p0`(작업 중): `main`보다 8커밋 앞서 있고 `origin/feature/practice-p0`와 같음(1a12453). P0 기능과 리뷰 지적 1~21번, 재확인 지적 수정까지 끝났음.
 - **PR #3:** https://github.com/leejw0010/Jobseeker/pull/3 · `feature/practice-p0` → `main` · 2026-10-28 GitHub API(`GET /repos/leejw0010/Jobseeker/pulls/3`)로 확인한 당시 **Open, 미병합, draft 아님**, head 1a12453. (`gh`는 설치돼 있지 않음.)
 - `feature/local-stt`(2026-11-01 로컬 커밋 3개: 로컬 STT, D 카메라 지표, A 평가 도구): `feature/video-analysis`(56e28ac, `main` 미병합)에서 갈라짐. push·PR 전. 이어지는 시선 분석(G)은 이 위에서 만든 `feature/gaze-calibration`에서 함.
+- `feature/gaze-calibration`(2026-11-01): `feature/local-stt`(9e4cc16)에서 갈라짐. G 설계·계획 커밋 뒤 0단계(개발 전용 시선 실험실과 계산 모듈)만 구현, 실제 웹캠 시험 대기. push·PR 전.
 - 추적하지 않는 파일: `.vscode/`(개인 설정). `backend/.venv/`는 2026-10-28에 `.gitignore`에 추가함.
 
 ## 1. 구현 사실 (코드로 확인)
@@ -21,6 +22,7 @@
 | Track: 지원 건·단계·버전·복원·sync·통계 | `routers/track.py` |
 | 카메라 자세 분석(선택, 브라우저 전용·메모리 보관): 답변·분석 시간, 얼굴 검출 비율, 찾지 못한 시간(`none`), 일부 프레임 밖 시간(`edge`), 고개 좌우·숙임 상대 변화. 2026-10-30 지표 분리(D, `feature/local-stt` 미커밋, [설계](superpowers/specs/2026-10-30-d-camera-metrics-design.md)) | `web/src/video/`, `web/src/components/useFaceAnalysis.ts`·`CameraPanel.tsx`·`VideoReportCard.tsx` (브랜치 `feature/video-analysis`, 미커밋) |
 | 로컬 STT(`STT_PROVIDER=local` 기본, faster-whisper `base`·CPU·INT8, 지연 로딩·재사용·캐시 우선, 한 번에 하나), LLM 키와 분리된 `/health`의 `stt` | `app/stt.py`, `web/src/sttText.ts` (브랜치 `feature/local-stt`, 미커밋) |
+| 시선 분석 0단계(개발 전용 실험실 `/dev/gaze-lab`): 특징 추출, G2 화면 좌표 릿지 회귀(묶음 교차 검증), G1 렌즈 응시 분류기(별도 응시로 평가), 표본 주기 측정, D 250ms 격자. 면접 화면·회고에는 아직 없음 | `web/src/video/gaze/`, `web/src/pages/GazeLab.tsx` (브랜치 `feature/gaze-calibration`) |
 | Track: 자소서 버전 단어 단위 diff | 프런트엔드 `web/src/components/Diff.tsx`(백엔드에는 diff 로직 없음) |
 | 인증: JWT(HS256) 검증 후 `sub` 사용, 라우터에서 `user_id` 필터 | `app/auth.py`, `routers/*` ([architecture.md](architecture.md) "인증과 데이터 접근 경계") |
 
@@ -34,6 +36,7 @@
 | 자동 디브리프·다시 연습 | `test_debrief.py`, e2e 시나리오 1 | e2e는 키 없는 모드에서 디브리프가 남은 답변을 기본 점검하는 것과 작업 종료(`debrief_running`)만 확인. AI 요약 카드는 e2e 대상 아님 |
 | STT 요청 형식·재시도·오류 처리 | `test_transcription.py`, e2e 시나리오 5 | 모의 응답. 실제 인식 정확도는 아님 |
 | 로컬 STT | `test_local_stt.py`(25개) | 가짜 모델 + PyAV로 만든 실제 WebM/Opus. 키 없이 전사·원본 삭제, 지연 로딩 1회·재사용·동시 첫 요청 1회 로딩, 캐시 우선·다운로드 1회, 다운로드/로딩 실패 후 재시도, 라이브러리 import 실패(500이 아니라 `failed`), 무음·깨진 파일·너무 긴 녹음·바쁨·모델 오류, 한 번에 하나 실행, 동의 403, 보관→수정→기본 코칭→녹음 삭제, `off`·미설치, `/health` 분리. **인식 정확도는 검사하지 않음.** e2e는 `STT_PROVIDER=off`로 돌려 로컬 전사를 열지 않음 |
+| 시선 분석 0단계 | `gaze-math.spec.ts`(계산 30개), `gaze-lab.spec.ts`(실험실 흐름 4개) | 합성 얼굴과 가짜 검출기. 누출 없는 묶음 교차 검증, 보수적 렌즈 임계값·분포 밖 unknown, 오차보다 작은 영역은 판정 안 함, NaN 없는 실패, 창 크기 변경 무효화, 전송 없음, 프로덕션 번들 제외. **실제 정확도는 검사하지 않음** |
 | 잘못된 id → 404 | `test_malformed_ids.py` | |
 | 스키마 | `test_migration.py` | **로컬 SQLite 업그레이드**와 **id 컬럼의 Postgres `UUID` 타입 컴파일**만 검사. Supabase SQL 실행·RLS·Storage 정책은 검사하지 않음 |
 | 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라), `video-metrics.spec.ts`(계산만, 브라우저 없이) | `none`/`edge` 시간이 겹치지 않음, 이마만 넘은 얼굴은 검출 100%·찾지 못한 시간 0, 답변·분석 시간(탭 가림·도중 종료·표본 없음), 넘은 쪽 문구의 좌우 반전, 미리보기 `contain`, 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
@@ -112,6 +115,38 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 | 6 | 안경·어두운 조명 | 잠깐씩 `none`이 생기는지(H2), 찾지 못한 시간과 횟수 | 미실행 |
 | 7 | 답변 중 다른 탭으로 5초 | 분석하지 못한 시간 ≈ 4~5초, 다른 지표에 섞이지 않음 | 미실행 |
 | 8 | 진단의 카메라 해상도 | 640×480이 아니면 H3. 미리보기에 검은 띠와 함께 프레임 전체가 보이는지 | 미실행 |
+
+### G 0단계 실현 가능성 시험 (실제 웹캠, 미실행)
+
+[설계](superpowers/specs/2026-11-01-g-gaze-calibration-design.md) 13절. 구현: `feature/gaze-calibration`(0단계만). 자동 테스트는 가짜 검출기(합성 얼굴)로 계산·흐름만 확인했다. **실제 웹캠 정확도는 아래 시험 전까지 모른다.** 판정은 1단계로 갈지 정하는 실험 기준이고, 통과해도 정확도 보장이 아니다.
+
+**실행**
+1. 백엔드를 켠다(`cd backend && .venv/bin/python -m uvicorn app.main:app --reload --port 8000`).
+2. 웹은 실험실을 켠 개발 서버로 다시 띄운다: `cd web && VITE_GAZE_LAB=true npm run dev`. 이미 떠 있는 개발 서버(`npm run dev`)에는 실험실이 없다.
+3. 브라우저(Chrome 권장)에서 `http://localhost:5173/dev/gaze-lab` → "동의하고 카메라 켜기" → "얼굴이 화면 안에 있어요" 확인.
+4. 시험 전 메모: 날짜, 노트북 모델, 브라우저·버전, 화면 크기와 실험실에 표시된 뷰포트·배율·카메라 해상도, 카메라 위치(내장 위 가운데 등), 대략적인 거리, 조명, 안경 여부, 함께 돌던 무거운 프로그램.
+
+**시험(약 3분, 3번 반복)**
+1. "시험 시작" → 화면 안내를 따른다. 안내가 없으면 고개는 그대로 두고 눈으로만 본다. 시험 중 창 크기·위치·확대/축소를 바꾸지 않는다(바뀌면 그 실행은 무효).
+2. 렌즈 단계: 카메라 렌즈 자체를 본다(외장 카메라면 그 렌즈).
+3. 거리 단계: 안내에 따라 몸을 약 10cm 앞으로, 이어서 뒤로 기울인 채 본다.
+4. 주기 단계(초당 4·10·15회 각 20초, 글 입력 20초): 그동안 OS 작업 관리자에서 브라우저 CPU 사용률을 본다.
+5. 결과가 나오면 "집계 복사(JSON)"로 복사해 아래 표와 함께 남긴다(영상·특징점·좌표는 들어 있지 않다).
+6. "시험 시작"으로 2번 더(매번 새로 보정). 가능하면 안경을 쓰거나 조명을 낮춰 1번 더.
+7. (선택) 시험 중에 창 크기를 바꿔 "이번 시험은 무효예요"가 뜨는지 본다.
+
+**기록표**(결과: 미실행)
+
+| 항목 | 실행 1 | 실행 2 | 실행 3 | 안경·저조도 |
+|---|---|---|---|---|
+| H1: 처음 보는 응시 AUC · 렌즈 정면 toward · 고개 돌림 toward · 위쪽 띠 오판 · 판정 | 미실행 | | | |
+| H2: 오차 중앙 px(너비 %) · 80% · 고개 돌림 비율 · 유효 표본 · 모델 · 판정 | 미실행 | | | |
+| 질문 패널 32·120·240px: 적중 / 패널 밖 question 오판 · 최소 사용 가능 높이 | 미실행 | | | |
+| 거리 앞·뒤: 막힌 표본 · 오차 비율 · 판정 | 미실행 | | | |
+| 주기 4·10·15: 실제 주기 · 검출 p95 · 메인 스레드 점유 · 지연 p95 · 긴 작업 · 얼굴 검출(D) | 미실행 | | | |
+| 글 입력 중 지연 p95 · OS CPU 사용률(4·10·15·글 입력) | 미실행 | | | |
+
+판단 순서: H1(렌즈와 화면 위쪽 구별) → H2·질문 패널(필요한 패널 크기) → 주기(기본 후보). 결과를 보고 G1 포함 여부, 질문 패널 크기(화면 변경은 따로 결정), 기본 주기를 정한 뒤 1단계 계획을 고친다.
 
 ## 보안 검토 필요
 

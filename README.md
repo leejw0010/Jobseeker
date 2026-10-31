@@ -116,6 +116,7 @@ jobseeker/
 - 시선 추적이 아니며 자신감·감정·거짓말·합격 가능성을 판단하지 않습니다. 회전·숙임 기준값과 `edge` 판정 여유(`web/src/video/metrics.ts`)는 실제 웹캠으로 맞춰 보지 않았습니다.
 - 미리보기는 분석하는 카메라 프레임 전체를 보여 줍니다(`object-fit: contain`, 4:3이 아니면 검은 띠, 좌우 반전).
 - 실제 웹캠 점검용 진단: `cd web && VITE_CAMERA_DEBUG=true npm run dev`로 띄우면 카메라 패널에 상태·넘은 쪽과 크기·핵심 부위(눈·코·입)가 프레임 안인지·카메라 해상도·상태별 표본 수가 보입니다. 개발 서버 전용이고 프로덕션 빌드에는 들어가지 않으며, 저장하거나 보내지 않습니다.
+- **시선 분석 0단계 실험실(개발 전용, 2026-11-01):** `cd web && VITE_GAZE_LAB=true npm run dev` 뒤 `/dev/gaze-lab`. 개인별 보정으로 렌즈 응시(G1)와 화면 영역(G2)을 실제 웹캠에서 시험하고 집계 숫자만 보여 줍니다. 아직 면접 화면·회고에는 시선 분석이 없습니다. 절차와 기록표는 [docs/progress.md](docs/progress.md) "G 0단계", 설계는 [docs/superpowers/specs/2026-11-01-g-gaze-calibration-design.md](docs/superpowers/specs/2026-11-01-g-gaze-calibration-design.md).
 
 ## 실행 방법
 
