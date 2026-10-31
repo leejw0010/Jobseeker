@@ -13,3 +13,5 @@ backend/models/
 web/test-results/
 web/playwright-report/
 web/*.tsbuildinfo
+# STT 평가 데이터·결과(--data-dir는 저장소 밖에 두지만, 실수로 안에 둘 때를 막는다)
+backend/evals/stt/data/

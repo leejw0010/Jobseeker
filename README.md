@@ -35,7 +35,7 @@
 - 재시도가 실패하면 사용자가 고친 전사문을 유지합니다.
 - 음성 인식 서버의 응답을 기다리는 동안 다른 API 요청을 막지 않습니다.
 
-OpenAI 경로는 음성 인식 응답을 대체한 테스트(`test_transcription.py`)로, 로컬 경로는 가짜 모델과 PyAV로 만든 실제 WebM/Opus 녹음(`test_local_stt.py`)으로 요청 형식·저장·재시도·오류 처리를 검증합니다. 로컬 모델의 실제 한국어 전사와 소요 시간은 공개 한국어 낭독 음성으로 측정해 [docs/progress.md](docs/progress.md)에 적었습니다. OpenAI 음성 인식의 실제 정확도는 아직 확인하지 않았습니다.
+OpenAI 경로는 음성 인식 응답을 대체한 테스트(`test_transcription.py`)로, 로컬 경로는 가짜 모델과 PyAV로 만든 실제 WebM/Opus 녹음(`test_local_stt.py`)으로 요청 형식·저장·재시도·오류 처리를 검증합니다. 로컬 모델의 실제 한국어 전사와 소요 시간은 공개 한국어 낭독 음성으로 측정해 [docs/progress.md](docs/progress.md)에 적었습니다. `base`·`small`과 beam·VAD·프롬프트를 같은 녹음으로 다시 재는 평가 도구는 `backend/evals/stt/`이고, 실행 방법은 [docs/stt-eval.md](docs/stt-eval.md)에 있습니다(측정 결과 검토 뒤 기본 모델은 `base` 유지: [결과](docs/research/stt-eval-2026-10-30.md), `docs/decisions.md` D-20). OpenAI 음성 인식의 실제 정확도는 아직 확인하지 않았습니다.
 
 [서비스 동작 조사 및 REA 실행 기록](docs/research/interview-products-2026-10-15.md)에는 공개 자료에서 확인한 기능, 실제 분석 명령, 분석이 중단된 환경 조건을 구분해 두었습니다.
 
@@ -56,7 +56,7 @@ npm run test:e2e
 ```
 jobseeker/
 ├─ supabase/             Supabase에 붙여 넣을 테이블·RLS·Storage 버킷(schema.sql)과 마이그레이션(migrations/)
-├─ backend/              FastAPI (Practice·Track API, pytest 161개)
+├─ backend/              FastAPI (Practice·Track API, pytest 219개)
 ├─ web/                  React + TypeScript (Vite) 웹 화면
 ├─ extension-track/      크롬 확장 팝업 (공고 저장, 최근 지원 현황, 대시보드 열기)
 └─ docs/screenshots/     실제 실행 화면
@@ -189,6 +189,7 @@ npm run dev                 # http://localhost:5173
 ## 검증한 것
 
 - 백엔드 pytest 161개 통과(2026-10-30 기준. 로컬 STT 25개 포함: 사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, 답변 코칭·인용 검증·꼬리질문, 녹음 동의·원본 삭제·만료 정리·삭제 실패 재시도·고아 파일 정리, 업로드·다시 전사 도중 동의 철회와 삭제, 디브리프·다시 연습·작업 중복과 요청 겹침, 잘못된 형식의 id, 로컬 STT의 지연 로딩·재사용·캐시 우선·다운로드/로딩/라이브러리 실패·무음·깨진 파일·바쁨·동시 실행 제한. OpenAI 경로와 로컬 모델은 모의 응답·가짜 모델로 확인)
+- 2026-11-01: 백엔드 pytest 219개 통과(STT 평가 도구 `test_stt_eval.py` 58개 추가. 평가 도구는 실제 모델 없이 채점·실행 기록·자원 감시를 검사).
 - Playwright 브라우저 테스트(`npm run test:e2e`) 21개 통과(데스크톱·모바일 각 8개 화면 흐름 + 카메라 분석 계산 5개, 계산 테스트는 데스크톱에서만 실행)
 - 가짜 마이크와 가짜 OpenAI 서버로 동의 → 녹음 → 자동 디브리프(답변 코칭 위) → 다시 연습 → 설정(보관·모두 지우기·동의 철회), 키 없는 모드, 전사 실패·코칭 실패·지어낸 인용·디브리프 실패 같은 실패 경로까지 브라우저에서 145개 항목 확인. 390px 폭에서 가로 스크롤 없음
 - 로컬 Postgres 16(Supabase 흉내)에 새 프로젝트(`schema.sql`)와 예전 프로젝트(이전 스키마 + 두 마이그레이션, 두 번 실행)를 만들어 백엔드 흐름 확인
