@@ -72,3 +72,54 @@ test("rate stats summarise the last window: achieved rate, detection percentiles
   s.add({ t: 25_000, detectMs: 10, lagMs: 0 }); // 오래된 표본은 창 밖으로 빠진다
   expect(s.snapshot(10).longTasks).toBe(0);
 });
+
+// ───────── Task 2: 눈·고개 특징, 합성 얼굴 ─────────
+
+import { gazeFeatures, type GazeFeatures } from "../src/video/gaze/features";
+import { syntheticFace } from "../src/video/gaze/synthetic";
+
+test("features are aspect-corrected and roll-invariant", () => {
+  const a = gazeFeatures(syntheticFace({ gazeX: 0.2, gazeY: -0.1, yaw: 0, pitch: 0, aspect: 4 / 3 }), 640, 480) as GazeFeatures;
+  const b = gazeFeatures(syntheticFace({ gazeX: 0.2, gazeY: -0.1, yaw: 0, pitch: 0, aspect: 16 / 9 }), 1280, 720) as GazeFeatures;
+  const r = gazeFeatures(syntheticFace({ gazeX: 0.2, gazeY: -0.1, yaw: 0, pitch: 0, roll: 0.26 }), 640, 480) as GazeFeatures;
+  expect(b.ex).toBeCloseTo(a.ex, 6);
+  expect(b.ey).toBeCloseTo(a.ey, 6);
+  expect(r.ex).toBeCloseTo(a.ex, 6);
+  expect(r.ey).toBeCloseTo(a.ey, 6);
+  expect(r.hx).toBeCloseTo(a.hx, 6);
+});
+
+test("looking to the user's right lowers ex (raw-frame convention); looking down raises ey", () => {
+  const f = (gazeX: number, gazeY: number) => gazeFeatures(syntheticFace({ gazeX, gazeY, yaw: 0, pitch: 0 }), 640, 480) as GazeFeatures;
+  expect(f(0.3, 0).ex).toBeLessThan(f(-0.3, 0).ex);
+  expect(f(0, 0.2).ey).toBeGreaterThan(f(0, -0.2).ey);
+  expect(f(0, -0.2).open).toBeGreaterThan(f(0, 0.2).open); // 위를 보면 윗눈꺼풀이 올라간다
+});
+
+test("head turn moves head features, eyes compensating keeps the gaze source in the eyes", () => {
+  const turned = gazeFeatures(syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0.3, pitch: 0 }), 640, 480) as GazeFeatures;
+  const front = gazeFeatures(syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0 }), 640, 480) as GazeFeatures;
+  expect(turned.hx).toBeLessThan(front.hx); // 사용자 오른쪽으로 돌리면 코끝이 원본 프레임 왼쪽(−x)으로
+  expect(turned.ex).toBeGreaterThan(front.ex); // 같은 곳을 보려고 눈은 반대로 돈다
+});
+
+test("invalid inputs are named, never NaN", () => {
+  expect(gazeFeatures(null, 640, 480)).toEqual({ invalid: "no_face" });
+  expect(gazeFeatures([], 640, 480)).toEqual({ invalid: "no_face" });
+  expect(gazeFeatures(syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0, cx: -0.02 }), 640, 480)).toEqual({ invalid: "eyes_outside" });
+  const pts = syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0 });
+  pts[468] = { x: pts[468].x + 0.03, y: pts[468].y };
+  expect(gazeFeatures(pts, 640, 480)).toEqual({ invalid: "eyes_unreliable" });
+  expect(gazeFeatures(syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0 }).slice(0, 300), 640, 480)).toEqual({ invalid: "eyes_unreliable" });
+  const ok = gazeFeatures(syntheticFace({ gazeX: 0.1, gazeY: 0.1, yaw: 0.1, pitch: 0.1, noise: 0.002, seed: 3 }), 640, 480);
+  expect(Object.values(ok).every((v) => typeof v === "number" && Number.isFinite(v))).toBe(true);
+});
+
+test("synthetic noise is reproducible by seed", () => {
+  const a = syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0, noise: 0.003, seed: 7 });
+  const b = syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0, noise: 0.003, seed: 7 });
+  const c = syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0, noise: 0.003, seed: 8 });
+  expect(a).toEqual(b);
+  expect(a).not.toEqual(c);
+  expect(a).toHaveLength(478);
+});
