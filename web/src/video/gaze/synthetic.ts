@@ -8,6 +8,8 @@
 import { gazeFeatures, isFeatures, type GazeFeatures } from "./features";
 import type { GroupedSample } from "./regression";
 import type { LensSample } from "./lens";
+import { PROTOCOL, collect, mockPanelRect, type FixationData, type Pose } from "./calibration";
+import type { Frame } from "./sampler";
 
 type Pt = { x: number; y: number };
 
@@ -156,5 +158,44 @@ export function syntheticLens(o: { lensOffset: number; noise?: number; positives
   neg.forEach((g, k) => push(screenToGaze(g.t[0] * view.w, g.t[1] * view.h, view), g.yaw, g.pitch, false, g.topBand,
     `screen-${g.t[0]}-${g.t[1]}-${g.yaw}-${g.pitch}`, split(o.negatives ?? 192, neg.length, k), 100 + k));
   return out;
+}
+
+// ───────── 0단계 실행 전체의 합성 데이터(테스트 도우미) ─────────
+
+/** 가운데를 보는 정면 얼굴 프레임 n개 */
+export function fakeFrames(n: number, p: Partial<FaceParams> = {}): Frame[] {
+  return Array.from({ length: n }, (_, i) => ({ t: i * 66, width: 640, height: 480, detectMs: 5,
+    points: syntheticFace({ gazeX: 0, gazeY: 0, yaw: 0, pitch: 0, ...p }) }));
+}
+
+/** 안내를 따르는 가상 사용자의 고개·거리. 사용자의 왼쪽은 yaw < 0, 앞으로 기울이면 얼굴이 커진다 */
+export const POSE_GEOMETRY: Record<Pose, { yaw: number; pitch: number; scale: number }> = {
+  forward: { yaw: 0, pitch: 0, scale: 1 }, left: { yaw: -0.15, pitch: 0, scale: 1 }, right: { yaw: 0.15, pitch: 0, scale: 1 },
+  up: { yaw: 0, pitch: -0.1, scale: 1 }, down: { yaw: 0, pitch: 0.1, scale: 1 }, near: { yaw: 0, pitch: 0, scale: 1.25 },
+  far: { yaw: 0, pitch: 0, scale: 0.8 },
+};
+
+/** PROTOCOL 전체를 가상 사용자가 따라 한 결과. lensOffset: 렌즈가 화면 위쪽 띠 가운데보다 위에 있는 각도(라디안) */
+export function syntheticRun(o: { noise?: number; lensOffset?: number; validRatio?: number; seed?: number;
+  view?: { w: number; h: number } } = {}): FixationData[] {
+  const view = o.view ?? VIEW, noise = o.noise ?? 0.0001, seed = o.seed ?? 1, valid = o.validRatio ?? 1;
+  const lensGaze = { gazeX: 0, gazeY: topGaze(view) - (o.lensOffset ?? 0.12) };
+  const r = rng(seed * 31 + 7);
+  return PROTOCOL.map((fx, k) => {
+    const pose = POSE_GEOMETRY[fx.pose];
+    let target: [number, number] | undefined, panelRect;
+    if (fx.target === "panel") {
+      panelRect = mockPanelRect(view, fx.panelPx!);
+      target = [panelRect.left + panelRect.width / 2, panelRect.top + panelRect.height / 2];
+    } else if (fx.target === "typing") target = [view.w / 2, view.h * 0.8];
+    else if (typeof fx.target === "object") target = [fx.target.x * view.w, fx.target.y * view.h];
+    const gaze = fx.target === "lens" ? lensGaze : screenToGaze(target![0], target![1], view);
+    const n = fx.role === "rate" || fx.role === "typing" ? 10 : 15;
+    const frames: Frame[] = Array.from({ length: n }, (_, i) => ({ t: i * 66, width: 640, height: 480, detectMs: 5,
+      points: r.next() < valid ? syntheticFace({ ...gaze, yaw: pose.yaw, pitch: pose.pitch, scale: 0.2 * pose.scale, noise,
+        seed: seed * 100_003 + k * 101 + i }) : null }));
+    const rate = fx.hz ? { targetHz: fx.hz, achievedHz: fx.hz, detectP50: 5, detectP95: 8, busyPct: 8, lagP95: 10, longTasks: 0 } : undefined;
+    return collect(frames, fx, { target: fx.target === "lens" || fx.target === "typing" ? undefined : target, rate, panelRect });
+  });
 }
 

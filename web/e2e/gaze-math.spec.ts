@@ -235,3 +235,87 @@ test("too few lens or top-band fixations is an explicit failure", () => {
   const s = syntheticLens({ lensOffset: 0.25, seed: 8 });
   expect(() => trainLens(s.filter((x) => !x.lens || x.group.endsWith("lens-0")))).toThrow("insufficient_lens_groups");
 });
+
+// ───────── Task 5: 보정 순서와 실현 가능성 지표 ─────────
+
+import { PROTOCOL, aggregate, classifyRegion, collect, evaluateRun, mockPanelRect, type Fixation } from "../src/video/gaze/calibration";
+import { VIEW, fakeFrames, syntheticRun } from "../src/video/gaze/synthetic";
+
+const PANELS = Object.fromEntries([32, 120, 240].map((h) => [h, mockPanelRect(VIEW, h)]));
+const noNaN = (v: unknown): boolean => (typeof v === "number" ? !Number.isNaN(v)
+  : Array.isArray(v) ? v.every(noNaN) : v && typeof v === "object" ? Object.values(v).every(noNaN) : true);
+
+test("lens and top-band validation fixations are separate from training", () => {
+  const val = PROTOCOL.filter((f) => f.role === "validate");
+  expect(val.filter((f) => f.target === "lens").map((f) => f.pose).sort()).toEqual(["forward", "left", "right"]);
+  expect(val.filter((f) => f.topBand).map((f) => f.target)).toEqual([{ x: 0.4, y: 0.05 }, { x: 0.5, y: 0.05 }, { x: 0.6, y: 0.05 }]);
+  expect(PROTOCOL.filter((f) => f.role === "train" && f.target === "lens")).toHaveLength(4);
+  expect(new Set(PROTOCOL.map((f) => f.id)).size).toBe(PROTOCOL.length);
+});
+
+test("validation positions are never used for training", () => {
+  const key = (f: Fixation) => (typeof f.target === "object" ? `${f.target.x},${f.target.y}` : `${f.target}/${f.pose}`);
+  const train = new Set(PROTOCOL.filter((f) => f.role === "train").map(key));
+  const validate = PROTOCOL.filter((f) => f.role === "validate" && typeof f.target === "object");
+  expect(validate.length).toBeGreaterThanOrEqual(9);
+  expect(validate.some((f) => train.has(key(f)))).toBe(false);
+});
+
+test("group ids are unique per run even when a point is re-measured", () => {
+  const a = collect(fakeFrames(20), PROTOCOL[3]), b = collect(fakeFrames(20), PROTOCOL[3]);
+  expect(a.group).not.toBe(b.group);
+  expect(a.samples).toHaveLength(20);
+  const empty = collect([{ t: 0, points: null, width: 640, height: 480, detectMs: 1 }], PROTOCOL[3]);
+  expect(empty.samples).toHaveLength(0);
+  expect(empty.invalid).toEqual({ no_face: 1 });
+});
+
+test("region classification refuses to claim a region smaller than the error", () => {
+  const big = { left: 300, top: 200, width: 600, height: 240 }, small = { left: 300, top: 300, width: 600, height: 32 };
+  expect(classifyRegion([600, 320], big, VIEW, 40, 60)).toBe("question");
+  expect(classifyRegion([600, 205], big, VIEW, 40, 60)).toBe("unknown"); // 경계 띠
+  expect(classifyRegion([600, 316], small, VIEW, 40, 60)).toBe("unknown"); // 패널 높이 32 < 2·e80
+  expect(classifyRegion([100, 600], big, VIEW, 40, 60)).toBe("ui");
+  expect(classifyRegion([600, -200], big, VIEW, 40, 60)).toBe("offscreen");
+  expect(classifyRegion([600, -10], big, VIEW, 40, 60)).toBe("unknown"); // 뷰포트 경계 띠
+});
+
+test("evaluateRun passes clean synthetic data and fails noisy or inseparable data", () => {
+  const clean = evaluateRun(syntheticRun({ noise: 0.0001, seed: 8 }), VIEW, PANELS);
+  expect(clean.g2.verdict).toBe("pass");
+  expect(clean.g1.verdict).toBe("pass");
+  expect(clean.panels.find((p) => p.heightPx === 240)!.hit).toBeGreaterThan(0.8);
+  const usable = clean.panels.filter((p) => (p.hit ?? 0) >= 0.8 && (p.falseQuestion ?? 1) <= 0.1).map((p) => p.heightPx);
+  expect(clean.minPanelPx).toBe(Math.min(...usable)); // 판정이 쓸모 있는 가장 작은 패널
+  const noisier = evaluateRun(syntheticRun({ noise: 0.0004, seed: 14 }), VIEW, PANELS);
+  const p32 = noisier.panels.find((p) => p.heightPx === 32)!;
+  expect(noisier.g2.e80Px!).toBeGreaterThan(16);
+  expect(p32.resolvable).toBe(false); // 오차보다 작은 영역은
+  expect(p32.hit).toBe(0); // 봤다고 하지 않는다
+  expect(clean.rateVerdict).toBe("pass");
+  expect(evaluateRun(syntheticRun({ noise: 0.003, seed: 9 }), VIEW, PANELS).g2.verdict).toBe("fail");
+  const inseparable = evaluateRun(syntheticRun({ noise: 0.0001, lensOffset: 0, seed: 10 }), VIEW, PANELS);
+  expect(inseparable.g1.verdict).toBe("fail");
+  expect(inseparable.g2.verdict).toBe("pass"); // G1이 안 돼도 G2는 그대로
+});
+
+test("distance change: either accuracy holds or the position gate blocks most samples", () => {
+  const r = evaluateRun(syntheticRun({ noise: 0.0001, seed: 11 }), VIEW, PANELS);
+  for (const d of r.distance) expect(d.verdict).toBe("pass");
+  expect(r.distance.map((d) => d.pose).sort()).toEqual(["far", "near"]);
+});
+
+test("no usable samples is a failure, not NaN", () => {
+  const r = evaluateRun(syntheticRun({ validRatio: 0, seed: 12 }), VIEW, PANELS);
+  expect(r.g2.verdict).toBe("fail");
+  expect(r.g1.verdict).toBe("fail");
+  expect(noNaN(r)).toBe(true);
+});
+
+test("aggregate exposes only summary numbers and verdicts", () => {
+  const out = aggregate(evaluateRun(syntheticRun({ noise: 0.0001, seed: 13 }), VIEW, PANELS));
+  expect(Object.values(out).every((v) => typeof v === "number" || typeof v === "string" || v === null)).toBe(true);
+  expect(Object.keys(out).some((k) => /sample|point|landmark|frame|coord/i.test(k))).toBe(false);
+  expect(out["g1.verdict"]).toBe("pass");
+  expect(typeof out["g2.e50Pct"]).toBe("number");
+});
