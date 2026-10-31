@@ -181,3 +181,57 @@ test("the fitted model predicts held-out positions on clean data", () => {
 test("too few groups is an explicit failure", () => {
   expect(() => selectG2(syntheticGrid({ groups: 2, seed: 6 }))).toThrow("insufficient_groups");
 });
+
+// ───────── Task 4: G1 렌즈 응시 분류기 ─────────
+
+import { auc, fitLogistic, lensThresholds, trainLens } from "../src/video/gaze/lens";
+import { farFeatures, lensFeatures, syntheticLens } from "../src/video/gaze/synthetic";
+
+test("logistic stays finite on perfectly separable data and learns the direction", () => {
+  const X = [[1, -2], [1, -1], [1, 1], [1, 2]], y = [0, 0, 1, 1];
+  const b = fitLogistic(X, y, [1, 1, 1, 1], 1.0);
+  expect(b.every(Number.isFinite)).toBe(true);
+  expect(b[1]).toBeGreaterThan(0);
+});
+
+test("auc counts pairs, ties as half, and refuses empty input", () => {
+  expect(auc([0.9, 0.8], [0.1, 0.2])).toBe(1);
+  expect(auc([0.5], [0.5])).toBe(0.5);
+  expect(auc([0.1], [0.9])).toBe(0);
+  expect(auc([], [0.1])).toBeNull();
+});
+
+test("thresholds keep an unknown band even when classes separate", () => {
+  expect(lensThresholds([0.95, 0.97, 0.99], [0.01, 0.03, 0.05])).toEqual({ hi: 0.8, lo: 0.2 });
+  const t = lensThresholds([0.6, 0.7, 0.9], [0.5, 0.6, 0.85]);
+  expect(t.hi).toBeGreaterThanOrEqual(0.85);
+  expect(t.lo).toBeLessThanOrEqual(0.2);
+});
+
+test("separable lens data: high CV AUC, toward on a lens look, unknown far outside training", () => {
+  const m = trainLens(syntheticLens({ lensOffset: 0.25, noise: 0.0002, seed: 5 }));
+  expect(m.cv.auc!).toBeGreaterThan(0.95);
+  expect(m.cv.sensitivity).toBeGreaterThan(0.8);
+  const at = (openRatio: number) => m.predict(lensFeatures(0.25), openRatio);
+  expect(at(1.0).decision).toBe("toward");
+  expect(at(1.1)).toMatchObject({ decision: "unknown", ood: true }); // 학습 범위 밖의 눈 뜬 정도: 확신하지 않는다
+  expect(m.predict(lensFeatures(0.25, 0.3), 1.0).decision).not.toBe("toward"); // 화면 아래쪽(렌즈 아님)
+  expect(m.predict(farFeatures(), 1.0)).toMatchObject({ decision: "unknown", ood: true });
+});
+
+test("lens at the top-centre of the screen: sensitivity collapses at the conservative threshold", () => {
+  const separable = trainLens(syntheticLens({ lensOffset: 0.25, noise: 0.0002, seed: 6 }));
+  const m = trainLens(syntheticLens({ lensOffset: 0, noise: 0.0002, seed: 6 }));
+  expect(m.cv.sensitivity).toBeLessThan(0.3);
+  expect(m.cv.auc!).toBeLessThan(separable.cv.auc!);
+});
+
+test("class weights balance 10 positives vs 100 negatives", () => {
+  const m = trainLens(syntheticLens({ lensOffset: 0.25, positives: 10, negatives: 100, noise: 0.0002, seed: 7 }));
+  expect(m.cv.sensitivity).toBeGreaterThan(0.6);
+});
+
+test("too few lens or top-band fixations is an explicit failure", () => {
+  const s = syntheticLens({ lensOffset: 0.25, seed: 8 });
+  expect(() => trainLens(s.filter((x) => !x.lens || x.group.endsWith("lens-0")))).toThrow("insufficient_lens_groups");
+});

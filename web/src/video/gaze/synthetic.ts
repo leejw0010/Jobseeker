@@ -5,8 +5,9 @@
  *  - gazeX·yaw > 0: 사용자 오른쪽 · gazeY·pitch > 0: 아래쪽 (라디안)
  *  - 사용자가 자기 오른쪽을 보면 홍채 x가 작아지고, 고개를 오른쪽으로 돌리면 코끝 x가 작아진다 */
 
-import { gazeFeatures, isFeatures } from "./features";
+import { gazeFeatures, isFeatures, type GazeFeatures } from "./features";
 import type { GroupedSample } from "./regression";
+import type { LensSample } from "./lens";
 
 type Pt = { x: number; y: number };
 
@@ -117,3 +118,43 @@ export function syntheticGrid(o: { groups?: number; framesPerGroup?: number; gro
   });
   return out;
 }
+
+// ───────── 렌즈 응시 합성 데이터(테스트 도우미) ─────────
+
+/** 화면 위쪽 띠(뷰포트 위 2%)의 가운데를 볼 때의 세로 시선 각도 */
+const topGaze = (view = VIEW) => screenToGaze(view.w / 2, 0.02 * view.h, view).gazeY;
+
+/** 렌즈 응시(lensOffset: 화면 위쪽 띠 가운데보다 렌즈가 위에 있는 각도, 라디안. 0이면 위쪽 띠 가운데와 같은 곳)의 특징.
+ *  gazeY를 주면 그 세로 각도를 본다(렌즈가 아닌 곳) */
+export function lensFeatures(lensOffset: number, gazeY?: number) {
+  return gazeFeatures(syntheticFace({ gazeX: 0, gazeY: gazeY ?? topGaze() - lensOffset, yaw: 0, pitch: 0 }), 640, 480) as GazeFeatures;
+}
+export const farFeatures = (): GazeFeatures => ({ ex: 3, ey: -3, open: 0.3, hx: 2, hy: 2, faceX: 0.5, faceY: 0.5, scale: 0.1, eyeGap: 0 });
+
+/** 렌즈 응시 묶음 3개(정면, 고개 왼쪽, 오른쪽)와 화면 응시 묶음 16개(위쪽 띠 4개 + 나머지 격자 8개 + 고개 자세 4개) */
+export function syntheticLens(o: { lensOffset: number; noise?: number; positives?: number; negatives?: number; seed?: number }): LensSample[] {
+  const seed = o.seed ?? 1, noise = o.noise ?? 0.0002, view = VIEW;
+  const lensGaze = { gazeX: 0, gazeY: topGaze(view) - o.lensOffset };
+  const baseOpen = lensFeatures(o.lensOffset).open;
+  const pos = [{ id: "lens-0", yaw: 0 }, { id: "lens-l", yaw: -0.15 }, { id: "lens-r", yaw: 0.15 }];
+  const top: [number, number][] = [[0.35, 0.02], [0.5, 0.02], [0.65, 0.02], [0.5, 0.08]];
+  // 실제 보정 순서처럼 화면 음성에도 고개 자세(4a: 가운데 점을 보며 고개 왼쪽·오른쪽·위·아래)를 넣는다.
+  // 그래야 고개 방향만으로 렌즈 응시를 가려내는 지름길이 생기지 않는다
+  const neg = [...top.map((t) => ({ t, topBand: true, yaw: 0, pitch: 0 })),
+    ...GRID9.filter(([x, y]) => !(x === 0.5 && y === 0.08)).map((t) => ({ t, topBand: false, yaw: 0, pitch: 0 })),
+    ...[[-0.15, 0], [0.15, 0], [0, -0.1], [0, 0.1]].map(([yaw, pitch]) => ({ t: [0.5, 0.5] as [number, number], topBand: false, yaw, pitch }))];
+  const split = (total: number, parts: number, k: number) => Math.floor(total / parts) + (k < total % parts ? 1 : 0);
+  const out: LensSample[] = [];
+  const push = (gaze: { gazeX: number; gazeY: number }, yaw: number, pitch: number, lens: boolean, topBand: boolean, group: string,
+    n: number, gi: number) => {
+    for (let fi = 0; fi < n; fi++) {
+      const f = gazeFeatures(syntheticFace({ ...gaze, yaw, pitch, noise, seed: seed * 100_003 + gi * 211 + fi }), 640, 480);
+      if (isFeatures(f)) out.push({ f, openRatio: f.open / baseOpen, lens, topBand, group: `${seed}-${group}` });
+    }
+  };
+  pos.forEach((g, k) => push(lensGaze, g.yaw, 0, true, false, g.id, split(o.positives ?? 36, pos.length, k), k));
+  neg.forEach((g, k) => push(screenToGaze(g.t[0] * view.w, g.t[1] * view.h, view), g.yaw, g.pitch, false, g.topBand,
+    `screen-${g.t[0]}-${g.t[1]}-${g.yaw}-${g.pitch}`, split(o.negatives ?? 192, neg.length, k), 100 + k));
+  return out;
+}
+
