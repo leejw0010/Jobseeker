@@ -191,6 +191,7 @@ export function useFaceAnalysis() {
   /** 표본 주기(초당 횟수)를 바꾼다. 기본 4. 높이면 D에는 250ms 격자의 표본만 들어가 D 요약은 그대로다 */
   const setTargetHz = useCallback((h: number) => {
     hz.current = h;
+    stats.current = createRateStats(); // 통계는 새 주기의 것만 남긴다
     if (detector.current) schedule();
   }, [schedule]);
   /** 최근 10초의 실제 주기·검출 시간·지연·긴 작업 통계 */

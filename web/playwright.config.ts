@@ -28,6 +28,7 @@ export default defineConfig({
         CORS_ORIGINS: "http://localhost:5179,http://127.0.0.1:5179" } },
     { command: "npm run dev -- --host 127.0.0.1 --port 5179 --strictPort", url: "http://localhost:5179", reuseExistingServer: false,
       // 카메라 분석은 모델을 내려받지 않는 가짜 검출기로 돌린다(src/video/fakeDetector.ts)
-      env: { VITE_API_URL: "http://localhost:8011", VITE_E2E_FAKE_FACE: "true" } },
+      // 개발 전용 시선 실험실(/dev/gaze-lab)도 켠다(e2e/gaze-lab.spec.ts)
+      env: { VITE_API_URL: "http://localhost:8011", VITE_E2E_FAKE_FACE: "true", VITE_GAZE_LAB: "true" } },
   ],
 });

@@ -1,5 +1,5 @@
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { api } from "./api";
 import { serviceNotice } from "./sttText";
 import type { Health } from "./types";
@@ -11,6 +11,10 @@ import PracticeSettings from "./pages/PracticeSettings";
 import TrackList from "./pages/TrackList";
 import ApplicationPage from "./pages/ApplicationPage";
 import StatsPage from "./pages/StatsPage";
+import { GAZE_LAB } from "./video/debug";
+
+// 개발 전용 시선 실험실. 프로덕션 빌드에서는 GAZE_LAB이 false라 이 화면을 번들에 넣지 않는다
+const GazeLab = GAZE_LAB ? lazy(() => import("./pages/GazeLab")) : null;
 
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -46,6 +50,7 @@ export default function App() {
           <Route path="/track" element={<TrackList />} />
           <Route path="/track/stats" element={<StatsPage />} />
           <Route path="/track/:id" element={<ApplicationPage />} />
+          {GazeLab && <Route path="/dev/gaze-lab" element={<Suspense fallback={<p className="muted">불러오는 중…</p>}><GazeLab /></Suspense>} />}
         </Routes>
       </main>
     </div>

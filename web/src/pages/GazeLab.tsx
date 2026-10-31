@@ -1,0 +1,188 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import CameraPanel from "../components/CameraPanel";
+import { useFaceAnalysis } from "../components/useFaceAnalysis";
+import {
+  PROTOCOL, aggregate, collect, evaluateRun, mockPanelRect,
+  type FeasibilityReport, type Fixation, type FixationData, type Rect, type Verdict,
+} from "../video/gaze/calibration";
+import { FEASIBILITY, MAX_RETRY, MIN_VALID } from "../video/gaze/constants";
+import type { Frame } from "../video/gaze/sampler";
+import "./GazeLab.css";
+
+/** 시선 분석 0단계 실험실(개발 전용, /dev/gaze-lab). 기존 카메라 스트림·검출기를 그대로 쓰고,
+ *  프레임·특징점·좌표는 이 탭 메모리에서만 계산한 뒤 버린다. 화면에는 집계 숫자와 판정만 보이고, 화면을 떠나면 모두 사라진다.
+ *  판정은 1단계로 갈지 정하는 실험 기준이고 정확도 보장이 아니다(설계 13절). */
+
+const E2E = import.meta.env.VITE_E2E_FAKE_FACE === "true";
+/** e2e에서만 단계 시간을 줄이고, 빠른 가짜 검출기로 초당 60회 모은다 */
+const timeScale = () => (E2E ? Number(localStorage.getItem("e2e-gaze-scale")) || 1 : 1);
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** 보정은 시작할 때의 뷰포트 기준이다. 크기·창 위치·배율이 바뀌면 그 실행은 무효 */
+const geometry = () => [innerWidth, innerHeight, screenX, screenY, devicePixelRatio, window.visualViewport?.scale ?? 1].join(",");
+const VERDICT: Record<Verdict, string> = { pass: "통과", fail: "실패", inconclusive: "결론 없음" };
+const pct = (v: number | null | undefined) => (v == null ? "–" : `${Math.round(v * 100)}%`);
+const num = (v: number | null | undefined, d = 0) => (v == null ? "–" : v.toFixed(d));
+const worst = (vs: Verdict[]): Verdict => (vs.includes("fail") ? "fail" : vs.includes("inconclusive") ? "inconclusive" : "pass");
+
+type Phase = "intro" | "running" | "invalid" | "done";
+type Current = { fx: Fixation; panel?: Rect; step: number; total: number };
+type RunSummary = Record<string, number | string | null>;
+
+export default function GazeLab() {
+  const cam = useFaceAnalysis();
+  const { subscribeFrames, setTargetHz, rateSnapshot } = cam;
+  const [phase, setPhase] = useState<Phase>("intro");
+  const [current, setCurrent] = useState<Current | null>(null);
+  const [skipRate, setSkipRate] = useState(false);
+  const [report, setReport] = useState<FeasibilityReport | null>(null);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [videoSize, setVideoSize] = useState<{ w: number; h: number } | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const alive = useRef(true);
+  const size = useRef<{ w: number; h: number } | null>(null);
+  // 개발 모드(StrictMode)는 마운트를 두 번 하므로 마운트할 때마다 다시 켠다. 화면을 떠나면 진행 중인 시험을 멈춘다
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  // 실제 카메라 해상도만 표시용으로 읽는다
+  useEffect(() => subscribeFrames((f) => {
+    if (size.current?.w === f.width && size.current?.h === f.height) return;
+    size.current = { w: f.width, h: f.height };
+    setVideoSize(size.current);
+  }), [subscribeFrames]);
+
+  const run = useCallback(async () => {
+    const k = timeScale(), collectHz = k < 1 ? 60 : 15;
+    const view = { w: innerWidth, h: innerHeight }, geo = geometry();
+    const queue = PROTOCOL.filter((f) => !(skipRate && (f.role === "rate" || f.role === "typing"))).map((fx) => ({ fx, attempt: 0 }));
+    const data: FixationData[] = [];
+    setReport(null);
+    setCopied(null);
+    setPhase("running");
+    for (let i = 0; i < queue.length; i++) {
+      const { fx, attempt } = queue[i];
+      const panel = fx.target === "panel" ? mockPanelRect(view, fx.panelPx!) : undefined;
+      setCurrent({ fx, panel, step: i + 1, total: queue.length });
+      setTargetHz(fx.hz ?? collectHz);
+      await sleep(fx.settleMs * k);
+      const frames: Frame[] = [];
+      const stop = subscribeFrames((f) => { frames.push(f); });
+      await sleep(fx.collectMs * k);
+      stop();
+      if (!alive.current) return;
+      if (geometry() !== geo) {
+        setTargetHz(4);
+        setCurrent(null);
+        setPhase("invalid");
+        return;
+      }
+      const target: [number, number] | undefined = panel ? [panel.left + panel.width / 2, panel.top + panel.height / 2]
+        : typeof fx.target === "object" ? [fx.target.x * view.w, fx.target.y * view.h] : undefined;
+      const d = collect(frames, fx, { target, rate: fx.hz ? rateSnapshot() : undefined, panelRect: panel });
+      // 유효 표본이 모자란 학습·검증 응시는 끝에 다시 잰다(최대 MAX_RETRY번)
+      if (d.samples.length < MIN_VALID && attempt < MAX_RETRY && (fx.role === "train" || fx.role === "validate")) {
+        queue.push({ fx, attempt: attempt + 1 });
+      } else data.push(d);
+    }
+    setTargetHz(4);
+    setCurrent(null);
+    const r = evaluateRun(data, view, Object.fromEntries(FEASIBILITY.panel.heights.map((h) => [h, mockPanelRect(view, h)])));
+    setReport(r);
+    setRuns((prev) => [...prev, { run: prev.length + 1, ...aggregate(r), "camera.w": size.current?.w ?? null,
+      "camera.h": size.current?.h ?? null, devicePixelRatio, skippedRate: skipRate ? "yes" : "no" }]);
+    setPhase("done");
+  }, [rateSnapshot, setTargetHz, skipRate, subscribeFrames]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify({ note: "G 0단계 집계(특징점·좌표·영상 없음)", runs }, null, 1));
+      setCopied("복사했어요. docs/progress.md의 G 0단계 표에 붙여 주세요.");
+    } catch {
+      setCopied("복사하지 못했어요. 아래 표의 숫자를 직접 옮겨 주세요.");
+    }
+  };
+
+  return <>
+    <h1>시선 실험실(개발 전용)</h1>
+    <section className="card small">
+      <p>시선 분석의 핵심 가정을 실제 웹캠으로 시험해요(설계 13절). 약 3분, 안내에 따라 점·카메라 렌즈·회색 칸을 봐요.</p>
+      <ul className="bullets">
+        <li>평소처럼 앉고(화면에서 약 50~60cm), 노트북 내장 카메라와 평소 조명을 써요. 안내가 없으면 고개는 그대로 두고 눈으로만 봐요.</li>
+        <li>영상·얼굴 특징점·시선 좌표는 저장하거나 서버·외부로 보내지 않아요. 집계 숫자만 보여 주고, 이 화면을 떠나면 사라져요.</li>
+        <li>시험 중에 창 크기를 바꾸거나 창을 옮기거나 확대/축소하면 그 실행은 무효가 돼요.</li>
+        <li>판정은 다음 단계로 갈지 정하는 실험 기준이에요. 통과해도 정확도를 보장하지 않아요.</li>
+      </ul>
+      <p className="muted">뷰포트 {innerWidth}×{innerHeight} · 배율 {devicePixelRatio} · 카메라 {videoSize ? `${videoSize.w}×${videoSize.h}` : "–"}</p>
+    </section>
+    <CameraPanel status={cam.status} error={cam.error} face={cam.face} edge={cam.edge} diag={cam.diag}
+      onEnable={() => void cam.enable()} onDisable={cam.disable} attachVideo={cam.attachVideo} />
+    <section className="card">
+      <div className="row">
+        <label className="check-label"><input type="checkbox" checked={skipRate} disabled={phase === "running"}
+          onChange={(e) => setSkipRate(e.target.checked)} />주기 시험 건너뛰기</label>
+        <button className="primary" disabled={cam.status !== "on" || phase === "running"} onClick={() => void run()}>시험 시작</button>
+      </div>
+      {phase === "invalid" && <div role="alert" className="warn-text">
+        <p>창 크기·위치·배율이 바뀌어 이번 시험은 무효예요. 보정은 시험을 시작할 때의 화면 기준이라 처음부터 다시 해야 해요.</p>
+        <button onClick={() => void run()}>처음부터 다시</button>
+      </div>}
+    </section>
+    {phase === "done" && report && <Results report={report} runs={runs} onCopy={() => void copy()} copied={copied}
+      onClear={() => { setRuns([]); setReport(null); setPhase("intro"); }} />}
+    {phase === "running" && current && <Overlay current={current} />}
+  </>;
+}
+
+/** 시험 중 화면 전체: 지금 볼 대상 하나와 안내. 가짜 검출기(e2e)는 data-gaze-* 표시를 읽어 그곳을 본다 */
+function Overlay({ current }: { current: Current }) {
+  const { fx, panel } = current;
+  const marker = { "data-gaze-pose": fx.pose };
+  return <div className="gaze-lab-overlay">
+    <p className="gaze-lab-prompt" data-testid="lab-prompt">{fx.prompt} <span className="muted small">({current.step}/{current.total})</span></p>
+    {fx.target === "lens" ? <div className="gaze-lab-lens" data-gaze-lens="" {...marker}>▲ 카메라 렌즈(외장 카메라면 그 렌즈)</div>
+      : fx.target === "panel" && panel ? <div className="gaze-lab-panel" data-gaze-target="" {...marker}
+        style={{ left: panel.left, top: panel.top, width: panel.width, height: panel.height }} />
+        : fx.target === "typing" ? <textarea className="gaze-lab-typing" data-gaze-target="" {...marker} autoFocus
+          placeholder="아무 글이나 입력하세요" aria-label="글 입력 시험" />
+          : typeof fx.target === "object" ? <div className="gaze-lab-dot" data-gaze-target="" {...marker}
+            style={{ left: `${fx.target.x * 100}%`, top: `${fx.target.y * 100}%` }} /> : null}
+  </div>;
+}
+
+function Results({ report: r, runs, onCopy, copied, onClear }: { report: FeasibilityReport; runs: RunSummary[];
+  onCopy: () => void; copied: string | null; onClear: () => void }) {
+  const distanceVerdict = worst(r.distance.map((d) => d.verdict));
+  const rows: [string, Verdict, string][] = [
+    ["H1 렌즈 대 화면 위쪽 (G1)", r.g1.verdict, `처음 보는 응시 AUC ${num(r.g1.valAuc, 2)} · 렌즈 정면 toward ${pct(r.g1.lensForward)} · 고개 돌림 toward ${pct(r.g1.lensTurned)} · 위쪽 띠 오판 ${pct(r.g1.topFalse)} · 화면 오판 ${pct(r.g1.screenFalse)} · (진단) 교차 검증 AUC ${num(r.g1.cvAuc, 2)}`],
+    ["H2 화면 좌표 (G2)", r.g2.verdict, `처음 보는 4점 오차 중앙 ${num(r.g2.e50Px)}px(너비의 ${pct(r.g2.e50Pct)}) · 80% ${num(r.g2.e80Px)}px · 고개 돌림 오차 비율 ${num(r.g2.turnedRatio, 2)} · 유효 표본 ${pct(r.validRatio)} · 모델 ${r.g2.model ?? "–"} · 등급 ${r.g2.grade}${r.g2.reason ? ` · ${r.g2.reason}` : ""}`],
+    ["질문 패널 영역 판정", r.panelVerdict, r.minPanelPx ? `쓸모 있는 최소 높이 ${r.minPanelPx}px` : "기준을 넘는 높이 없음(질문 영역 판정만 빼고 기타 화면·화면 밖은 유지)"],
+    ["거리 변화", distanceVerdict, r.distance.map((d) => `${d.pose === "near" ? "앞으로" : "뒤로"}: 막힌 표본 ${pct(d.gated)}, 오차 비율 ${num(d.ratio, 2)}`).join(" · ")],
+    ["표본 주기", r.rateVerdict, r.rates.some((x) => x.achievedHz !== null) ? `권장 후보 초당 ${r.recommendedHz}회` : "주기 시험을 건너뛰었어요"],
+  ];
+  const passCount = (key: string) => `${runs.filter((x) => x[key] === "pass").length}/${runs.length}`;
+  return <section className="card">
+    <h2>시험 결과</h2>
+    <p className="small">이 판정은 1단계(본 구현)로 갈지 정하는 실험 기준이에요. 통과해도 실제 사용에 충분한 정확도를 보장하지 않아요. 한 사람·한 기기·한 번의 결과예요.</p>
+    <table data-testid="lab-verdicts"><thead><tr><th>가정</th><th>판정</th><th>근거</th></tr></thead>
+      <tbody>{rows.map(([name, v, why]) => <tr key={name}><td>{name}</td><td>{VERDICT[v]}</td><td className="small">{why}</td></tr>)}</tbody></table>
+    {r.g1.verdict === "fail" && <p className="warn-text small">화면 위쪽과 렌즈를 구별할 수 없음: 이 설정에서는 렌즈 응시를 판정하지 않고 unknown으로 둬요.</p>}
+    <h3>질문 패널 크기별 영역 판정</h3>
+    <table data-testid="lab-panels"><thead><tr><th>높이</th><th>판정 가능</th><th>적중</th><th>unknown</th><th>다른 영역</th>
+      <th>패널 밖 question 오판</th><th>패널 밖 ui 정답</th><th>패널 밖 unknown</th></tr></thead>
+      <tbody>{r.panels.map((p) => <tr key={p.heightPx}><td>{p.heightPx}px</td><td>{p.resolvable ? "예" : "아니요(오차보다 작음)"}</td>
+        <td>{pct(p.hit)}</td><td>{pct(p.unknown)}</td><td>{pct(p.wrong)}</td><td>{pct(p.falseQuestion)}</td><td>{pct(p.correctUi)}</td>
+        <td>{pct(p.outsideUnknown)}</td></tr>)}</tbody></table>
+    <h3>표본 주기</h3>
+    {r.rates.some((x) => x.achievedHz !== null) ? <table data-testid="lab-rates"><thead><tr><th>목표</th><th>실제</th><th>검출 p50·p95</th>
+      <th>메인 스레드 점유</th><th>지연 p95</th><th>긴 작업(10초)</th><th>유효 표본</th><th>얼굴 검출(D)</th><th>판정</th></tr></thead>
+      <tbody>{r.rates.map((x) => <tr key={x.hz}><td>초당 {x.hz}회</td><td>{num(x.achievedHz, 1)}</td><td>{num(x.detectP50, 1)}·{num(x.detectP95, 1)}ms</td>
+        <td>{num(x.busyPct, 1)}%</td><td>{num(x.lagP95)}ms</td><td>{x.longTasks ?? "–"}</td><td>{pct(x.valid)}</td><td>{pct(x.dDetected)}</td>
+        <td>{x.achievedHz === null ? "–" : x.pass ? "통과" : "실패"}</td></tr>)}</tbody></table>
+      : <p className="small muted" data-testid="lab-rates">주기 시험을 건너뛰었어요.</p>}
+    {r.typing && <p className="small">글 입력 중(초당 10회): 지연 p95 {num(r.typing.lagP95)}ms · 긴 작업 {r.typing.longTasks} · 메인 스레드 점유 {num(r.typing.busyPct, 1)}%.
+      CPU 사용률은 브라우저가 알려 주지 않으니 OS 작업 관리자 값을 따로 적어 주세요.</p>}
+    <h3>실행 {runs.length}번 요약</h3>
+    <p className="small">H1 통과 {passCount("g1.verdict")} · H2 통과 {passCount("g2.verdict")} · 질문 패널 {passCount("panel.verdict")} · 표본 주기 {passCount("rate.verdict")}
+      (설계 기준은 3번 중 2번 이상)</p>
+    <div className="row"><button onClick={onCopy}>집계 복사(JSON)</button><button onClick={onClear}>결과 지우기</button></div>
+    {copied && <p className="small" role="status">{copied}</p>}
+  </section>;
+}
