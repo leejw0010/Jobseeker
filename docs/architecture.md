@@ -10,7 +10,8 @@
  extension-track (MV3) ───┘                                                    │
                                                                                ├─ DB: SQLite(backend/jobseeker.db) 또는 Supabase Postgres(DATABASE_URL)
                                                                                ├─ 녹음: backend/recordings/ 또는 Supabase Storage 버킷 "recordings"
-                                                                               └─ OpenAI(선택): /chat/completions, /audio/transcriptions
+                                                                               ├─ 전사(STT_PROVIDER): local = 같은 프로세스의 faster-whisper(CPU) | openai | off
+                                                                               └─ OpenAI(선택): /chat/completions, /audio/transcriptions(STT_PROVIDER=openai일 때만)
 ```
 
 - 웹과 확장은 백엔드만 호출합니다. Supabase나 OpenAI에 직접 붙지 않습니다.
@@ -20,7 +21,8 @@
 |---|---|---|
 | `DATABASE_URL` | 로컬 SQLite, 시작 시 테이블·빠진 컬럼 자동 추가 | Postgres. 스키마는 `supabase/` SQL로 미리 만들어야 함 |
 | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` | `backend/recordings/` | Storage REST API(서비스 키) |
-| `OPENAI_API_KEY` | 규칙 기반 질문, 기본 점검, 전사·디브리프 요약 없음 | LLM 질문·코칭·꼬리질문·디브리프 요약, STT |
+| `OPENAI_API_KEY` | 규칙 기반 질문, 기본 점검, 디브리프 요약 없음 | LLM 질문·코칭·꼬리질문·디브리프 요약, `STT_PROVIDER=openai`면 STT |
+| `STT_PROVIDER`(기본 `local`) | — | `local`: faster-whisper로 서버 CPU에서 전사(모델은 첫 전사 때 불러와 재사용, 캐시 우선) · `openai` · `off` |
 | `AUTH_DISABLED=true`(기본, **로컬 개발 전용**) | `X-User-Id` 헤더 또는 고정 dev 사용자. 헤더만 바꾸면 누구로든 접근 가능 | `false`(배포 시 필수)면 Supabase JWT(HS256, aud `authenticated`)의 `sub` |
 
 ## 백엔드 (`backend/app/`)
@@ -34,6 +36,7 @@
 | `db.py` | 엔진, SQLite 자동 업그레이드(`upgrade_sqlite`) |
 | `auth.py` | `current_user_id` 의존성 |
 | `llm.py` | OpenAI 호출(`httpx` 직접 호출, SDK 없음), 템플릿 질문 대체, 인용 원문 대조(`verify_quote`) |
+| `stt.py` | 전사 제공자(`local`·`openai`·`off`), PyAV 디코딩, 로컬 모델 지연 로딩·한 번에 하나 실행, 실패 사유(`STTError.reason`), `/health`의 `stt` |
 | `coaching.py` | 면접 시작 시 기준 자료 스냅샷, 채점 기준(`RUBRIC`, `RUBRIC_VERSION`), 코칭 보고서 생성(AI 또는 기본 점검) |
 | `debrief.py` | 세션 종료 후 디브리프 작업, 다시 연습 대상 선정 |
 | `retention.py` | 원본 녹음 삭제·만료 정리·고아 파일 정리 |
@@ -83,7 +86,7 @@ API의 JWT 검증과 DB의 RLS는 서로 다른 장치이고, 현재 코드에�
 
 **면접 연습**
 1. `POST /practice/sessions`: 지원 건이 있으면 제출본(없으면 최신본) 자소서를 골라 `practice_contexts`에 복사합니다. 이후 자소서를 고쳐도 이 세션의 기준은 바뀌지 않습니다.
-2. 답변: 글로 쓰면 `PATCH /practice/answers/{id}`. 녹음은 `POST .../audio`로 올립니다(동의 없으면 403). 저장 경로는 `{user_id}/{session_id}/{answer_id}.{ext}`이고, 키가 있으면 STT로 전사합니다. 전사에 성공하고 보관 설정이 꺼져 있으면 원본을 바로 지웁니다.
+2. 답변: 글로 쓰면 `PATCH /practice/answers/{id}`. 녹음은 `POST .../audio`로 올립니다(동의 없으면 403). 저장 경로는 `{user_id}/{session_id}/{answer_id}.{ext}`이고, 전사 제공자(`STT_PROVIDER`, 기본 로컬)를 쓸 수 있으면 전사합니다. 전사에 성공하고 보관 설정이 꺼져 있으면 원본을 바로 지웁니다.
 3. `POST .../coach`: 키가 있으면 LLM이 3개 기준으로 채점하고 서버가 인용을 원문과 대조합니다. 대조에 실패하거나 호출이 실패하면 기본 점검으로 바꿉니다. `POST .../followup`: 원 질문당 꼬리질문 1개.
 4. `POST /practice/sessions/{id}/finish`: FastAPI `BackgroundTasks`로 디브리프를 시작합니다. 코칭이 없는 답변을 점검한 뒤, 키가 있으면 요약(핵심 교훈·다음 행동·주목할 순간)을 만듭니다. 작업은 heartbeat를 남기고, 5분 넘게 끊긴 경우에만 새 작업이 이어받습니다. 작업은 프로세스 안에서 돌기 때문에 서버가 재시작되면 사라지고, 화면은 다시 시도 버튼을 보여 줍니다.
 5. `POST .../redrill`: 보완 판정을 받은 답변과 자기평가 1~2점 답변(최대 20개)으로 새 세션을 만듭니다.
@@ -94,7 +97,7 @@ API의 JWT 검증과 DB의 RLS는 서로 다른 장치이고, 현재 코드에�
 
 ## 웹 (`web/src/`)
 
-라우트는 `App.tsx`에 있습니다: `/practice`, `/practice/history`, `/practice/settings`, `/practice/sessions/:id/run`, `/practice/sessions/:id`, `/track`, `/track/stats`, `/track/:id`. API 호출은 모두 `api.ts`를 거칩니다(`VITE_API_URL`, `setAuthTokenProvider`). 녹음은 `components/useRecorder.ts`(MediaRecorder)가 맡습니다. 선택 기능인 카메라 자세 분석은 `components/useFaceAnalysis.ts`(별도 카메라 스트림, MediaPipe 검출기 `video/detector.ts`)가 답변 구간의 표본을 모으고, `video/metrics.ts`가 요약해 모듈 메모리에 세션별로 둡니다. 회고 화면의 `VideoReportCard`가 그 값을 읽으며 백엔드에는 보내지 않습니다. `/health`의 `openai` 값에 따라 AI 기능 안내와 디브리프 생성 버튼을 보여 줍니다.
+라우트는 `App.tsx`에 있습니다: `/practice`, `/practice/history`, `/practice/settings`, `/practice/sessions/:id/run`, `/practice/sessions/:id`, `/track`, `/track/stats`, `/track/:id`. API 호출은 모두 `api.ts`를 거칩니다(`VITE_API_URL`, `setAuthTokenProvider`). 녹음은 `components/useRecorder.ts`(MediaRecorder)가 맡습니다. 선택 기능인 카메라 자세 분석은 `components/useFaceAnalysis.ts`(별도 카메라 스트림, MediaPipe 검출기 `video/detector.ts`)가 답변 구간의 표본을 모으고, `video/metrics.ts`가 요약해 모듈 메모리에 세션별로 둡니다. 회고 화면의 `VideoReportCard`가 그 값을 읽으며 백엔드에는 보내지 않습니다. `/health`의 `openai` 값에 따라 AI 기능 안내와 디브리프 생성 버튼을, `stt` 값에 따라 음성 전사 안내와 "어디로 보내나요" 문구를 보여 줍니다(`sttText.ts`).
 
 ## 현재 구현이 아닌 것 (계획·연동 대기)
 

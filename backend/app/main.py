@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -7,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DataError
 
-from . import llm
+from . import llm, stt
 from .config import settings
 from .db import SessionLocal, init_db
 from .retention import purge_loop, run_purge
@@ -18,6 +19,9 @@ from .seed import seed_question_bank
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    if settings.stt_provider not in ("local", "openai", "off"):
+        logging.getLogger(__name__).warning("STT_PROVIDER=%r is not local|openai|off: transcription is off",
+                                            settings.stt_provider)
     with SessionLocal() as db:
         seed_question_bank(db)
     # 만료된 원본 녹음: 시작할 때 한 번, 이후 PURGE_INTERVAL_MIN분마다 정리(실패해도 앱은 계속 뜬다)
@@ -56,4 +60,5 @@ async def invalid_id(_: Request, exc: DataError):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "openai": llm.available(), "auth_disabled": settings.auth_disabled}
+    """openai: LLM(맞춤 질문·AI 답변 코칭·꼬리질문·디브리프)에 쓸 키가 있는가. stt: 음성 전사 제공자와 상태(따로 판단)."""
+    return {"ok": True, "openai": llm.available(), "stt": stt.status(), "auth_disabled": settings.auth_disabled}

@@ -5,6 +5,7 @@ import type {
   CoachingRubric,
   DeleteResult,
   EssayItem,
+  Health,
   PracticeAnswer,
   PracticeSession,
   PracticeSettings,
@@ -60,7 +61,7 @@ const qs = (p: Record<string, string | undefined>) => {
 };
 
 export const api = {
-  health: () => req<{ ok: boolean; openai: boolean; auth_disabled: boolean }>("GET", "/health"),
+  health: () => req<Health>("GET", "/health"),
 
   // ② Practice
   questions: (f: { category?: string; job_category?: string; source?: string; q?: string } = {}) =>

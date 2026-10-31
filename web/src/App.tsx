@@ -1,6 +1,8 @@
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import { serviceNotice } from "./sttText";
+import type { Health } from "./types";
 import PracticeHome from "./pages/PracticeHome";
 import SessionRunner from "./pages/SessionRunner";
 import SessionReview from "./pages/SessionReview";
@@ -11,11 +13,13 @@ import ApplicationPage from "./pages/ApplicationPage";
 import StatsPage from "./pages/StatsPage";
 
 export default function App() {
-  const [health, setHealth] = useState<{ openai: boolean } | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
   const [down, setDown] = useState(false);
   useEffect(() => {
     api.health().then(setHealth).catch(() => setDown(true));
   }, []);
+  // 음성 전사(로컬·OpenAI·꺼짐)와 AI 코칭(OpenAI 키)은 따로 켜지고 꺼진다
+  const notice = health && serviceNotice(health);
 
   return (
     <div className="layout">
@@ -31,11 +35,7 @@ export default function App() {
       </nav>
       <main className="main">
         {down && <div className="card err">백엔드 서버에 연결할 수 없습니다. backend 폴더에서 서버를 실행했는지 확인하세요.</div>}
-        {health && !health.openai && (
-          <div className="card small muted">
-            현재 자동 음성 전사와 AI 코칭은 연결되어 있지 않아요. 녹음·글 답변·기본 점검은 사용할 수 있어요.
-          </div>
-        )}
+        {notice && <div className="card small muted">{notice}</div>}
         <Routes>
           <Route path="/" element={<Navigate to="/practice" replace />} />
           <Route path="/practice" element={<PracticeHome />} />

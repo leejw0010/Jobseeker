@@ -22,7 +22,8 @@ export default defineConfig({
   webServer: [
     { command: "python -m uvicorn app.main:app --host 127.0.0.1 --port 8011", cwd: "../backend",
       url: "http://127.0.0.1:8011/health", reuseExistingServer: false,
-      env: { AUTH_DISABLED: "true", OPENAI_API_KEY: "", SUPABASE_URL: "", SUPABASE_SERVICE_ROLE_KEY: "",
+      // 가짜 마이크는 신호음만 내므로 실제 전사 모델을 돌리지 않는다(로컬 STT는 backend/tests/test_local_stt.py가 검사)
+      env: { AUTH_DISABLED: "true", OPENAI_API_KEY: "", STT_PROVIDER: "off", SUPABASE_URL: "", SUPABASE_SERVICE_ROLE_KEY: "",
         DATABASE_URL: `sqlite:///${join(tmpdir(), `jobseeker-e2e-${process.pid}.db`)}`,
         CORS_ORIGINS: "http://localhost:5179,http://127.0.0.1:5179" } },
     { command: "npm run dev -- --host 127.0.0.1 --port 5179 --strictPort", url: "http://localhost:5179", reuseExistingServer: false,

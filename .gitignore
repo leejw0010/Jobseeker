@@ -8,6 +8,8 @@ __pycache__/
 .venv/
 backend/jobseeker.db
 backend/recordings/
+# 로컬 STT 모델(LOCAL_STT_MODEL_DIR을 저장소 안에 둘 때). 대용량이라 커밋하지 않는다
+backend/models/
 web/test-results/
 web/playwright-report/
 web/*.tsbuildinfo

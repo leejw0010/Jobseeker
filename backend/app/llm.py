@@ -1,6 +1,7 @@
 """OpenAI 호출(맞춤 질문 생성, 음성 전사, 답변 피드백, 세션 디브리프).
 
 OPENAI_API_KEY가 없으면 생성은 템플릿 기반으로 대체하고, 전사·피드백·디브리프는 쓰지 않는다.
+음성 전사(transcribe)는 STT_PROVIDER=openai일 때만 stt.py가 부른다. 기본 전사는 로컬(stt.py)이다.
 SDK 버전 차이를 피하려고 REST 엔드포인트를 httpx로 직접 호출한다. 주소는 OPENAI_BASE_URL(기본 OpenAI)이다.
 """
 import json

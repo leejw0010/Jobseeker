@@ -11,6 +11,8 @@ os.environ["PURGE_INTERVAL_MIN"] = "60"
 # 개발자가 e2e용 가짜 서버로 바꿔 둔 값(.env 포함)이 테스트에 끼어들지 않게 기본값으로 고정한다
 os.environ["OPENAI_BASE_URL"] = "https://api.openai.com/v1"
 os.environ["OPENAI_FEEDBACK_MODEL"] = ""
+# 기존 전사 테스트는 OpenAI 경로(모의 응답)를 검사한다. 로컬 전사는 test_local_stt.py가 제공자를 바꿔 끼워 검사한다
+os.environ["STT_PROVIDER"] = "openai"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

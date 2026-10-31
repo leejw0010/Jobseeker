@@ -139,3 +139,9 @@
 - 결정: MediaPipe Face Landmarker를 브라우저에서 돌리고(서버 영상 모델·OpenAI Vision 미사용), 결과 수치는 탭 메모리에만 둔다. API·DB 스키마는 바꾸지 않는다. 고개 방향은 변환 행렬의 각도 대신 특징점 비율(코끝 위치 ÷ 얼굴 폭·이마–턱 길이)을 쓰고, 각 답변의 중앙값 대비 변화로 표시한다. WASM은 앱과 함께 배포하고 모델 파일만 Google 공식 주소에서 받는다.
 - 이유: 사용자 요청(경량·브라우저 분석, 원본 미저장·미업로드, 결과는 우선 메모리). 행렬 각도는 축 규약을 실제 얼굴로 검증하지 못해 부호·크기를 확신할 수 없고, 비율 지표는 방향이 분명하다. 기준값(좌우 0.12, 숙임 0.06)은 대략 20°·15°를 노린 기하 추정이며 실제 웹캠으로 맞춰 보지 않았다.
 - 근거: `web/src/video/metrics.ts`, `web/src/components/useFaceAnalysis.ts`, README "카메라 자세 분석", `web/e2e/camera.spec.ts`, `web/e2e/video-metrics.spec.ts`
+
+### D-18 음성 전사는 기본으로 로컬 faster-whisper, LLM 키와 분리
+- 날짜·상태: 2026-10-30 · 유효
+- 결정: `STT_PROVIDER=local|openai|off`(기본 `local`)로 전사 제공자를 고르고, 전사 가능 여부를 `OPENAI_API_KEY`와 따로 판단한다. 로컬은 다국어 Whisper `base`·CPU·INT8, 모델은 첫 전사 때 한 번 불러와 재사용하고(설정이 바뀌면 다시), 캐시를 먼저 보고 없을 때만 내려받는다. 전사는 한 번에 하나만 돌리고 대기가 `LOCAL_STT_QUEUE_TIMEOUT_SEC`를 넘으면 실패로 돌려준다. 모든 전사 실패(무음·잘못된 파일·너무 긴 녹음·바쁨·모델 다운로드/로딩 실패)는 기존 `failed`로 두어 원본을 남기고 다시 시도하게 한다(API 상태 값은 늘리지 않음). 실패 사유는 로그와 `/health`의 `stt.error`로만 알린다. 녹음은 faster-whisper의 `decode_audio` 대신 직접 PyAV로 푼다. 기존 테스트는 `STT_PROVIDER=openai`, e2e는 `off`로 고정한다.
+- 이유: 사용자 요청(외부 API 없이 노트북에서 한국어 전사, 녹음을 외부로 보내지 않음). 노트북 CPU에서 전사를 겹치면 둘 다 느려지고 요청이 쌓인다. 설치된 faster-whisper 1.2.1의 `decode_audio`는 PyAV 19에서 없어진 `metadata_errors` 인자를 넘겨 실패한다. 실패 사유를 답변마다 저장하려면 DB 스키마를 바꿔야 해서 이번에는 하지 않았다. `beam_size` 5와 1은 실측 속도 차가 약 1.4배이고 정확도는 비슷해 기본 5를 유지했다.
+- 근거: `backend/app/stt.py`, `backend/tests/test_local_stt.py`, README "음성 인식·자동 전사", [progress.md](progress.md) 2026-10-30 측정

@@ -9,7 +9,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .. import coaching, llm, storage
+from .. import coaching, llm, storage, stt
 from ..auth import current_user_id
 from ..config import settings
 from ..db import get_db
@@ -191,10 +191,10 @@ def _report(answer: PracticeAnswer, db: Session) -> dict:
 
 
 def _stt(data: bytes, filename: str, ctype: str) -> str:
-    """전사문. 빈 전사문(무음 등)과 잘못된 응답·오류는 빈 문자열(실패)."""
+    """전사문. 전사하지 못했으면(무음, 잘못된 파일, 모델·제공자 오류, 바쁨 등) 빈 문자열(실패)."""
     try:
-        return (llm.transcribe(data, filename, ctype) or "").strip()
-    except (httpx.HTTPError, llm.TranscriptionError):
+        return stt.transcribe(data, filename, ctype).strip()
+    except stt.STTError:
         return ""
 
 
@@ -516,7 +516,8 @@ def upload_audio(
             raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
     overwrite = a.audio_path == path  # 같은 경로의 이전 녹음을 덮어쓴다: 그 녹음을 지우면 이번 파일이 지워진다
     storage.save(path, data, ctype)
-    transcript = _stt(data, f"{a.id}.{ext}", ctype) if llm.available() else ""
+    can_stt = stt.available()
+    transcript = _stt(data, f"{a.id}.{ext}", ctype) if can_stt else ""
     # 저장·전사하는 동안 세션·질문이 지워졌거나 동의를 철회했을 수 있다: 잠그고 다시 확인한 뒤에 반영한다
     if not _lock_answer(db, a.id):
         db.rollback()
@@ -547,7 +548,7 @@ def upload_audio(
         delete_audio(a)  # 못 지우면 보관 기한을 당겨 두어 다음 만료 정리가 지운다
         db.commit()
         raise HTTPException(403, NEED_CONSENT)
-    if not llm.available():
+    if not can_stt:
         a.stt_status = "unavailable"
     else:
         _apply_stt(a, transcript, prefs.keep_audio)
@@ -584,7 +585,7 @@ def delete_answer_audio(answer_id: str, user_id: str = Depends(current_user_id),
 def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     """원본 녹음을 다시 전사한다. 원본 보관은 지금 설정을 따른다.
 
-    다시 전사할 수 없는 경우(원본 삭제, 녹음 없음, 키 없음)는 동의보다 먼저 알린다: 동의해도 할 수 있는 일이 없다.
+    다시 전사할 수 없는 경우(원본 삭제, 녹음 없음, 자동 전사 꺼짐)는 동의보다 먼저 알린다: 동의해도 할 수 있는 일이 없다.
     전사하는 동안 원본을 지웠으면 이미 얻은 전사문은 남긴다(동의 철회와 같다).
     """
     started = _now()
@@ -594,13 +595,13 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
     path = owned_audio_path(a)
     if not path:
         raise HTTPException(404, "녹음이 없습니다")
-    if not llm.available():
-        raise HTTPException(503, "OPENAI_API_KEY가 설정되지 않아 전사를 할 수 없습니다")
+    if not stt.available():
+        raise HTTPException(503, stt.unavailable_reason())
     ctype = _audio_media_type(path)
     data = storage.load(path)
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
-    _require_consent(db, user_id)  # 녹음을 OpenAI로 보내므로 업로드와 같은 동의가 필요하다
+    _require_consent(db, user_id)  # 녹음을 다시 전사하므로(제공자가 openai면 OpenAI로 보낸다) 업로드와 같은 동의가 필요하다
     recorded_at = a.recorded_at
     transcript = _stt(data, path.rsplit("/", 1)[-1], ctype)
     # 전사하는 동안 답변이 지워졌거나, 동의를 철회했거나, 녹음이 바뀌었을 수 있다: 잠그고 다시 확인한 뒤에 반영한다

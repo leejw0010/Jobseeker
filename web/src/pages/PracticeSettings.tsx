@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import ConsentPanel from "../components/ConsentPanel";
-import type { DeleteResult, PracticeSettings as Settings } from "../types";
+import { sttDestination } from "../sttText";
+import type { DeleteResult, PracticeSettings as Settings, SttStatus } from "../types";
 
 /** 삭제 결과 문구. 저장소 오류로 못 지운 녹음이 있으면 그 수와 자동 재시도(서버의 만료 정리)를 알린다.
  *  저장소 목록을 읽지 못했으면 남은 수를 모르니 개수 없이 알린다. */
@@ -12,17 +13,29 @@ function deleteMessage({ deleted, failed, unchecked }: DeleteResult, none: strin
   return { text: [done, left, unknown].filter(Boolean).join(" "), warn: failed > 0 || unchecked };
 }
 
+/** 지금 음성 전사 상태 한 줄. 로컬 모델은 첫 전사 때 불러온다 */
+function sttState(stt: SttStatus) {
+  if (!stt.available) return stt.provider === "off" ? "" : "지금은 자동 전사를 쓸 수 없어요.";
+  if (stt.provider !== "local") return "";
+  if (stt.state === "error") return `지금은 모델을 쓸 수 없어요(${stt.error}).`;
+  return stt.state === "ready" ? `모델(${stt.model}) 준비됨.` : `모델(${stt.model})은 첫 전사 때 불러와요.`;
+}
+
 /** 녹음 동의·원본 보관·삭제를 관리하는 화면 */
 export default function PracticeSettings() {
   const [st, setSt] = useState<Settings | null>(null);
   const [openai, setOpenai] = useState<boolean | null>(null);
+  const [stt, setStt] = useState<SttStatus | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ text: string; warn: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     api.settings().then(setSt).catch((e) => setErr(e.message));
-    api.health().then((h) => setOpenai(h.openai)).catch(() => {});
+    api.health().then((h) => {
+      setOpenai(h.openai);
+      setStt(h.stt);
+    }).catch(() => {});
   }, []);
 
   const run = async (fn: () => Promise<void>) => {
@@ -123,7 +136,7 @@ export default function PracticeSettings() {
         {openai === false && <p className="small muted">지금은 OpenAI 키가 없어 OpenAI로 보내는 것은 없어요.</p>}
         <ul className="bullets small">
           <li><b>원본 녹음</b> → JobSeeker 저장소. 전사 직후 지우고, 보관을 켰거나 전사하지 못한 녹음은 {days}일이 지나면 자동으로 지워요.</li>
-          <li><b>원본 녹음</b> → OpenAI 음성 전사(키가 설정된 경우).</li>
+          <li><b>원본 녹음</b> → 음성 전사. {sttDestination(stt)}{stt && <> {sttState(stt)}</>}</li>
           <li>
             <b>질문·답변 전사문·이 세션의 앞선 질문과 답변·면접을 시작할 때 보관한 자소서·채용 공고·지원 회사/직무</b> → OpenAI 답변 코칭·꼬리질문(키가
             설정된 경우). 다시 연습 세션이면 지난번 보완 항목·자기평가 점수·다음 연습 안내도 함께 보내요. 세션을 마치면 아직 점검하지 않은 답변도
@@ -137,7 +150,7 @@ export default function PracticeSettings() {
             <b>전사문·자기평가·회고 메모·코칭 결과·디브리프·면접 기준 자료(자소서·공고 사본)</b> → JobSeeker 데이터베이스. 연습 기록을 지우면 그
             기록의 것은 함께 지워져요. 꼬리질문 문구, 그리고 다시 연습 세션에 복사된 기준 자료와 보완 안내는 따로 남아요.
           </li>
-          <li>목소리·감정은 분석하지 않고 영상은 찍지 않아요. 녹음은 음성 전사에만 보내고, 답변 코칭과 디브리프에는 전사문 같은 글만 보내요.</li>
+          <li>목소리·감정은 분석하지 않고 영상은 찍지 않아요. 녹음은 음성 전사에만 쓰고, 답변 코칭과 디브리프에는 전사문 같은 글만 보내요.</li>
         </ul>
       </section>
     </>

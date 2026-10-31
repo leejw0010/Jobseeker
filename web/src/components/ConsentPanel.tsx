@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { PracticeSettings } from "../types";
+import { sttDestination } from "../sttText";
+import type { PracticeSettings, SttStatus } from "../types";
 
 /** 첫 녹음 전에 받는 녹음 동의. 연습 전용 원칙과 무엇이 어디로 가는지 알리고 동의를 저장한다.
  *  원본 보관 체크는 지금 설정(initialKeepAudio)으로 시작하고, 사용자가 바꿨을 때만 함께 보낸다(다시 동의해도 설정이 풀리지 않게). */
@@ -21,6 +22,11 @@ export default function ConsentPanel({
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [stt, setStt] = useState<SttStatus | null>(null);
+
+  useEffect(() => {
+    api.health().then((h) => setStt(h.stt)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!touched) setKeepAudio(initialKeepAudio);
@@ -45,8 +51,9 @@ export default function ConsentPanel({
       <ul className="bullets">
         <li>JobSeeker는 면접 <b>연습 전용</b>이에요. 실제 면접 중에는 쓰지 마세요. 많은 기업이 면접 중 AI 도움을 금지해요.</li>
         <li>본인 목소리만 녹음해요. 다른 사람의 목소리가 들어가지 않게 해 주세요.</li>
+        <li>{sttDestination(stt)}</li>
         <li>
-          OpenAI 키가 설정된 경우에만 OpenAI로 보내요. 음성 전사에는 <b>원본 녹음</b>을, 답변 코칭과 꼬리질문에는{" "}
+          OpenAI 키가 설정된 경우에만 OpenAI로 보내요. 답변 코칭과 꼬리질문에는{" "}
           <b>질문·답변 전사문·이 세션의 앞선 질문과 답변·면접을 시작할 때 보관한 자소서·채용 공고·지원 회사/직무</b>
           (다시 연습 세션이면 지난번 보완 항목·자기평가 점수·다음 연습 안내도)를 보내요. 세션을 마치면 아직 점검하지 않은 답변도
           자동으로 코칭하고(AI 점검에 실패해 기본 점검으로 대신한 답변은 다시 점검해요), 세션 디브리프에는 <b>질문·답변 전사문·자기평가·회고 메모·코칭 결과</b>를 보내요. 맞춤 질문을 만들 때는{" "}
