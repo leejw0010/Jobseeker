@@ -46,6 +46,8 @@ test("camera analysis measures during the answer, shows numbers in review, and k
   await page.goto(`/practice/sessions/${session.id}/run`);
   const panel = page.locator(".camera-panel");
   await expect(panel).toContainText("시선 추적이 아니에요");
+  await expect(panel).toContainText("얼굴을 찾지 못한 시간");
+  await expect(panel).not.toContainText("화면을 벗어난");
 
   await panel.getByRole("button", { name: "동의하고 카메라 켜기" }).click();
   await expect(page.getByLabel("내 카메라 미리보기")).toBeVisible();
@@ -62,13 +64,16 @@ test("camera analysis measures during the answer, shows numbers in review, and k
   const card = page.locator(".video-report");
   await expect(cameraHeading(page)).toBeVisible();
   await expect(card).toContainText("얼굴 검출 비율");
-  await expect(card).toContainText("화면을 벗어난 시간");
+  await expect(card).toContainText("얼굴을 찾지 못한 시간");
+  await expect(card).toContainText("분석한 시간");
+  await expect(card).not.toContainText("화면을 벗어난");
   await expect(card.locator("tbody tr")).toHaveCount(1);
-  await expect(card.locator("tbody tr td").nth(2)).toHaveText(/^\d+%$/);
-  await expect(card.locator("tbody tr td").nth(4)).toHaveText(/^\d+%$/); // 고개 방향 기준을 잡았다
+  // 열: 질문 | 답변 시간 | 분석한 시간 | 얼굴 검출 | 찾지 못한 시간 | 일부 프레임 밖 | 좌우 회전 | 숙임
+  await expect(card.locator("tbody tr td").nth(3)).toHaveText(/^\d+%$/);
+  await expect(card.locator("tbody tr td").nth(6)).toHaveText(/^\d+%$/); // 고개 방향 기준을 잡았다
   await expect(card).not.toContainText(/자신감이|긴장한|합격 가능성이 (높|낮)/);
   // 수치는 서버로 보내지 않는다
-  expect(sent.filter((b) => /detectedMs|turnedMs|yaw|pitch/.test(b))).toEqual([]);
+  expect(sent.filter((b) => /detectedMs|noneMs|edgeMs|turnedMs|yaw|pitch|overshoot/.test(b))).toEqual([]);
   // 메모리에만 있으므로 새로고침하면 사라진다
   await page.reload();
   await expect(page.getByRole("heading", { name: "다음 연습으로 연결하기" })).toBeVisible();
@@ -97,4 +102,26 @@ test("analysis model load failure releases the camera and keeps the interview wo
   await expect(page.getByLabel("내 카메라 미리보기")).toHaveCount(0);
   await answerByTextAndFinish(page);
   await expect(cameraHeading(page)).toHaveCount(0);
+});
+
+test("edge-top: face partly outside is shown as detected, not as not-found", async ({ page, request }) => {
+  // 이마 위만 프레임 밖이고 눈·코·입은 안에 있는 얼굴(가까이 앉은 경우)
+  await page.addInitScript(() => localStorage.setItem("e2e-face-detector", "edge-top"));
+  await watchCamera(page);
+  const session = await seed(request);
+  await page.goto(`/practice/sessions/${session.id}/run`);
+  const panel = page.locator(".camera-panel");
+  await panel.getByRole("button", { name: "동의하고 카메라 켜기" }).click();
+  await expect(panel.getByRole("status")).toHaveText("얼굴 위쪽이 화면 밖에 있어요");
+  // 미리보기는 분석 프레임 전체를 보여 주고(contain), 좌우 반전은 그대로다
+  const preview = page.getByLabel("내 카메라 미리보기");
+  expect(await preview.evaluate((el) => getComputedStyle(el).objectFit)).toBe("contain");
+  expect(await preview.evaluate((el) => getComputedStyle(el).transform)).toMatch(/^matrix\(-1,/);
+
+  await answerByTextAndFinish(page, 1500);
+  const row = page.locator(".video-report tbody tr td");
+  await expect(row.nth(3)).toHaveText("100%"); // 얼굴 검출
+  await expect(row.nth(4)).toHaveText("0초"); // 찾지 못한 시간
+  await expect(row.nth(5)).not.toHaveText("0초"); // 일부 프레임 밖
+  await expect(page.locator(".video-report")).not.toContainText("화면을 벗어난");
 });

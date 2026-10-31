@@ -14,15 +14,22 @@ export default function VideoReportCard({ sessionId, answers }: { sessionId: str
   if (!report?.size) return null;
   const rows = answers.map((a, i) => ({ a, i, s: report.get(a.id) })).filter((r): r is { a: PracticeAnswer; i: number; s: SegmentSummary } => !!r.s);
   const all = combineSummaries(rows.map((r) => r.s));
+  const unanalyzed = Math.max(0, all.answerMs - all.analyzedMs);
   return (
     <section className="card video-report">
       <div className="row"><h2 className="grow" style={{ margin: 0 }}>카메라 자세 분석</h2><span className="chip">이 탭에만 보관</span></div>
-      <p className="small muted">답변한 {rows.length}개, 모두 {sec(all.totalMs)} 동안 초당 약 4번 확인한 값이에요(표본 {all.samples}개). 영상은 저장하지 않았고, 이 수치도 새로고침하거나 탭을 닫으면 사라져요.</p>
+      <p className="small muted">
+        답변 {rows.length}개, 답변 시간 모두 {sec(all.answerMs)} 중 {sec(all.analyzedMs)}를 분석했어요(초당 약 4번, 표본 {all.samples}개).
+        {unanalyzed >= 1000 && <> 분석하지 못한 시간 {sec(unanalyzed)}(탭이 가려졌거나, 카메라 화면이 준비되지 않았거나, 검출이 멈췄거나, 카메라를 끈 시간)은 아래 수치에 넣지 않았어요.</>}
+        {" "}영상은 저장하지 않았고, 이 수치도 새로고침하거나 탭을 닫으면 사라져요.
+      </p>
       <dl className="video-metrics">
         <dt>얼굴 검출 비율</dt>
-        <dd><b>{pct(all.detectedMs, all.totalMs)}</b> · 분석한 시간 중 얼굴 특징점을 찾은 시간</dd>
-        <dt>화면을 벗어난 시간</dt>
-        <dd><b>{sec(all.offMs)}</b> ({pct(all.offMs, all.totalMs)}) · 얼굴을 찾지 못했거나 얼굴 일부가 화면 밖에 있던 시간. 1초 이상 벗어난 횟수 {all.offEpisodes}번, 가장 길게 벗어난 시간 {sec(all.longestOffMs)}</dd>
+        <dd><b>{pct(all.detectedMs, all.analyzedMs)}</b> · 분석한 시간 중 얼굴 특징점을 찾은 시간의 비율(얼굴 일부가 프레임 밖이었던 시간 포함)</dd>
+        <dt>얼굴을 찾지 못한 시간</dt>
+        <dd><b>{sec(all.noneMs)}</b> ({pct(all.noneMs, all.analyzedMs)}) · 분석한 시간 중 얼굴 특징점을 찾지 못한 시간. 자리를 비웠을 수도 있지만 조명·각도·가림 때문에 검출하지 못했을 수도 있어요. 1초 이상 이어진 횟수 {all.noneEpisodes}번, 가장 길게 이어진 시간 {sec(all.longestNoneMs)}</dd>
+        <dt>얼굴 일부가 프레임 밖</dt>
+        <dd><b>{sec(all.edgeMs)}</b> ({pct(all.edgeMs, all.analyzedMs)}) · 얼굴은 찾았지만 이마·턱·볼 가장자리 일부가 카메라 프레임 밖에 있던 시간(검출 비율에 포함)</dd>
         <dt>고개를 좌우로 돌린 시간</dt>
         <dd>{all.headMs ? <><b>{pct(all.turnedMs, all.headMs)}</b> · 각 답변의 평소 방향보다 크게 돌린 시간의 비율</> : "측정한 시간이 짧아 계산하지 않았어요"}</dd>
         <dt>고개를 숙인 시간</dt>
@@ -30,14 +37,16 @@ export default function VideoReportCard({ sessionId, answers }: { sessionId: str
       </dl>
       <div className="table-scroll">
         <table>
-          <thead><tr><th>질문</th><th>분석 시간</th><th>얼굴 검출</th><th>벗어난 시간</th><th>좌우 회전</th><th>숙임</th></tr></thead>
+          <thead><tr><th>질문</th><th>답변 시간</th><th>분석한 시간</th><th>얼굴 검출</th><th>찾지 못한 시간</th><th>일부 프레임 밖</th><th>좌우 회전</th><th>숙임</th></tr></thead>
           <tbody>
             {rows.map(({ a, i, s }) => (
               <tr key={a.id}>
                 <td><a href={`#answer-${a.id}`}>Q{i + 1}</a> <span className="small muted">{a.question.text}</span></td>
-                <td>{sec(s.totalMs)}</td>
-                <td>{pct(s.detectedMs, s.totalMs)}</td>
-                <td>{sec(s.offMs)}</td>
+                <td>{sec(s.answerMs)}</td>
+                <td>{sec(s.analyzedMs)}</td>
+                <td>{pct(s.detectedMs, s.analyzedMs)}</td>
+                <td>{sec(s.noneMs)}</td>
+                <td>{sec(s.edgeMs)}</td>
                 <td>{s.headMs ? pct(s.turnedMs, s.headMs) : "–"}</td>
                 <td>{s.headMs ? pct(s.downMs, s.headMs) : "–"}</td>
               </tr>

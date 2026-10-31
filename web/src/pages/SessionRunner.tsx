@@ -211,7 +211,7 @@ export default function SessionRunner() {
   return <>
     <div className="row"><h1 className="grow">{session.title}</h1><span className="muted">{idx + 1} / {session.answers.length}</span></div>
     <InterviewContext context={session.context_snapshot} />
-    <CameraPanel status={cam.status} error={cam.error} face={cam.face} onEnable={() => void cam.enable()} onDisable={cam.disable} attachVideo={cam.attachVideo} />
+    <CameraPanel status={cam.status} error={cam.error} face={cam.face} edge={cam.edge} diag={cam.diag} onEnable={() => void cam.enable()} onDisable={cam.disable} attachVideo={cam.attachVideo} />
     <section className="card">
       <div className="row small"><span className="chip">{answer.question.category}</span>{mock && <span className="chip accent">모의시험</span>}{answer.parent_answer_id && <span className="chip accent">꼬리질문</span>}</div>
       {answer.followup_reason && <p className="followup-reason">{answer.followup_reason}</p>}

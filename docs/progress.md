@@ -7,7 +7,7 @@
 - `main`: PR #1(확장 팝업)과 PR #2(`codex/evidence-interview-coach`, 제출본 기반 면접 코칭)까지 머지됨.
 - `feature/practice-p0`(작업 중): `main`보다 8커밋 앞서 있고 `origin/feature/practice-p0`와 같음(1a12453). P0 기능과 리뷰 지적 1~21번, 재확인 지적 수정까지 끝났음.
 - **PR #3:** https://github.com/leejw0010/Jobseeker/pull/3 · `feature/practice-p0` → `main` · 2026-10-28 GitHub API(`GET /repos/leejw0010/Jobseeker/pulls/3`)로 확인한 당시 **Open, 미병합, draft 아님**, head 1a12453. (`gh`는 설치돼 있지 않음.)
-- `feature/local-stt`(2026-10-30): `feature/video-analysis`(56e28ac)에서 갈라져 로컬 STT를 추가함.
+- `feature/local-stt`(2026-10-30): `feature/video-analysis`(56e28ac)에서 갈라져 로컬 STT를 추가하고 카메라 지표(D)를 정리함.
 - 추적하지 않는 파일: `.vscode/`(개인 설정). `backend/.venv/`는 2026-10-28에 `.gitignore`에 추가함.
 
 ## 1. 구현 사실 (코드로 확인)
@@ -19,7 +19,7 @@
 | P0: 녹음 동의(403), 전사 후 원본 삭제, 보관 기한·만료·고아 파일 정리, 동의 철회, 설정 화면 | `app/retention.py`, `web/src/components/ConsentPanel.tsx`, `web/src/pages/PracticeSettings.tsx` |
 | P0: 자동 디브리프(heartbeat, 중복 작업 방지, 실패 재시도), 자기평가 기반 다시 연습 | `app/debrief.py` |
 | Track: 지원 건·단계·버전·복원·sync·통계 | `routers/track.py` |
-| 카메라 자세 분석(선택, 브라우저 전용·메모리 보관): 얼굴 검출 비율, 화면 이탈 시간, 고개 좌우·숙임 상대 변화 | `web/src/video/`, `web/src/components/useFaceAnalysis.ts`·`CameraPanel.tsx`·`VideoReportCard.tsx` (브랜치 `feature/video-analysis`, 미커밋) |
+| 카메라 자세 분석(선택, 브라우저 전용·메모리 보관): 답변·분석 시간, 얼굴 검출 비율, 찾지 못한 시간(`none`), 일부 프레임 밖 시간(`edge`), 고개 좌우·숙임 상대 변화. 2026-10-30 지표 분리(D, `feature/local-stt` 미커밋, [설계](superpowers/specs/2026-10-30-d-camera-metrics-design.md)) | `web/src/video/`, `web/src/components/useFaceAnalysis.ts`·`CameraPanel.tsx`·`VideoReportCard.tsx` (브랜치 `feature/video-analysis`, 미커밋) |
 | 로컬 STT(`STT_PROVIDER=local` 기본, faster-whisper `base`·CPU·INT8, 지연 로딩·재사용·캐시 우선, 한 번에 하나), LLM 키와 분리된 `/health`의 `stt` | `app/stt.py`, `web/src/sttText.ts` (브랜치 `feature/local-stt`, 미커밋) |
 | Track: 자소서 버전 단어 단위 diff | 프런트엔드 `web/src/components/Diff.tsx`(백엔드에는 diff 로직 없음) |
 | 인증: JWT(HS256) 검증 후 `sub` 사용, 라우터에서 `user_id` 필터 | `app/auth.py`, `routers/*` ([architecture.md](architecture.md) "인증과 데이터 접근 경계") |
@@ -36,7 +36,7 @@
 | 로컬 STT | `test_local_stt.py`(25개) | 가짜 모델 + PyAV로 만든 실제 WebM/Opus. 키 없이 전사·원본 삭제, 지연 로딩 1회·재사용·동시 첫 요청 1회 로딩, 캐시 우선·다운로드 1회, 다운로드/로딩 실패 후 재시도, 라이브러리 import 실패(500이 아니라 `failed`), 무음·깨진 파일·너무 긴 녹음·바쁨·모델 오류, 한 번에 하나 실행, 동의 403, 보관→수정→기본 코칭→녹음 삭제, `off`·미설치, `/health` 분리. **인식 정확도는 검사하지 않음.** e2e는 `STT_PROVIDER=off`로 돌려 로컬 전사를 열지 않음 |
 | 잘못된 id → 404 | `test_malformed_ids.py` | |
 | 스키마 | `test_migration.py` | **로컬 SQLite 업그레이드**와 **id 컬럼의 Postgres `UUID` 타입 컴파일**만 검사. Supabase SQL 실행·RLS·Storage 정책은 검사하지 않음 |
-| 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라), `video-metrics.spec.ts`(계산만, 브라우저 없이) | 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
+| 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라), `video-metrics.spec.ts`(계산만, 브라우저 없이) | `none`/`edge` 시간이 겹치지 않음, 이마만 넘은 얼굴은 검출 100%·찾지 못한 시간 0, 답변·분석 시간(탭 가림·도중 종료·표본 없음), 넘은 쪽 문구의 좌우 반전, 미리보기 `contain`, 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
 | Track: 지원 건·단계·버전 중복 방지·복원·sync upsert·통계 | `test_track.py` | 백엔드 API만. 프런트엔드 단어 diff(`Diff.tsx`)는 pytest·e2e 모두 직접 검증하지 않음 |
 
 2026-10-28에 직접 실행한 결과:
@@ -77,8 +77,8 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 
 1. `npm run dev`(localhost) 면접 화면에서 `동의하고 카메라 켜기` → 권한 허용 → 미리보기가 좌우 반전으로 보이고 "얼굴이 화면 안에 있어요"가 뜨는지. 첫 로딩 시간(모델·WASM 내려받기)을 적는다.
 2. 개발자 도구 Network: 모델(`storage.googleapis.com`)과 앱 에셋 외에 영상·이미지 업로드가 없는지, API 요청 본문에 분석 수치가 없는지. MediaPipe 지표 전송 요청이 있으면 주소를 기록한다.
-3. 정면 30초 답변 → 검출 비율 95% 이상, 벗어난 시간 거의 0, 좌우·숙임 0%에 가까운지.
-4. 답변 중 의자에서 비켜 5초 이상 화면 밖 → 벗어난 시간 약 5초, 1초 이상 벗어난 횟수 1번.
+3. (2026-10-30 대체) 지표 점검은 아래 "카메라 지표 점검(D) 수동 절차"를 따른다.
+4. (2026-10-30 대체) 위와 같음.
 5. 고개를 옆으로 약 20°, 30°, 45° 돌려 각각 몇 초 유지 → 어느 각도부터 '좌우 회전'에 잡히는지 기록하고 `YAW_THRESHOLD` 조정 여부 결정. 숙임(`PITCH_THRESHOLD`)도 같은 방식. 안경·조명이 어두운 경우도 한 번.
 6. 녹음 답변 + 카메라를 함께 켜 마이크 레벨·녹음 저장·전사가 정상인지(마이크와 카메라는 별도 스트림).
 7. `카메라 끄기`, 회고로 이동, 다른 메뉴로 이동, 탭 닫기 각각에서 브라우저의 카메라 사용 표시등이 꺼지는지.
@@ -86,6 +86,21 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 9. 노트북 CPU 사용률(작업 관리자)을 카메라 끔/켬으로 비교. GPU 위임이 실패해 CPU로 돌 때도 확인.
 10. 모바일(Android Chrome, iOS Safari)에서 HTTPS 배포본으로 1~3, 7 확인. 회고 표가 390px 폭에서 읽히는지.
 11. 배포 주소에서 `vision_wasm_internal.wasm`이 `application/wasm`으로 내려오는지(아니면 느린 경로로 동작하거나 실패).
+
+### 카메라 지표 점검(D) 수동 절차 (실제 웹캠, 미실행)
+
+목적: "얼굴이 화면 안에 있는데 이탈로 잡힌다"의 원인을 가린다(가설 H1 이마·턱 메시가 프레임을 넘음, H2 검출이 잠깐씩 끊김, H3 카메라 해상도가 4:3이 아님). 실행: `cd web && VITE_CAMERA_DEBUG=true npm run dev`(백엔드도 실행). 각 자세로 **30초 글 답변**(녹음 흐름도 한 번)을 한 뒤 회고 카드의 답변 시간·분석한 시간·검출·찾지 못한 시간·일부 프레임 밖과, 카메라 패널 진단(상태별 표본 수, "edge 중 핵심 부위 안" 수, 해상도)을 아래 표에 적는다. 결과가 나오기 전에는 임계값·`edge` 판정 규칙을 바꾸지 않는다.
+
+| # | 자세 | 기대·판정 | 결과 |
+|---|---|---|---|
+| 1 | 평소 거리, 정면 | 검출 ≥ 95%, 찾지 못한 시간 ≈ 0, 분석한 시간 ≈ 답변 시간. 일부 프레임 밖 시간이 크면 H1 후보 | 미실행 |
+| 2 | 카메라에 가까이(이마 위가 잘리게) | 실시간 문구 "얼굴 위쪽이 화면 밖에 있어요", 진단 "핵심 부위 안: 예" → H1 확인 | 미실행 |
+| 3 | 턱이 잘리게 | "아래쪽" | 미실행 |
+| 4 | 몸을 기울여 미리보기의 오른쪽 가장자리로, 이어서 왼쪽으로 | 문구 방향이 미리보기와 일치(좌우 반전 확인) | 미실행 |
+| 5 | 5초 이상 자리 비움 | 찾지 못한 시간 ≈ 5초, 1초 이상 1번 | 미실행 |
+| 6 | 안경·어두운 조명 | 잠깐씩 `none`이 생기는지(H2), 찾지 못한 시간과 횟수 | 미실행 |
+| 7 | 답변 중 다른 탭으로 5초 | 분석하지 못한 시간 ≈ 4~5초, 다른 지표에 섞이지 않음 | 미실행 |
+| 8 | 진단의 카메라 해상도 | 640×480이 아니면 H3. 미리보기에 검은 띠와 함께 프레임 전체가 보이는지 | 미실행 |
 
 ## 보안 검토 필요
 

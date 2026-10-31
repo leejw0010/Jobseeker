@@ -145,3 +145,9 @@
 - 결정: `STT_PROVIDER=local|openai|off`(기본 `local`)로 전사 제공자를 고르고, 전사 가능 여부를 `OPENAI_API_KEY`와 따로 판단한다. 로컬은 다국어 Whisper `base`·CPU·INT8, 모델은 첫 전사 때 한 번 불러와 재사용하고(설정이 바뀌면 다시), 캐시를 먼저 보고 없을 때만 내려받는다. 전사는 한 번에 하나만 돌리고 대기가 `LOCAL_STT_QUEUE_TIMEOUT_SEC`를 넘으면 실패로 돌려준다. 모든 전사 실패(무음·잘못된 파일·너무 긴 녹음·바쁨·모델 다운로드/로딩 실패)는 기존 `failed`로 두어 원본을 남기고 다시 시도하게 한다(API 상태 값은 늘리지 않음). 실패 사유는 로그와 `/health`의 `stt.error`로만 알린다. 녹음은 faster-whisper의 `decode_audio` 대신 직접 PyAV로 푼다. 기존 테스트는 `STT_PROVIDER=openai`, e2e는 `off`로 고정한다.
 - 이유: 사용자 요청(외부 API 없이 노트북에서 한국어 전사, 녹음을 외부로 보내지 않음). 노트북 CPU에서 전사를 겹치면 둘 다 느려지고 요청이 쌓인다. 설치된 faster-whisper 1.2.1의 `decode_audio`는 PyAV 19에서 없어진 `metadata_errors` 인자를 넘겨 실패한다. 실패 사유를 답변마다 저장하려면 DB 스키마를 바꿔야 해서 이번에는 하지 않았다. `beam_size` 5와 1은 실측 속도 차가 약 1.4배이고 정확도는 비슷해 기본 5를 유지했다.
 - 근거: `backend/app/stt.py`, `backend/tests/test_local_stt.py`, README "음성 인식·자동 전사", [progress.md](progress.md) 2026-10-30 측정
+
+### D-19 카메라 지표: `none`과 `edge`를 나누고 답변·분석 시간을 구분, 판정 기준은 실측 전까지 유지
+- 날짜·상태: 2026-10-30 · 유효(D-17 보완)
+- 결정: "화면을 벗어난 시간"(`none`+`edge`)을 없애고 "얼굴을 찾지 못한 시간"(`none`)과 "얼굴 일부가 프레임 밖"(`edge`)으로 나눈다. 얼굴 검출 비율(`in`+`edge`)은 그대로 두고 계산 방법을 화면에 적는다. 답변 시간과 분석한 시간을 따로 보여 주고 그 차이는 어느 지표에도 넣지 않는다. 미리보기는 `object-fit: contain`(좌우 반전 유지)으로 바꾸고, 면접 중 `edge`일 때 넘은 쪽을 미리보기 기준으로 알린다. 실제 웹캠 점검용 진단은 개발 서버(`VITE_CAMERA_DEBUG=true`)에서만 보이고 저장·전송하지 않는다. `EDGE_MARGIN`·회전·숙임 기준값과 상태 판정 규칙은 바꾸지 않는다.
+- 이유: `edge` 프레임을 검출 비율과 이탈 시간이 함께 세서 "검출 100%, 이탈 100%"가 동시에 나올 수 있었다(사용자 보고: 얼굴이 화면 안인데 이탈로 판정). 미리보기 `cover`는 카메라가 4:3이 아니면 분석 프레임 일부를 잘라 보여 줬다. `none`은 검출 실패일 수도 있어 의도된 이탈의 증거가 아니다. 판정 기준을 바꿀 근거(실제 웹캠 결과)가 아직 없다.
+- 근거: [specs/2026-10-30-d-camera-metrics-design.md](superpowers/specs/2026-10-30-d-camera-metrics-design.md), `web/src/video/metrics.ts`, `web/e2e/video-metrics.spec.ts`·`camera.spec.ts`, [progress.md](progress.md) "카메라 지표 점검(D) 수동 절차"

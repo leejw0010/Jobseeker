@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CAMERA_DEBUG, emptyCounts, type CameraDiag } from "../video/debug";
 import { loadFaceDetector, type FaceDetector } from "../video/detector";
-import { SAMPLE_MS, faceFeatures, summarizeSegment, type FaceSample, type FaceState } from "../video/metrics";
+import { SAMPLE_MS, edgeLabel, faceFeatures, summarizeSegment, type FaceSample, type FaceState, type Overshoot } from "../video/metrics";
 
 export type CameraStatus = "off" | "starting" | "on" | "error";
 
@@ -10,12 +11,19 @@ export function useFaceAnalysis() {
   const [status, setStatus] = useState<CameraStatus>("off");
   const [error, setError] = useState<string | null>(null);
   const [face, setFace] = useState<FaceState | null>(null);
+  // edge일 때 넘은 쪽(실시간 안내용). 안내 문구가 바뀔 때만 갱신한다
+  const [edge, setEdge] = useState<Overshoot | null>(null);
+  const lastEdge = useRef("");
+  // 개발 전용 진단(CAMERA_DEBUG). 끄면 갱신하지 않는다
+  const [diag, setDiag] = useState<CameraDiag | null>(null);
+  const counts = useRef(emptyCounts());
   const video = useRef<HTMLVideoElement | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const detector = useRef<FaceDetector | null>(null);
   const timer = useRef(0);
   const lastFace = useRef<FaceState | null>(null);
   const segment = useRef<FaceSample[] | null>(null);
+  const segStart = useRef(0);
   // 켜는 중에 끄거나 화면을 떠나면 늦게 도착한 카메라·검출기를 바로 정리한다
   const gen = useRef(0);
 
@@ -29,6 +37,10 @@ export function useFaceAnalysis() {
     if (video.current) video.current.srcObject = null;
     lastFace.current = null;
     setFace(null);
+    lastEdge.current = "";
+    setEdge(null);
+    counts.current = emptyCounts();
+    setDiag(null);
   }, []);
 
   const fail = useCallback((message: string) => {
@@ -50,6 +62,14 @@ export function useFaceAnalysis() {
     }
     segment.current?.push(sample);
     if (sample.state !== lastFace.current) { lastFace.current = sample.state; setFace(sample.state); }
+    const edgeKey = sample.overshoot ? edgeLabel(sample.overshoot) : "";
+    if (edgeKey !== lastEdge.current) { lastEdge.current = edgeKey; setEdge(sample.overshoot ?? null); }
+    if (CAMERA_DEBUG) {
+      const c = counts.current;
+      c[sample.state]++;
+      if (sample.state === "edge" && sample.coreInside) c.edgeCore++;
+      setDiag({ sample, width: v.videoWidth, height: v.videoHeight, counts: { ...c } });
+    }
   }, [fail]);
 
   const enable = useCallback(async () => {
@@ -94,15 +114,20 @@ export function useFaceAnalysis() {
   }, []);
 
   /** 답변을 시작할 때 부른다. 카메라가 꺼져 있으면 아무것도 재지 않는다 */
-  const beginSegment = useCallback(() => { segment.current = detector.current ? [] : null; }, []);
-  /** 답변을 마칠 때 부른다. 잰 표본이 없으면 null */
+  const beginSegment = useCallback(() => {
+    segment.current = detector.current ? [] : null;
+    segStart.current = performance.now();
+    counts.current = emptyCounts();
+  }, []);
+  /** 답변을 마칠 때 부른다. 시작할 때 카메라가 켜져 있었으면 표본이 없어도(카메라 화면 준비 전, 도중에 끔) 요약을 돌려준다:
+   *  답변 시간과 분석한 시간의 차이가 분석하지 못한 시간이다. 시작할 때 꺼져 있었으면 null */
   const endSegment = useCallback(() => {
     const samples = segment.current;
     segment.current = null;
-    return samples?.length ? summarizeSegment(samples) : null;
+    return samples ? summarizeSegment(samples, { start: segStart.current, end: performance.now() }) : null;
   }, []);
 
   useEffect(() => release, [release]);
 
-  return { status, error, face, enable, disable, attachVideo, beginSegment, endSegment };
+  return { status, error, face, edge, diag, enable, disable, attachVideo, beginSegment, endSegment };
 }
