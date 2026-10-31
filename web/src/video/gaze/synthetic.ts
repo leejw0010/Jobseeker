@@ -5,6 +5,9 @@
  *  - gazeX·yaw > 0: 사용자 오른쪽 · gazeY·pitch > 0: 아래쪽 (라디안)
  *  - 사용자가 자기 오른쪽을 보면 홍채 x가 작아지고, 고개를 오른쪽으로 돌리면 코끝 x가 작아진다 */
 
+import { gazeFeatures, isFeatures } from "./features";
+import type { GroupedSample } from "./regression";
+
 type Pt = { x: number; y: number };
 
 export type FaceParams = {
@@ -80,4 +83,37 @@ export function syntheticFace(p: FaceParams): Pt[] {
     const nx = r ? r.gauss() * p.noise! : 0, ny = r ? r.gauss() * p.noise! : 0;
     return { x: cx + xr + nx, y: (cyRel + yr + ny) * aspect };
   });
+}
+
+// ───────── 화면 응시 합성 데이터(테스트 도우미) ─────────
+
+export const VIEW = { w: 1280, h: 720 };
+/** 숨긴 기하: 눈이 뷰포트 가운데 앞, 뷰포트 너비의 distance배 거리에 있다고 보고 화면 점 → 시선 각도 */
+export function screenToGaze(x: number, y: number, view = VIEW, distance = 1.8) {
+  const d = distance * view.w;
+  return { gazeX: Math.atan((x - view.w / 2) / d), gazeY: Math.atan((y - view.h / 2) / d) };
+}
+
+/** 보정 9점(뷰포트 비율), 가운데부터 뱀 순서 */
+export const GRID9: [number, number][] = [[0.5, 0.5], [0.08, 0.08], [0.5, 0.08], [0.92, 0.08], [0.92, 0.5], [0.08, 0.5],
+  [0.08, 0.92], [0.5, 0.92], [0.92, 0.92]];
+
+/** 격자 지점을 보는 프레임 묶음. groupOffsetPx만큼 응시마다 고정된 치우침(특징으로 설명할 수 없음)을 정답에 더한다 */
+export function syntheticGrid(o: { groups?: number; framesPerGroup?: number; groupOffsetPx?: number; curvature?: number;
+  noise?: number; seed?: number; targets?: [number, number][]; view?: { w: number; h: number } } = {}): GroupedSample[] {
+  const view = o.view ?? VIEW, seed = o.seed ?? 1;
+  const targets = (o.targets ?? GRID9).slice(0, o.groups ?? 9);
+  const out: GroupedSample[] = [];
+  targets.forEach(([tx, ty], gi) => {
+    const r = rng(seed * 7919 + gi);
+    const a = r.next() * 2 * Math.PI, off = o.groupOffsetPx ?? 0;
+    const label: [number, number] = [tx * view.w + Math.cos(a) * off, ty * view.h + Math.sin(a) * off];
+    for (let fi = 0; fi < (o.framesPerGroup ?? 12); fi++) {
+      const face = syntheticFace({ ...screenToGaze(tx * view.w, ty * view.h, view), yaw: 0, pitch: 0, curvature: o.curvature,
+        noise: o.noise ?? 0.0001, seed: seed * 100_003 + gi * 101 + fi });
+      const f = gazeFeatures(face, 640, 480);
+      if (isFeatures(f)) out.push({ f, target: label, group: `g${seed}-${gi}` });
+    }
+  });
+  return out;
 }

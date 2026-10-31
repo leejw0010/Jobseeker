@@ -123,3 +123,61 @@ test("synthetic noise is reproducible by seed", () => {
   expect(a).not.toEqual(c);
   expect(a).toHaveLength(478);
 });
+
+// ───────── Task 3: G2 화면 좌표 회귀 ─────────
+
+import { fitRidge, groupedFolds, selectG2 } from "../src/video/gaze/regression";
+import { syntheticGrid } from "../src/video/gaze/synthetic";
+
+test("ridge recovers linear coefficients and stays finite on duplicate columns", () => {
+  const X = [...Array(50)].map((_, i) => [1, i / 10, (i % 7) / 7]);
+  const y = X.map(([, a, b]) => 3 + 2 * a - 5 * b);
+  const w = fitRidge(X, y, 1e-6);
+  expect(w[0]).toBeCloseTo(3, 3);
+  expect(w[1]).toBeCloseTo(2, 3);
+  expect(w[2]).toBeCloseTo(-5, 3);
+  const dup = fitRidge(X.map((r) => [...r, r[1]]), y, 0.1);
+  expect(dup.every(Number.isFinite)).toBe(true);
+  const constant = fitRidge(X.map(() => [1, 0, 0]), y, 0.1); // 특징이 모두 0이어도 NaN 없이 절편만
+  expect(constant.every(Number.isFinite)).toBe(true);
+});
+
+test("grouped folds never put frames of the held-out group in training", () => {
+  const groups = ["a", "a", "b", "b", "c", "c", "a"];
+  const folds = groupedFolds(groups);
+  expect(folds).toHaveLength(3);
+  for (const { train, test } of folds) {
+    const held = new Set(test.map((i) => groups[i]));
+    expect(held.size).toBe(1);
+    expect(train.some((i) => held.has(groups[i]))).toBe(false);
+    expect(train.length + test.length).toBe(groups.length);
+  }
+});
+
+test("grouped CV error reflects per-fixation offsets (no frame-level leakage)", () => {
+  // 응시마다 고정된 치우침이 있는 데이터: 특징으로 설명할 수 없으므로 묶음 단위 교차 검증 오차는 커야 한다
+  const s = syntheticGrid({ groups: 9, framesPerGroup: 12, groupOffsetPx: 60, seed: 1 });
+  expect(selectG2(s).cvMedianPx).toBeGreaterThan(30);
+});
+
+test("model selection prefers M1 unless M2 is at least 15% better", () => {
+  const linear = selectG2(syntheticGrid({ curvature: 0, seed: 2 }));
+  expect(linear.kind).toBe("M1");
+  const curved = selectG2(syntheticGrid({ curvature: 0.8, seed: 3 }));
+  expect(curved.kind).toBe("M2");
+  expect(curved.cvByKind.M2).toBeLessThanOrEqual(curved.cvByKind.M1 * 0.85);
+});
+
+test("the fitted model predicts held-out positions on clean data", () => {
+  const train = syntheticGrid({ seed: 4 });
+  const m = selectG2(train);
+  const probe = syntheticGrid({ groups: 9, framesPerGroup: 1, seed: 5, targets: [[0.25, 0.25], [0.75, 0.75]] });
+  for (const s of probe) {
+    const [x, y] = m.predict(s.f);
+    expect(Math.hypot(x - s.target[0], y - s.target[1])).toBeLessThan(40);
+  }
+});
+
+test("too few groups is an explicit failure", () => {
+  expect(() => selectG2(syntheticGrid({ groups: 2, seed: 6 }))).toThrow("insufficient_groups");
+});
