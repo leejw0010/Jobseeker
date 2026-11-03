@@ -5,6 +5,7 @@ import Stars from "../components/Stars";
 import CoachingPanel from "../components/CoachingPanel";
 import ConsentPanel from "../components/ConsentPanel";
 import InterviewContext from "../components/InterviewContext";
+import ReviewInsights from "../components/ReviewInsights";
 import VideoReportCard from "../components/VideoReportCard";
 import type { CoachingRubric, InterviewContext as Context, PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
 import { clearSessionVideo } from "../video/metrics";
@@ -415,6 +416,7 @@ export default function SessionReview() {
       </div>
       <p className="muted small">{new Date(s.created_at).toLocaleString("ko-KR")} · {s.mode === "mock" ? `모의시험 (준비 ${s.prep_sec}초 / 답변 ${s.answer_sec}초)` : "자유 연습"}</p>
       {err && <p className="err">{err}</p>}
+      <ReviewInsights s={s} />
       <DebriefCard s={s} ai={ai} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
       <VideoReportCard sessionId={s.id} answers={s.answers} />
       <InterviewContext context={s.context_snapshot} />

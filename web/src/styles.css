@@ -186,3 +186,32 @@ summary { cursor: pointer; }
   .practice-settings .grow { min-width: 0; width: 100%; flex-basis: 100%; }
   .grid2 { grid-template-columns: minmax(0, 1fr); }
 }
+/* 회고 한눈에 보기(R1): 단일 계열 막대는 --accent, 상태는 기호+글자와 함께 --good/--warn/중립 */
+.insights-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 18px 28px; margin-top: 14px; }
+.viz { margin: 0; min-width: 0; }
+.viz figcaption { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+.viz-title { font-weight: 600; font-size: 14px; }
+.viz-key { display: inline-flex; align-items: center; gap: 5px; }
+.viz-ref-key { display: inline-block; height: 12px; border-left: 2px dashed var(--text-2); }
+.bars { display: grid; gap: 2px; }
+.bar-row { display: grid; grid-template-columns: 2.6em minmax(0, 1fr) 3.4em; align-items: center; gap: 8px; }
+.bar-label { font-size: 12px; color: var(--text-2); }
+.bar-track { position: relative; height: 22px; display: flex; align-items: center; border-left: 1px solid var(--border); }
+.bar-fill { display: block; height: 10px; min-width: 2px; background: var(--accent); border-radius: 0 4px 4px 0; }
+.bar-row:hover .bar-fill { filter: brightness(1.12); }
+.bar-ref { position: absolute; top: 0; bottom: 0; border-left: 2px dashed var(--text-2); transform: translateX(-1px); pointer-events: none; }
+.bar-value { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+.viz-table summary { margin-top: 6px; color: var(--text-2); }
+.viz-table table { margin-top: 4px; font-size: 13px; }
+.viz-note, .viz-empty { margin: 6px 0 0; }
+.status-grid { font-size: 13px; }
+.status-grid th, .status-grid td { padding: 6px; }
+.st { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); white-space: nowrap; }
+.st-mark { font-style: normal; display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 4px; font-size: 11px; font-weight: 700; color: var(--surface); box-sizing: border-box; }
+.st-mark.good { background: var(--good); }
+.st-mark.warn { background: var(--warn); }
+.st-mark.neutral { background: var(--muted); }
+.st-mark.none { background: transparent; color: var(--muted); border: 1px dashed var(--muted); }
+.insights-sub { margin: 22px 0 4px; font-size: 16px; }
+.insight-points > li { display: grid; gap: 4px; }
+.point-answers a { font-weight: 600; }

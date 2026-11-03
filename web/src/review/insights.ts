@@ -10,6 +10,7 @@ export const MIN_RATE_SEC = 5; // 이보다 짧은 녹음은 말 빠르기를 �
 export const ROLE_MIN_CHARS = 50; // 역할 규칙을 적용할 최소 글자 수(공백 제외)
 export const LOW_RATING = 2; // 자기 평가가 이 값 이하면 보완점
 export const VISIBLE_POINTS = 5;
+export const MAX_QUOTES = 2; // 한 보완점에 인용을 보일 답변 수
 
 const ROLE_WORDS = /제가|저는|직접|담당|본인|맡/;
 const QUOTE_CHARS = 60;
@@ -95,8 +96,12 @@ export function sessionInsights(s: PracticeSession): Insights {
   const avgSpm = measured.length >= MIN_SPEED_ANSWERS ? measured.reduce((t, m) => t + (m.spm as number), 0) / measured.length : null;
   const points: ImprovementPoint[] = [];
   const ref = (m: AnswerMetrics, quote?: string) => ({ id: m.id, order: m.order, ...(quote ? { quote } : {}) });
-  const push = (p: Omit<ImprovementPoint, "source"> & { source?: ImprovementPoint["source"] }) =>
-    p.answers.length > 0 && points.push({ source: "rule", ...p });
+  const push = (p: Omit<ImprovementPoint, "source"> & { source?: ImprovementPoint["source"] }) => {
+    if (!p.answers.length) return;
+    // 인용은 앞의 MAX_QUOTES개 답변만 남긴다(목록이 길어지지 않게). 나머지 답변은 번호 링크로만 보인다
+    const answers = p.answers.map((a, i) => (i < MAX_QUOTES ? a : { id: a.id, order: a.order }));
+    points.push({ source: "rule", ...p, answers });
+  };
 
   // 1. 코칭 기준이 '보완'인 답변을 기준별로 묶는다
   for (const c of CRITERIA) {

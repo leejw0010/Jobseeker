@@ -149,6 +149,13 @@ test("points are ordered coaching, time over, time short, role, speed, self-rati
   expect(orders(ins.points.find((p) => p.key === "rating"))).toEqual([ins.answers[0].order, ins.answers[1].order]);
 });
 
+test("a point quotes at most two answers so the list stays short", () => {
+  const ins = sessionInsights(sess([ans({ transcript: TEAM }), ans({ transcript: TEAM }), ans({ transcript: TEAM })]));
+  const role = ins.points.find((p) => p.key === "role");
+  expect(role?.answers.length).toBe(3);
+  expect(role?.answers.map((a) => !!a.quote)).toEqual([true, true, false]);
+});
+
 test("only five points are shown at once; the rest are folded", () => {
   const p = (i: number): ImprovementPoint => ({ key: `k${i}`, rank: i, title: "", answers: [], evidence: "", action: "", source: "rule" });
   const { shown, more } = splitPoints([1, 2, 3, 4, 5, 6, 7].map(p));
