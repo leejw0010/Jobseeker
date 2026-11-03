@@ -1,6 +1,6 @@
 # 진행 상태
 
-최종 갱신: 2026-11-01. 갱신할 때는 날짜와 근거(명령·커밋)를 함께 적고, 오래된 항목은 지우거나 "완료"로 옮깁니다. 아래에서 "구현 사실", "자동 테스트", "외부 서비스 실검증"을 구분해 적습니다.
+최종 갱신: 2026-11-03. 갱신할 때는 날짜와 근거(명령·커밋)를 함께 적고, 오래된 항목은 지우거나 "완료"로 옮깁니다. 아래에서 "구현 사실", "자동 테스트", "외부 서비스 실검증"을 구분해 적습니다.
 
 ## 현재 브랜치 상태
 
@@ -9,6 +9,7 @@
 - **PR #3:** https://github.com/leejw0010/Jobseeker/pull/3 · `feature/practice-p0` → `main` · 2026-10-28 GitHub API(`GET /repos/leejw0010/Jobseeker/pulls/3`)로 확인한 당시 **Open, 미병합, draft 아님**, head 1a12453. (`gh`는 설치돼 있지 않음.)
 - `feature/local-stt`(2026-11-01 로컬 커밋 3개: 로컬 STT, D 카메라 지표, A 평가 도구): `feature/video-analysis`(56e28ac, `main` 미병합)에서 갈라짐. push·PR 전. 이어지는 시선 분석(G)은 이 위에서 만든 `feature/gaze-calibration`에서 함.
 - `feature/gaze-calibration`(2026-11-01): `feature/local-stt`(9e4cc16)에서 갈라짐. G 설계·계획 커밋 뒤 0단계(개발 전용 시선 실험실과 계산 모듈)만 구현, 실제 웹캠 시험 대기. push·PR 전.
+- `feature/review-insights`(2026-11-03): `feature/gaze-calibration`(56548ad)에서 갈라짐. 회고 한눈에 보기(R1)만 구현. 백엔드·API·DB 변경 없음. push·PR 전.
 - 추적하지 않는 파일: `.vscode/`(개인 설정). `backend/.venv/`는 2026-10-28에 `.gitignore`에 추가함.
 
 ## 1. 구현 사실 (코드로 확인)
@@ -23,6 +24,7 @@
 | 카메라 자세 분석(선택, 브라우저 전용·메모리 보관): 답변·분석 시간, 얼굴 검출 비율, 찾지 못한 시간(`none`), 일부 프레임 밖 시간(`edge`), 고개 좌우·숙임 상대 변화. 2026-10-30 지표 분리(D, `feature/local-stt` 미커밋, [설계](superpowers/specs/2026-10-30-d-camera-metrics-design.md)) | `web/src/video/`, `web/src/components/useFaceAnalysis.ts`·`CameraPanel.tsx`·`VideoReportCard.tsx` (브랜치 `feature/video-analysis`, 미커밋) |
 | 로컬 STT(`STT_PROVIDER=local` 기본, faster-whisper `base`·CPU·INT8, 지연 로딩·재사용·캐시 우선, 한 번에 하나), LLM 키와 분리된 `/health`의 `stt` | `app/stt.py`, `web/src/sttText.ts` (브랜치 `feature/local-stt`, 미커밋) |
 | 시선 분석 0단계(개발 전용 실험실 `/dev/gaze-lab`): 특징 추출, G2 화면 좌표 릿지 회귀(묶음 교차 검증), G1 렌즈 응시 분류기(별도 응시로 평가), 표본 주기 측정, D 250ms 격자. 면접 화면·회고에는 아직 없음 | `web/src/video/gaze/`, `web/src/pages/GazeLab.tsx` (브랜치 `feature/gaze-calibration`) |
+| 회고 한눈에 보기(R1): 코칭 상태 격자, 답변 시간·말 빠르기(분당 음절, 녹음 길이 기준)·자기평가 막대와 표 보기, 규칙 기반 보완점(최대 5개, 답변 카드 링크). 세션 응답 값만 쓰고 LLM 호출 없음 | `web/src/review/insights.ts`, `web/src/components/ReviewInsights.tsx` (브랜치 `feature/review-insights`) |
 | Track: 자소서 버전 단어 단위 diff | 프런트엔드 `web/src/components/Diff.tsx`(백엔드에는 diff 로직 없음) |
 | 인증: JWT(HS256) 검증 후 `sub` 사용, 라우터에서 `user_id` 필터 | `app/auth.py`, `routers/*` ([architecture.md](architecture.md) "인증과 데이터 접근 경계") |
 
@@ -37,6 +39,7 @@
 | STT 요청 형식·재시도·오류 처리 | `test_transcription.py`, e2e 시나리오 5 | 모의 응답. 실제 인식 정확도는 아님 |
 | 로컬 STT | `test_local_stt.py`(25개) | 가짜 모델 + PyAV로 만든 실제 WebM/Opus. 키 없이 전사·원본 삭제, 지연 로딩 1회·재사용·동시 첫 요청 1회 로딩, 캐시 우선·다운로드 1회, 다운로드/로딩 실패 후 재시도, 라이브러리 import 실패(500이 아니라 `failed`), 무음·깨진 파일·너무 긴 녹음·바쁨·모델 오류, 한 번에 하나 실행, 동의 403, 보관→수정→기본 코칭→녹음 삭제, `off`·미설치, `/health` 분리. **인식 정확도는 검사하지 않음.** e2e는 `STT_PROVIDER=off`로 돌려 로컬 전사를 열지 않음 |
 | 시선 분석 0단계 | `gaze-math.spec.ts`(계산 30개), `gaze-lab.spec.ts`(실험실 흐름 4개) | 합성 얼굴과 가짜 검출기. 누출 없는 묶음 교차 검증, 보수적 렌즈 임계값·분포 밖 unknown, 오차보다 작은 영역은 판정 안 함, NaN 없는 실패, 창 크기 변경 무효화, 전송 없음, 프로덕션 번들 제외. **실제 정확도는 검사하지 않음** |
+| 회고 한눈에 보기 | `review-insights-math.spec.ts`(계산 11개), `review-insights.spec.ts`(화면 2개 × desktop·mobile) | 음절 수, 말 빠르기 조건(녹음·전사·5초), 세션 평균 3개 이상일 때만 빠름·느림, 모의시험만 시간 규칙, 역할 규칙, 코칭 보완 묶음과 전사문에 있는 인용만 표시, 우선순위, 5개 제한, NaN 없음. 화면은 글 답변 세션의 격자·보완점 링크·이유 문장·표 보기·모바일 가로 넘침 없음. **녹음 답변이 있는 화면은 e2e로 검사하지 않음**(작업 공간 스크립트로 가짜 녹음을 올려 눈으로만 확인). 기준값이 실제로 도움이 되는지는 사용자 검증 전 |
 | 잘못된 id → 404 | `test_malformed_ids.py` | |
 | 스키마 | `test_migration.py` | **로컬 SQLite 업그레이드**와 **id 컬럼의 Postgres `UUID` 타입 컴파일**만 검사. Supabase SQL 실행·RLS·Storage 정책은 검사하지 않음 |
 | 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라), `video-metrics.spec.ts`(계산만, 브라우저 없이) | `none`/`edge` 시간이 겹치지 않음, 이마만 넘은 얼굴은 검출 100%·찾지 못한 시간 0, 답변·분석 시간(탭 가림·도중 종료·표본 없음), 넘은 쪽 문구의 좌우 반전, 미리보기 `contain`, 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
@@ -55,6 +58,13 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 - `backend/.venv/bin/python -m pytest -q` → **161 passed**(기존 136 + `test_local_stt.py` 25). 무음 검사·동시 실행 제한·캐시 우선 조회를 일부러 빼면 각각 1·2·3개가 실패하는 것도 확인함.
 - `cd web && npm run build` → 통과.
 - `npm run test:e2e` → **21 passed, 5 skipped**. 이 머신에 Playwright 브라우저가 없어 `npx playwright install chromium`(v1248, `~/.cache/ms-playwright`)으로 받았고, sudo가 없어 빠진 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)는 `apt-get download` + `dpkg -x`로 임시 폴더에 풀어 `LD_LIBRARY_PATH`로 지정함. 스크린샷은 AGENTS.md 절차로 백업·복원함(실행 전후 `git status` 깨끗).
+
+`feature/review-insights`(회고 한눈에 보기, 2026-11-03, 커밋 b1c4ead·d880c76) 직접 실행 결과:
+- `backend/.venv/bin/python -m pytest -q` → **219 passed**(백엔드 변경 없음).
+- `cd web && npm run build` → 통과.
+- 회고 한눈에 보기 테스트(`e2e/review-insights*`) → **15 passed, 11 skipped**(계산 테스트는 desktop만).
+- 전체 `npm run test:e2e` → **81 passed, 3 failed, 62 skipped**(6.5분). 실패는 모두 desktop `camera.spec.ts`(카메라 분석 측정·카메라 권한 거부·edge-top)로, 면접 화면이 "불러오는 중…"에서 넘어가지 않거나 45초 제한을 넘김. 이번 브랜치가 바꾸지 않은 면접 화면에서 실패했고, `camera.spec.ts`만 다시 돌렸을 때 2개 실패(권한 거부는 통과), **브랜치 전 코드(56548ad, `git archive`로 꺼냄)에서도 같은 테스트가 같은 오류로 실패**(3 failed, 1 passed). 실행 중 여유 메모리 44~300MB, 스왑 1023/1024MB여서 메모리 부족으로 판단. 메모리가 넉넉할 때 다시 확인 필요. 스크린샷은 AGENTS.md 절차로 백업·복원(실행 후 `docs/screenshots/` 변경 없음).
+- 녹음 답변이 있는 화면(답변 시간·말 빠르기 막대, 제한 시간·평균 선)은 작업 공간 스크립트로 가짜 녹음을 올려 desktop·mobile, 밝게·어둡게 캡처해 눈으로만 확인(가로 넘침 0). 자동 테스트에는 없음.
 
 ### 로컬 STT 실측 (2026-10-30, 실제 모델·실제 한국어 음성)
 
@@ -157,6 +167,7 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 ## 미해결 문제
 
 - e2e를 실행하면 추적 중인 `docs/screenshots/coaching-review-{desktop,mobile}.png`를 덮어씀(`web/e2e/coaching.spec.ts:70`). 지금은 AGENTS.md의 백업·복원 절차로 대응. **추후 테스트 수정 필요:** 스크린샷 경로를 환경 변수로 받거나 기본값을 `test-results/`로 바꾸고, 문서용 갱신은 명시적으로 켤 때만 하도록.
+- 이 개발 PC(메모리 3.7GB, 스왑 1GB 가득)에서는 전체 e2e의 desktop `camera.spec.ts`가 브랜치와 무관하게 시간 초과로 실패함(2026-11-03, 브랜치 전 코드에서도 재현). 메모리가 넉넉한 환경에서 다시 확인 필요.
 - e2e 설정은 PATH의 `python`을 씀. venv를 PATH에 넣지 않으면 백엔드가 뜨지 않음.
 - 이 머신의 Playwright 브라우저는 2026-10-30에 v1248로 다시 받았지만 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)가 없어 `LD_LIBRARY_PATH`로 임시 지정해야 뜸. 근본 해결은 `sudo npx playwright install-deps chromium`.
 - 로컬 STT 실패 사유(무음·바쁨·모델 실패 등)는 답변마다 저장하지 않아 화면은 "인식하지 못했거나 전사 요청이 실패했어요"로만 알림(서버 로그와 `/health`의 `stt.error`에는 남음). 사유별 안내가 필요하면 DB 컬럼 추가(스키마 변경 3곳)가 필요함.

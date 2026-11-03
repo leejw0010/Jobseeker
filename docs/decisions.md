@@ -164,3 +164,8 @@
 - 이유: 사용자 요청(개인 맞춤 시선 보정, 외부 AI API 금지, 불확실하면 판정하지 않음). 노트북 렌즈는 화면 위 가장자리에 붙어 있어 화면 좌표 회귀의 외삽으로는 화면 위쪽과 구별할 수 있는지 알 수 없다. 지금 질문 글(한 줄 약 32px)은 웹캠 시선 오차보다 작을 가능성이 커서 필요한 패널 크기를 먼저 재야 한다.
 - 근거: [specs/2026-11-01-g-gaze-calibration-design.md](superpowers/specs/2026-11-01-g-gaze-calibration-design.md), [plans/2026-11-01-g-gaze-calibration.md](superpowers/plans/2026-11-01-g-gaze-calibration.md), `web/src/video/gaze/`, `web/src/pages/GazeLab.tsx`, [progress.md](progress.md) "G 0단계"
 
+### D-22 회고 그래프와 보완점은 LLM 없이 세션 값과 고정 규칙으로 계산
+- 날짜·상태: 2026-11-03 · 유효(기준값은 잠정)
+- 결정: 회고 맨 위 "한눈에 보기"는 세션 상세 응답에 이미 있는 값(코칭 보고서, 녹음 길이, 전사문, 자기평가)만으로 브라우저에서 계산한다. 새 API·스키마·LLM 호출이 없다. 보완점은 코칭 보완 → 제한 시간 초과 → 너무 짧음 → 역할 표현 없음 → 세션 평균 대비 말 빠르기 → 자기평가 1~2점 순서의 고정 규칙으로 고르고, 문구도 정해 둔다(코칭 보고서가 있으면 그 이유를 근거로 쓴다). 인용은 지금 전사문에 그대로 있는 부분만 보인다. 말 빠르기는 일반 인구 기준 없이 같은 세션 평균과만 비교하고, 녹음 길이에 침묵이 들어 있다는 점을 화면에 적는다. 말버릇 횟수는 세지 않는다. 기준값(40%, 1초, 25%, 3개, 5초, 50자, 2점, 5개)은 `web/src/review/insights.ts` 한 곳에 둔다.
+- 이유: 사용자가 유료 LLM 호출을 원하지 않음. 같은 입력이면 같은 결과가 나와 테스트할 수 있고, 녹음·전사문을 새로 밖으로 보내지 않는다. 전사는 말버릇을 빼고 적는 경우가 많아 셀 수 없다(A 평가). 무료 LLM(로컬 Ollama 등)은 `OPENAI_BASE_URL`로 기존 코칭 경로에 붙일 수 있으므로 별도 단계(R3)로 둔다.
+- 근거: [specs/2026-11-03-r1-review-insights-design.md](superpowers/specs/2026-11-03-r1-review-insights-design.md), `web/src/review/insights.ts`, `web/e2e/review-insights*.spec.ts`
