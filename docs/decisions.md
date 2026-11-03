@@ -199,3 +199,9 @@
 - 결정: `playwright.config.ts`가 실행마다 임시 녹음 폴더를 만들어 백엔드 `RECORDINGS_DIR`로 넘기고, 임시 폴더 밖이면 시작을 거부한다. 문서 스크린샷은 `UPDATE_DOC_SCREENSHOTS=1`일 때만 `docs/screenshots/`에 쓴다. 브라우저 없는 계산·확장 함수 테스트는 `web/tests/unit/`과 `playwright.unit.config.ts`(`npm run test:unit`)로 옮긴다(새 테스트 도구 없음). 백엔드에서 DB 전체를 훑는 정리 테스트는 `isolated_db` 픽스처로 테스트 전용 DB·녹음 폴더를 쓴다.
 - 이유: e2e가 동의를 철회하면 임시 DB에 없는 개발 사용자 녹음까지 `backend/recordings/`에서 지울 수 있었다. 공유 DB에서 만료 정리 한 번이 다른 테스트의 녹음 16개를 함께 지워 결과가 실행 순서에 의존했다.
 - 근거: `web/playwright.config.ts`, `web/e2e/env.ts`, `web/playwright.unit.config.ts`, `backend/tests/conftest.py`
+
+### 통합 기록: Stage 1 Review Insights + Architecture Fixes (2026-11-03)
+- 결정: 기존 두 브랜치와 원본 미커밋 작업을 보존하고, 별도 `feature/integration-review-architecture` Worktree에서 `59d7470` 기준으로 `1774030`을 병합한다. 공통 조상은 `eaa8477`. D-28은 원본 디렉터리의 별도 로컬 실행기 작업이므로 이 통합 기록에 가져오지 않는다.
+- 이유: Stage 1 마지막 커밋의 녹음 답변·접근성 검증과 Architecture의 녹음 격리·동시성·인증·DB·확장 수정을 함께 검증하면서, 다른 세션의 실행기 작업과 사용자 데이터를 보존하기 위해서다.
+- 검증 원칙: 단위 테스트는 `npm run test:unit`, 브라우저 테스트는 desktop·mobile 전체 `npm run test:e2e`로 따로 집계한다. E2E는 새 canonical 임시 녹음 폴더·임시 SQLite만 사용하며 기존 서버를 재사용하지 않는다. 기존 gaze-lab 간헐 실패는 새 회귀와 구분한다.
+- 근거: [통합 계획](superpowers/plans/2026-11-03-integration-review-architecture.md), [통합 검증 결과](progress.md#통합-검증-2026-11-03-별도-worktree).

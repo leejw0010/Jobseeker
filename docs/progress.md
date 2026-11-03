@@ -4,13 +4,17 @@
 
 ## 현재 브랜치 상태
 
-- `feature/architecture-fixes`(2026-11-03 현재 작업, `feature/review-insights` eaa8477에서 갈라짐): 외부 아키텍처 분석 보고서(2026-11-03)의 지적을 코드로 확인한 뒤 고친 작업. 사용자 요청으로 Codex가 진행 중 작업물을 `49aceee`·`a8fcea3`·`cd8fc53`·`f4e3212`로 커밋함. `git push -u origin feature/architecture-fixes`는 `could not read Username for 'https://github.com': No such device or address`로 실패했고, 연결된 GitHub 앱도 저장소 권한이 `push: false`라 업로드하지 못했음. 그 뒤의 확장·문서 변경은 아직 커밋 전.
+- `feature/integration-review-architecture`(2026-11-03, `/home/user/projects/Jobseeker-integration`): `feature/architecture-fixes` **59d7470**을 기준으로 `feature/review-insights` **1774030**을 병합. 공통 조상 **eaa8477**, Architecture 고유 커밋 5개·Review 고유 커밋 1개를 보존. `docs/progress.md` 두 충돌 구간은 Architecture의 단위 테스트 경로·스크린샷 격리와 Review의 녹음 답변 검증·기존 gaze 이슈를 함께 반영. `web/e2e/review-insights.spec.ts`는 자동 병합(공통 API 주소 import와 Stage 1 기본 대기시간 복원 모두 유지).
+  - 원본 `/home/user/projects/Jobseeker`의 `Start-JobSeeker.cmd`, `scripts/`, D-28·로컬 실행기 문서 변경은 별도 세션 작업으로 남김. 통합 Worktree로 가져오거나 수정하지 않음.
+  - 통합 전 Architecture 기준: pytest **281 passed in 32.67s**, build 통과, 단위 테스트 **68 passed (18.3s)**. 통합 후: pytest **281 passed in 34.01s**, build 통과(Vite **5.08s**), 단위 테스트 **68 passed (16.2s)**. 전체 브라우저 결과는 아래 통합 검증 절에서 별도로 집계.
+  - Stage 2·시선 Phase 1 개발, 실제 Supabase/OpenAI 호출, push·PR 생성·main 병합은 하지 않음.
+- `feature/architecture-fixes`(2026-11-03 원본 브랜치 HEAD **59d7470**, `feature/review-insights` eaa8477에서 갈라짐): 외부 아키텍처 분석 보고서(2026-11-03)의 지적을 코드로 확인한 뒤 고친 작업. 사용자 요청으로 Codex가 진행 중 작업물을 `49aceee`·`a8fcea3`·`cd8fc53`·`f4e3212`로 커밋함. `git push -u origin feature/architecture-fixes`는 `could not read Username for 'https://github.com': No such device or address`로 실패했고, 연결된 GitHub 앱도 저장소 권한이 `push: false`라 업로드하지 못했음. 그 뒤의 확장·문서 변경은 `59d7470`에 커밋돼 있으며, 통합에는 이 커밋까지 포함함.
   - 고친 것: e2e 녹음 폴더 격리(P0), 마이크 늦은 권한 응답·중복 요청, 같은 답변 동시 업로드, Track URL 고유성·버전 번호 경합·PATCH null, 자소서 저장 중 입력 보존, 목록 응답 역전, 실패 처리·재진입, 별점 재진입, `debrief → router` 역방향 의존 제거(`app/services/`), 저장소 오류 분류, 질문 생성 응답 검증, 카메라 비전송 검사 주소, 미분석 공백의 미검출 구간 병합, STT 보고서 세트 선택, 설정 검증·JWT 경로 강화, 확장 토큰 연결 지점·주소 권한 경고, 열거값 대조, 의존성 분리·버전 기록, 계산 테스트 분리, 정리 테스트 DB 격리, SQLite 외래 키. 결정은 [decisions.md](decisions.md) D-23~D-27.
-  - 자동 검증(2026-11-03, 마지막 변경 뒤 직접 실행): `cd backend && .venv/bin/python -m pytest -q` → **281 passed in 21.12s**; `cd web && npm run build` → 통과; `npm run test:unit` → **68 passed (6.4s)**; `LD_LIBRARY_PATH=$HOME/.cache/playwright-syslibs/root/usr/lib/x86_64-linux-gnu PATH=../backend/.venv/bin:$PATH npm run test:e2e` → **34 passed, 12 skipped (3.6m)**, 실패 없음(desktop `camera.spec.ts` 포함). 스크린샷은 AGENTS.md 절차로 백업·복원했고 실행 전후 `git status -- docs/screenshots/` 변경 없음. 새 테스트는 고치기 전 코드에서 먼저 실패하는 것을 확인함(동시 업로드는 "먼저 시작한 녹음" 전사문이 두 번째 녹음 파일과 짝지어짐, PATCH null은 `IntegrityError`, 공유 DB의 만료 정리는 다른 테스트 녹음 16개를 함께 지움 등).
+  - 자동 검증(2026-11-03, 마지막 변경 뒤 직접 실행): `cd backend && .venv/bin/python -m pytest -q` → **281 passed in 21.12s**; `cd web && npm run build` → 통과; `npm run test:unit` → **68 passed (6.4s)**; `LD_LIBRARY_PATH=$HOME/.cache/playwright-syslibs/root/usr/lib/x86_64-linux-gnu PATH=../backend/.venv/bin:$PATH npm run test:e2e` → **34 passed, 12 skipped (3.6m)**(Architecture 단독 결과, 통합 전체 검증으로 사용하지 않음), 실패 없음(desktop `camera.spec.ts` 포함). 스크린샷은 AGENTS.md 절차로 백업·복원했고 실행 전후 `git status -- docs/screenshots/` 변경 없음. 새 테스트는 고치기 전 코드에서 먼저 실패하는 것을 확인함(동시 업로드는 "먼저 시작한 녹음" 전사문이 두 번째 녹음 파일과 짝지어짐, PATCH null은 `IntegrityError`, 공유 DB의 만료 정리는 다른 테스트 녹음 16개를 함께 지움 등).
   - 앞선 Codex 실행의 e2e **27 failed, 5 skipped**는 전부 브라우저 시작 단계의 `libnspr4.so` 없음이었음(위 `LD_LIBRARY_PATH` 없이 실행). 화면 흐름 실패가 아님.
   - 실제 외부 서비스(OpenAI·Supabase) 검증은 하지 않음. 새 URL 고유 인덱스·행 잠금·JWT 경로는 SQLite와 pytest로만 확인했고 실제 Postgres·Supabase에서는 확인하지 않음.
 - `main`: PR #1(확장 팝업)과 PR #2(`codex/evidence-interview-coach`, 제출본 기반 면접 코칭)까지 머지됨.
-- `feature/practice-p0`(작업 중): `main`보다 8커밋 앞서 있고 `origin/feature/practice-p0`와 같음(1a12453). P0 기능과 리뷰 지적 1~21번, 재확인 지적 수정까지 끝났음.
+- `feature/practice-p0`: 2026-11-03 로컬 브랜치는 없고 원격 추적 ref `origin/feature/practice-p0`는 **95ad7c4**. 아래 PR #3의 **1a12453**은 2026-10-28 당시 조회 기록이며 현재 원격 상태로 재검증하지 않음. 현재 로컬 계보는 `origin/main` → `origin/feature/practice-p0` → `feature/video-analysis` → `feature/local-stt` → `feature/gaze-calibration` → `feature/review-insights` 순으로 조상 관계를 확인함.
 - **PR #3:** https://github.com/leejw0010/Jobseeker/pull/3 · `feature/practice-p0` → `main` · 2026-10-28 GitHub API(`GET /repos/leejw0010/Jobseeker/pulls/3`)로 확인한 당시 **Open, 미병합, draft 아님**, head 1a12453. (`gh`는 설치돼 있지 않음.)
 - `feature/local-stt`(2026-11-01 로컬 커밋 3개: 로컬 STT, D 카메라 지표, A 평가 도구): `feature/video-analysis`(56e28ac, `main` 미병합)에서 갈라짐. push·PR 전. 이어지는 시선 분석(G)은 이 위에서 만든 `feature/gaze-calibration`에서 함.
 - `feature/gaze-calibration`(2026-11-01): `feature/local-stt`(9e4cc16)에서 갈라짐. G 설계·계획 커밋 뒤 0단계(개발 전용 시선 실험실과 계산 모듈)만 구현, 실제 웹캠 시험 대기. push·PR 전.
@@ -44,8 +48,8 @@
 | 자동 디브리프·다시 연습 | `test_debrief.py`, e2e 시나리오 1 | e2e는 키 없는 모드에서 디브리프가 남은 답변을 기본 점검하는 것과 작업 종료(`debrief_running`)만 확인. AI 요약 카드는 e2e 대상 아님 |
 | STT 요청 형식·재시도·오류 처리 | `test_transcription.py`, e2e 시나리오 5 | 모의 응답. 실제 인식 정확도는 아님 |
 | 로컬 STT | `test_local_stt.py`(25개) | 가짜 모델 + PyAV로 만든 실제 WebM/Opus. 키 없이 전사·원본 삭제, 지연 로딩 1회·재사용·동시 첫 요청 1회 로딩, 캐시 우선·다운로드 1회, 다운로드/로딩 실패 후 재시도, 라이브러리 import 실패(500이 아니라 `failed`), 무음·깨진 파일·너무 긴 녹음·바쁨·모델 오류, 한 번에 하나 실행, 동의 403, 보관→수정→기본 코칭→녹음 삭제, `off`·미설치, `/health` 분리. **인식 정확도는 검사하지 않음.** e2e는 `STT_PROVIDER=off`로 돌려 로컬 전사를 열지 않음 |
-| 시선 분석 0단계 | `web/tests/unit/gaze-math.spec.ts`(계산 30개), `gaze-lab.spec.ts`(실험실 흐름 4개) | 합성 얼굴과 가짜 검출기. 누출 없는 묶음 교차 검증, 보수적 렌즈 임계값·분포 밖 unknown, 오차보다 작은 영역은 판정 안 함, NaN 없는 실패, 창 크기 변경 무효화, 전송 없음, 프로덕션 번들 제외. **실제 정확도는 검사하지 않음** |
-| 회고 한눈에 보기 | `web/tests/unit/review-insights-math.spec.ts`(계산 11개), `review-insights.spec.ts`(화면 2개 × desktop·mobile) | 음절 수, 말 빠르기 조건(녹음·전사·5초), 세션 평균 3개 이상일 때만 빠름·느림, 모의시험만 시간 규칙, 역할 규칙, 코칭 보완 묶음과 전사문에 있는 인용만 표시, 우선순위, 5개 제한, NaN 없음. 화면은 글 답변 세션의 격자·보완점 링크·이유 문장·표 보기·모바일 가로 넘침 없음. **녹음 답변이 있는 화면은 e2e로 검사하지 않음**(작업 공간 스크립트로 가짜 녹음을 올려 눈으로만 확인). 기준값이 실제로 도움이 되는지는 사용자 검증 전 |
+| 시선 분석 0단계 | `web/tests/unit/gaze-math.spec.ts`(계산), `gaze-lab.spec.ts`(실험실 흐름 5개) | 합성 얼굴과 가짜 검출기. 누출 없는 묶음 교차 검증, 보수적 렌즈 임계값·분포 밖 unknown, 오차보다 작은 영역은 판정 안 함, NaN 없는 실패, 창 크기 변경 무효화, 전송 없음, 프로덕션 번들 제외. **실제 정확도는 검사하지 않음** |
+| 회고 한눈에 보기 | `web/tests/unit/review-insights-math.spec.ts`(계산 11개), `review-insights.spec.ts`(글 답변 화면 2개), `review-insights-recorded.spec.ts`(녹음 답변 화면 5개). 화면 테스트는 desktop·mobile 모두 | 계산: 음절 수, 말 빠르기 조건(녹음·전사·5초), 세션 평균 3개 이상일 때만 빠름·느림, 모의시험만 시간 규칙, 역할 규칙, 코칭 보완 묶음과 전사문에 있는 인용만 표시, 우선순위, 5개 제한, NaN 없음. 화면: 글 답변 세션의 격자·이유 문장·가로 넘침 없음. 녹음 답변 모의시험 세션(가짜 녹음 바이트를 API로 올리고 녹음 길이를 지정, 카메라·마이크 없음)에서 답변 시간·말 빠르기·자기평가 막대의 값과 너비, 제한·평균 선 위치, 표 보기 값, 코칭 격자, 보완점 순서·근거·접기, 보완점 링크를 누르면 해당 답변 카드로 이동, 키보드(Tab 순서·Enter로 표 보기와 링크), 카드 글자 대비 4.5:1(밝게·어둡게). 기대값은 구현과 따로 손으로 계산. 기준값이 실제로 도움이 되는지는 사용자 검증 전 |
 | 잘못된 id → 404 | `test_malformed_ids.py` | |
 | 스키마 | `test_migration.py` | **로컬 SQLite 업그레이드**와 **id 컬럼의 Postgres `UUID` 타입 컴파일**만 검사. Supabase SQL 실행·RLS·Storage 정책은 검사하지 않음 |
 | 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라, 실제로 모은 API 요청이 있는지 먼저 확인), `web/tests/unit/video-metrics.spec.ts`(계산만, 브라우저 없이. 긴 미분석 공백은 `none` 구간을 끊음) | `none`/`edge` 시간이 겹치지 않음, 이마만 넘은 얼굴은 검출 100%·찾지 못한 시간 0, 답변·분석 시간(탭 가림·도중 종료·표본 없음), 넘은 쪽 문구의 좌우 반전, 미리보기 `contain`, 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
@@ -70,12 +74,29 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 - `cd web && npm run build` → 통과.
 - `npm run test:e2e` → **21 passed, 5 skipped**. 이 머신에 Playwright 브라우저가 없어 `npx playwright install chromium`(v1248, `~/.cache/ms-playwright`)으로 받았고, sudo가 없어 빠진 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)는 `apt-get download` + `dpkg -x`로 임시 폴더에 풀어 `LD_LIBRARY_PATH`로 지정함. 스크린샷은 AGENTS.md 절차로 백업·복원함(실행 전후 `git status` 깨끗).
 
-`feature/review-insights`(회고 한눈에 보기, 2026-11-03, 커밋 b1c4ead·d880c76) 직접 실행 결과:
-- `backend/.venv/bin/python -m pytest -q` → **219 passed**(백엔드 변경 없음).
-- `cd web && npm run build` → 통과.
-- 회고 한눈에 보기 테스트(`e2e/review-insights*`) → **15 passed, 11 skipped**(계산 테스트는 desktop만).
-- 전체 `npm run test:e2e` → **81 passed, 3 failed, 62 skipped**(6.5분). 실패는 모두 desktop `camera.spec.ts`(카메라 분석 측정·카메라 권한 거부·edge-top)로, 면접 화면이 "불러오는 중…"에서 넘어가지 않거나 45초 제한을 넘김. 이번 브랜치가 바꾸지 않은 면접 화면에서 실패했고, `camera.spec.ts`만 다시 돌렸을 때 2개 실패(권한 거부는 통과), **브랜치 전 코드(56548ad, `git archive`로 꺼냄)에서도 같은 테스트가 같은 오류로 실패**(3 failed, 1 passed). 실행 중 여유 메모리 44~300MB, 스왑 1023/1024MB여서 메모리 부족으로 판단. 메모리가 넉넉할 때 다시 확인 필요. 스크린샷은 AGENTS.md 절차로 백업·복원(실행 후 `docs/screenshots/` 변경 없음).
-- 녹음 답변이 있는 화면(답변 시간·말 빠르기 막대, 제한 시간·평균 선)은 작업 공간 스크립트로 가짜 녹음을 올려 desktop·mobile, 밝게·어둡게 캡처해 눈으로만 확인(가로 넘침 0). 자동 테스트에는 없음.
+`feature/review-insights`(회고 한눈에 보기) 직접 실행 결과:
+- 2026-11-03 1차(커밋 eaa8477, 메모리 부족: 여유 44~300MB·스왑 1023/1024MB): pytest **219 passed**, `npm run build` 통과, 전체 e2e **81 passed, 3 failed, 62 skipped**(146개). 실패는 desktop `camera.spec.ts` 3개.
+- 2026-11-03 안정화(별도 worktree `../Jobseeker-review-insights`, 메모리 여유 약 1.2~1.5GB): `npm run build` 통과, 전체 e2e **93 passed, 1 failed, 62 skipped**(156개 = 테스트 78개 × desktop·mobile, 3.1분). 실행 중 스왑 입출력 초당 8MB 이하.
+  - 건너뜀 62개는 모두 mobile에서 의도적으로 건너뛰는 것: 계산 테스트(`gaze-math` 33, `video-metrics` 13, `review-insights-math` 11)와 desktop 전용 `gaze-lab` 5. 156개 모두 시작했고 중단·미실행은 없음.
+  - 실패 1개는 `gaze-lab.spec.ts`의 "dots are drawn exactly where they are scored"(값 `NaN`). 같은 테스트만 5번 다시 돌리면 5번 모두 통과. 원인은 테스트의 경쟁 상태: 점을 찾는 단계와 위치를 재는 단계가 나뉘어 있는데, 실험실 화면이 점(`div`)과 렌즈 표시(`div`)를 같은 자리에서 그려 React가 같은 DOM 요소를 재사용하므로 그 사이에 다음 단계로 넘어가면 좌표 속성이 없는 렌즈 표시를 재게 됨. 앱 결함이 아니며 R1과 무관(G 0단계 테스트). 고치는 방법: 한 번의 `page.evaluate` 안에서 `.gaze-lab-dot[data-target-x]`를 찾고 바로 재기(미적용, 아래 미해결 문제).
+  - 1차의 카메라 실패 3개는 메모리 부족 탓으로 판단: 메모리가 풀린 뒤 세 테스트만 3번씩 다시 돌리면 **9/9 통과**(38.7초), 전체 실행에서도 모두 통과. 1차 실패 때 trace에서 같은 세션 조회가 17ms → 3,028ms, 클릭이 1.3~6.1초 걸렸고, 실패 단계가 실행마다 달랐으며(미리보기·회고 제목·답변 끝내기), 브랜치 전 코드(56548ad)에서도 같은 오류가 났음. 값이 틀린 실패는 없었고 모두 시간 초과.
+  - 회고 한눈에 보기 테스트에서 첫 화면만 20초 기다리던 설정을 지우고 기본 시간(5초)으로 통과함.
+  - `backend/.venv/bin/python -m pytest -q` → **219 passed**(백엔드 변경 없음). 스크린샷은 AGENTS.md 절차로 백업·복원(실행 후 `docs/screenshots/` 변경 없음).
+- 접근성·화면 확인(2026-11-03): 나눔 글꼴(`fonts-nanum`을 `apt-get download`로 받아 이 실행에만 `FONTCONFIG_FILE`로 지정)로 desktop·mobile, 밝게·어둡게 캡처해 한글 표시와 배치를 눈으로 확인(가로 넘침 0). 키보드로 격자 링크를 옮기면 초점 표시가 보이고, 표 보기는 Enter로 열림. 카드 안 보조 문장(`.muted`)이 밝은 화면에서 대비 3.41:1이라 카드 안에서만 `--text-2`(7.73:1)로 바꿈(테스트 추가).
+
+### 통합 검증 (2026-11-03, 별도 Worktree)
+
+- 실제 실행 환경: 기존 Python 3.12 venv 실행 파일을 사용하고, 웹 의존성은 통합 Worktree에 복사함(추가 설치·버전 변경 없음). 비밀 `.env`, 개발 DB, 사용자 녹음은 읽거나 복사하지 않음.
+- E2E 사전 안전 검사: 실제 개발 녹음 경로를 `E2E_RECORDINGS_DIR`로 지정한 설정 로딩은 예상한 오류로 거부됨. 실제 실행은 심볼릭 링크가 아닌 새 빈 canonical `/tmp/jobseeker-integration-e2e-recordings-9zoyffjz`를 명시했고, `RECORDINGS_DIR`로 전달됨. DB는 `playwright.config.ts`의 실행 PID별 임시 SQLite이며, 서버는 `reuseExistingServer: false`로 새로 시작. 시작 직전 8011/5179 포트가 비었음을 확인함.
+- 동의 철회는 해당 개발 사용자 폴더의 고아 파일까지 지우므로 DB 격리만으로는 부족함. 이번 실행은 저장소 루트도 새 임시 폴더로 격리하여 기존 녹음에 접근하지 않음. `UPDATE_DOC_SCREENSHOTS=0`으로 문서 스크린샷도 보호함.
+- Chromium v1248은 기본 실행에서 `libnspr4.so`, `libnss3.so`, `libnssutil3.so`, `libasound.so.2`가 누락됨. `LD_LIBRARY_PATH=$HOME/.cache/playwright-syslibs/root/usr/lib/x86_64-linux-gnu`를 적용한 `ldd`에서는 누락 없음.
+- 명령: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q`, `cd web && npm run build`, `npm run test:unit`, `PATH=../backend/.venv/bin:$PATH LD_LIBRARY_PATH=$HOME/.cache/playwright-syslibs/root/usr/lib/x86_64-linux-gnu npm run test:e2e -- --reporter=line,json`(위 녹음 폴더·스크린샷 환경도 함께 지정, 외부 서비스 키는 비움).
+- 전체 브라우저 실행: **44 passed, 12 skipped (3.1m)**, exit 0. JSON 보고서 기준 **184.498초**, unexpected 0·flaky 0. desktop **28 passed**, mobile **16 passed, 12 skipped**로 총 **56개**를 모두 집계. 건너뜀은 mobile의 desktop 전용 gaze-lab 5개·recorder 3개·Track 비동기 4개이며, mobile은 390×844 Chromium 뷰포트(실제 기기·Safari 아님). 녹음 답변 Review Insights 5개는 desktop/mobile 모두 통과했고, 기존 gaze 좌표 간헐 오류와 카메라 시간 초과는 이번 전체 실행에서 재현되지 않음. 이전 Stage 1의 **93 passed / 1 failed / 62 skipped**에는 현재 `web/tests/unit/`으로 옮긴 계산 테스트와 mobile 중복 skip이 포함돼 있으므로 통합 브라우저 수와 직접 비교하지 않음. 현재 계산·확장 단위 테스트는 별도 **68개**.
+- 독립 읽기 전용 리뷰: 통합으로 생긴 Critical/Important/Minor 결함 없음. 양쪽 소스 변경 보존, 녹음 격리·단위 테스트 분리와 자동 병합 결과를 재확인함. 녹음·카메라·전사는 가짜 입력/비활성 경로이므로 실제 하드웨어 정확도나 코칭 기준의 유용성까지 입증하지 않음.
+- 원본 미커밋 파일 9개의 SHA-256·Git 상태와 기존 모든 로컬/원격 추적 ref가 실행 전과 같음을 확인함. 사용자 녹음은 내용·목록을 읽지 않았으며, 테스트는 임시 저장소만 사용함. 문서 스크린샷 diff 없음. 테스트 서버 종료 후 8011/5179 포트 사용 가능 여부도 재확인함.
+- **Stage 2 착수 판단:** 통합 코드와 자동 테스트 기준으로 착수 가능한 상태. 기존 gaze 테스트 경쟁 상태·앱 전체 접근성 과제는 남아 있고 실제 Supabase Postgres/RLS/Storage/JWT·OpenAI·실제 장치 검증은 별도다. 이 판단은 외부 서비스 배포 준비 완료를 뜻하지 않으며, 이번에는 Stage 2나 시선 Phase 1 코드를 작성하지 않음.
+- **PR 후속:** 이 통합 브랜치의 로컬 병합 커밋을 검토한 뒤 사용자가 push하고 PR을 생성한다. 로컬 `origin/main`에는 앞선 기능 계보도 아직 없으므로, 기존 PR들의 실제 병합 상태와 PR base를 먼저 확인할 것(이번에는 fetch·push·PR 생성·main 병합을 하지 않음). 테스트 로그·E2E JSON은 `/tmp/jobseeker-integration-*.log`, `/tmp/jobseeker-integration-e2e-results.json`에 있음.
+- 코드 확인과 자동 테스트 결과만 기록하며, 실제 Supabase Postgres/RLS/Storage/JWT 및 실제 OpenAI 품질 검증은 이번 작업에서 하지 않음.
 
 ### 로컬 STT 실측 (2026-10-30, 실제 모델·실제 한국어 음성)
 
@@ -177,7 +198,9 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 
 ## 미해결 문제
 
-- 이 개발 PC(메모리 3.7GB, 스왑 1GB 가득)에서는 전체 e2e의 desktop `camera.spec.ts`가 브랜치와 무관하게 시간 초과로 실패함(2026-11-03, 브랜치 전 코드에서도 재현). 메모리가 넉넉한 환경에서 다시 확인 필요.
+- 메모리가 부족할 때(여유 수십 MB, 스왑 가득) 전체 e2e의 desktop `camera.spec.ts`가 시간 초과로 실패함(2026-11-03, 브랜치 전 코드에서도 재현, 메모리가 풀리면 9/9 통과). 이 PC에서는 VS Code 창 둘(Pylance 포함)과 다른 AI 세션이 메모리를 많이 씀. e2e는 메모리가 넉넉할 때 돌릴 것. 이번 통합 전체 검증의 desktop/mobile 카메라 테스트는 모두 통과함.
+- `web/e2e/gaze-lab.spec.ts`의 "dots are drawn exactly where they are scored"가 가끔 `NaN`으로 실패함(테스트 경쟁 상태, 위 "자동 테스트" 참고). 이번 통합 전체 검증에서는 통과했지만 경쟁 상태 자체는 수정하지 않음. 점을 찾고 재는 것을 한 번의 `page.evaluate`로 묶는 수정 필요(미적용).
+- 회고 한눈에 보기의 비치명적 접근성 개선(미적용): 앱 전체 링크 색 `--accent`가 밝은 화면에서 4.30:1(일반 글자 기준 4.5:1 미만, 앱 전체 토큰이라 R1에서 바꾸지 않음), 앱 전체 `--muted` 3.41:1(카드 밖), 막대·격자 칸의 마우스 툴팁(`title`)은 키보드로 볼 수 없음(같은 값은 표 보기·답변 카드에 있음), 표 보기에 제한·평균 값 행이 없음(그래프 제목 옆 글자로는 있음).
 - e2e 설정은 PATH의 `python`을 씀. venv를 PATH에 넣지 않으면 백엔드가 뜨지 않음.
 - 이 머신의 Playwright 브라우저는 2026-10-30에 v1248로 다시 받았지만 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)가 없어 `LD_LIBRARY_PATH=$HOME/.cache/playwright-syslibs/root/usr/lib/x86_64-linux-gnu`로 지정해야 뜸(없으면 모든 e2e가 브라우저 시작에서 실패). 근본 해결은 `sudo npx playwright install-deps chromium`.
 - 로컬 STT 실패 사유(무음·바쁨·모델 실패 등)는 답변마다 저장하지 않아 화면은 "인식하지 못했거나 전사 요청이 실패했어요"로만 알림(서버 로그와 `/health`의 `stt.error`에는 남음). 사유별 안내가 필요하면 DB 컬럼 추가(스키마 변경 3곳)가 필요함.
