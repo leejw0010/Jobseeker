@@ -39,7 +39,7 @@
 | STT 요청 형식·재시도·오류 처리 | `test_transcription.py`, e2e 시나리오 5 | 모의 응답. 실제 인식 정확도는 아님 |
 | 로컬 STT | `test_local_stt.py`(25개) | 가짜 모델 + PyAV로 만든 실제 WebM/Opus. 키 없이 전사·원본 삭제, 지연 로딩 1회·재사용·동시 첫 요청 1회 로딩, 캐시 우선·다운로드 1회, 다운로드/로딩 실패 후 재시도, 라이브러리 import 실패(500이 아니라 `failed`), 무음·깨진 파일·너무 긴 녹음·바쁨·모델 오류, 한 번에 하나 실행, 동의 403, 보관→수정→기본 코칭→녹음 삭제, `off`·미설치, `/health` 분리. **인식 정확도는 검사하지 않음.** e2e는 `STT_PROVIDER=off`로 돌려 로컬 전사를 열지 않음 |
 | 시선 분석 0단계 | `gaze-math.spec.ts`(계산 30개), `gaze-lab.spec.ts`(실험실 흐름 4개) | 합성 얼굴과 가짜 검출기. 누출 없는 묶음 교차 검증, 보수적 렌즈 임계값·분포 밖 unknown, 오차보다 작은 영역은 판정 안 함, NaN 없는 실패, 창 크기 변경 무효화, 전송 없음, 프로덕션 번들 제외. **실제 정확도는 검사하지 않음** |
-| 회고 한눈에 보기 | `review-insights-math.spec.ts`(계산 11개), `review-insights.spec.ts`(화면 2개 × desktop·mobile) | 음절 수, 말 빠르기 조건(녹음·전사·5초), 세션 평균 3개 이상일 때만 빠름·느림, 모의시험만 시간 규칙, 역할 규칙, 코칭 보완 묶음과 전사문에 있는 인용만 표시, 우선순위, 5개 제한, NaN 없음. 화면은 글 답변 세션의 격자·보완점 링크·이유 문장·표 보기·모바일 가로 넘침 없음. **녹음 답변이 있는 화면은 e2e로 검사하지 않음**(작업 공간 스크립트로 가짜 녹음을 올려 눈으로만 확인). 기준값이 실제로 도움이 되는지는 사용자 검증 전 |
+| 회고 한눈에 보기 | `review-insights-math.spec.ts`(계산 11개), `review-insights.spec.ts`(글 답변 화면 2개), `review-insights-recorded.spec.ts`(녹음 답변 화면 5개). 화면 테스트는 desktop·mobile 모두 | 계산: 음절 수, 말 빠르기 조건(녹음·전사·5초), 세션 평균 3개 이상일 때만 빠름·느림, 모의시험만 시간 규칙, 역할 규칙, 코칭 보완 묶음과 전사문에 있는 인용만 표시, 우선순위, 5개 제한, NaN 없음. 화면: 글 답변 세션의 격자·이유 문장·가로 넘침 없음. 녹음 답변 모의시험 세션(가짜 녹음 바이트를 API로 올리고 녹음 길이를 지정, 카메라·마이크 없음)에서 답변 시간·말 빠르기·자기평가 막대의 값과 너비, 제한·평균 선 위치, 표 보기 값, 코칭 격자, 보완점 순서·근거·접기, 보완점 링크를 누르면 해당 답변 카드로 이동, 키보드(Tab 순서·Enter로 표 보기와 링크), 카드 글자 대비 4.5:1(밝게·어둡게). 기대값은 구현과 따로 손으로 계산. 기준값이 실제로 도움이 되는지는 사용자 검증 전 |
 | 잘못된 id → 404 | `test_malformed_ids.py` | |
 | 스키마 | `test_migration.py` | **로컬 SQLite 업그레이드**와 **id 컬럼의 Postgres `UUID` 타입 컴파일**만 검사. Supabase SQL 실행·RLS·Storage 정책은 검사하지 않음 |
 | 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라), `video-metrics.spec.ts`(계산만, 브라우저 없이) | `none`/`edge` 시간이 겹치지 않음, 이마만 넘은 얼굴은 검출 100%·찾지 못한 시간 0, 답변·분석 시간(탭 가림·도중 종료·표본 없음), 넘은 쪽 문구의 좌우 반전, 미리보기 `contain`, 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
@@ -59,12 +59,15 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 - `cd web && npm run build` → 통과.
 - `npm run test:e2e` → **21 passed, 5 skipped**. 이 머신에 Playwright 브라우저가 없어 `npx playwright install chromium`(v1248, `~/.cache/ms-playwright`)으로 받았고, sudo가 없어 빠진 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)는 `apt-get download` + `dpkg -x`로 임시 폴더에 풀어 `LD_LIBRARY_PATH`로 지정함. 스크린샷은 AGENTS.md 절차로 백업·복원함(실행 전후 `git status` 깨끗).
 
-`feature/review-insights`(회고 한눈에 보기, 2026-11-03, 커밋 b1c4ead·d880c76) 직접 실행 결과:
-- `backend/.venv/bin/python -m pytest -q` → **219 passed**(백엔드 변경 없음).
-- `cd web && npm run build` → 통과.
-- 회고 한눈에 보기 테스트(`e2e/review-insights*`) → **15 passed, 11 skipped**(계산 테스트는 desktop만).
-- 전체 `npm run test:e2e` → **81 passed, 3 failed, 62 skipped**(6.5분). 실패는 모두 desktop `camera.spec.ts`(카메라 분석 측정·카메라 권한 거부·edge-top)로, 면접 화면이 "불러오는 중…"에서 넘어가지 않거나 45초 제한을 넘김. 이번 브랜치가 바꾸지 않은 면접 화면에서 실패했고, `camera.spec.ts`만 다시 돌렸을 때 2개 실패(권한 거부는 통과), **브랜치 전 코드(56548ad, `git archive`로 꺼냄)에서도 같은 테스트가 같은 오류로 실패**(3 failed, 1 passed). 실행 중 여유 메모리 44~300MB, 스왑 1023/1024MB여서 메모리 부족으로 판단. 메모리가 넉넉할 때 다시 확인 필요. 스크린샷은 AGENTS.md 절차로 백업·복원(실행 후 `docs/screenshots/` 변경 없음).
-- 녹음 답변이 있는 화면(답변 시간·말 빠르기 막대, 제한 시간·평균 선)은 작업 공간 스크립트로 가짜 녹음을 올려 desktop·mobile, 밝게·어둡게 캡처해 눈으로만 확인(가로 넘침 0). 자동 테스트에는 없음.
+`feature/review-insights`(회고 한눈에 보기) 직접 실행 결과:
+- 2026-11-03 1차(커밋 eaa8477, 메모리 부족: 여유 44~300MB·스왑 1023/1024MB): pytest **219 passed**, `npm run build` 통과, 전체 e2e **81 passed, 3 failed, 62 skipped**(146개). 실패는 desktop `camera.spec.ts` 3개.
+- 2026-11-03 안정화(별도 worktree `../Jobseeker-review-insights`, 메모리 여유 약 1.2~1.5GB): `npm run build` 통과, 전체 e2e **93 passed, 1 failed, 62 skipped**(156개 = 테스트 78개 × desktop·mobile, 3.1분). 실행 중 스왑 입출력 초당 8MB 이하.
+  - 건너뜀 62개는 모두 mobile에서 의도적으로 건너뛰는 것: 계산 테스트(`gaze-math` 33, `video-metrics` 13, `review-insights-math` 11)와 desktop 전용 `gaze-lab` 5. 156개 모두 시작했고 중단·미실행은 없음.
+  - 실패 1개는 `gaze-lab.spec.ts`의 "dots are drawn exactly where they are scored"(값 `NaN`). 같은 테스트만 5번 다시 돌리면 5번 모두 통과. 원인은 테스트의 경쟁 상태: 점을 찾는 단계와 위치를 재는 단계가 나뉘어 있는데, 실험실 화면이 점(`div`)과 렌즈 표시(`div`)를 같은 자리에서 그려 React가 같은 DOM 요소를 재사용하므로 그 사이에 다음 단계로 넘어가면 좌표 속성이 없는 렌즈 표시를 재게 됨. 앱 결함이 아니며 R1과 무관(G 0단계 테스트). 고치는 방법: 한 번의 `page.evaluate` 안에서 `.gaze-lab-dot[data-target-x]`를 찾고 바로 재기(미적용, 아래 미해결 문제).
+  - 1차의 카메라 실패 3개는 메모리 부족 탓으로 판단: 메모리가 풀린 뒤 세 테스트만 3번씩 다시 돌리면 **9/9 통과**(38.7초), 전체 실행에서도 모두 통과. 1차 실패 때 trace에서 같은 세션 조회가 17ms → 3,028ms, 클릭이 1.3~6.1초 걸렸고, 실패 단계가 실행마다 달랐으며(미리보기·회고 제목·답변 끝내기), 브랜치 전 코드(56548ad)에서도 같은 오류가 났음. 값이 틀린 실패는 없었고 모두 시간 초과.
+  - 회고 한눈에 보기 테스트에서 첫 화면만 20초 기다리던 설정을 지우고 기본 시간(5초)으로 통과함.
+  - `backend/.venv/bin/python -m pytest -q` → **219 passed**(백엔드 변경 없음). 스크린샷은 AGENTS.md 절차로 백업·복원(실행 후 `docs/screenshots/` 변경 없음).
+- 접근성·화면 확인(2026-11-03): 나눔 글꼴(`fonts-nanum`을 `apt-get download`로 받아 이 실행에만 `FONTCONFIG_FILE`로 지정)로 desktop·mobile, 밝게·어둡게 캡처해 한글 표시와 배치를 눈으로 확인(가로 넘침 0). 키보드로 격자 링크를 옮기면 초점 표시가 보이고, 표 보기는 Enter로 열림. 카드 안 보조 문장(`.muted`)이 밝은 화면에서 대비 3.41:1이라 카드 안에서만 `--text-2`(7.73:1)로 바꿈(테스트 추가).
 
 ### 로컬 STT 실측 (2026-10-30, 실제 모델·실제 한국어 음성)
 
@@ -167,7 +170,9 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 ## 미해결 문제
 
 - e2e를 실행하면 추적 중인 `docs/screenshots/coaching-review-{desktop,mobile}.png`를 덮어씀(`web/e2e/coaching.spec.ts:70`). 지금은 AGENTS.md의 백업·복원 절차로 대응. **추후 테스트 수정 필요:** 스크린샷 경로를 환경 변수로 받거나 기본값을 `test-results/`로 바꾸고, 문서용 갱신은 명시적으로 켤 때만 하도록.
-- 이 개발 PC(메모리 3.7GB, 스왑 1GB 가득)에서는 전체 e2e의 desktop `camera.spec.ts`가 브랜치와 무관하게 시간 초과로 실패함(2026-11-03, 브랜치 전 코드에서도 재현). 메모리가 넉넉한 환경에서 다시 확인 필요.
+- 메모리가 부족할 때(여유 수십 MB, 스왑 가득) 전체 e2e의 desktop `camera.spec.ts`가 시간 초과로 실패함(2026-11-03, 브랜치 전 코드에서도 재현, 메모리가 풀리면 9/9 통과). 이 PC에서는 VS Code 창 둘(Pylance 포함)과 다른 AI 세션이 메모리를 많이 씀. e2e는 메모리가 넉넉할 때 돌릴 것.
+- `web/e2e/gaze-lab.spec.ts`의 "dots are drawn exactly where they are scored"가 가끔 `NaN`으로 실패함(테스트 경쟁 상태, 위 "자동 테스트" 참고). 점을 찾고 재는 것을 한 번의 `page.evaluate`로 묶는 수정 필요(미적용).
+- 회고 한눈에 보기의 비치명적 접근성 개선(미적용): 앱 전체 링크 색 `--accent`가 밝은 화면에서 4.30:1(일반 글자 기준 4.5:1 미만, 앱 전체 토큰이라 R1에서 바꾸지 않음), 앱 전체 `--muted` 3.41:1(카드 밖), 막대·격자 칸의 마우스 툴팁(`title`)은 키보드로 볼 수 없음(같은 값은 표 보기·답변 카드에 있음), 표 보기에 제한·평균 값 행이 없음(그래프 제목 옆 글자로는 있음).
 - e2e 설정은 PATH의 `python`을 씀. venv를 PATH에 넣지 않으면 백엔드가 뜨지 않음.
 - 이 머신의 Playwright 브라우저는 2026-10-30에 v1248로 다시 받았지만 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)가 없어 `LD_LIBRARY_PATH`로 임시 지정해야 뜸. 근본 해결은 `sudo npx playwright install-deps chromium`.
 - 로컬 STT 실패 사유(무음·바쁨·모델 실패 등)는 답변마다 저장하지 않아 화면은 "인식하지 못했거나 전사 요청이 실패했어요"로만 알림(서버 로그와 `/health`의 `stt.error`에는 남음). 사유별 안내가 필요하면 DB 컬럼 추가(스키마 변경 3곳)가 필요함.

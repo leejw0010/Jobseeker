@@ -215,3 +215,5 @@ summary { cursor: pointer; }
 .insights-sub { margin: 22px 0 4px; font-size: 16px; }
 .insight-points > li { display: grid; gap: 4px; }
 .point-answers a { font-weight: 600; }
+/* 카드 안의 보조 문장(근거·기준선 이름·안내)은 내용이므로 --muted(밝게 3.4:1) 대신 --text-2(7.7:1)로 4.5:1을 넘긴다 */
+.insights .muted { color: var(--text-2); }

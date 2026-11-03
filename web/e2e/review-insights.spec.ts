@@ -3,8 +3,6 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 // 회고 한눈에 보기(R1): 세션 상세 값만으로 그린 그래프와 규칙 보완점. 외부 서비스를 부르지 않는다
 const API = "http://127.0.0.1:8011";
 const LONG_Q = "지금까지 경험한 프로젝트 가운데 가장 어려웠던 순간을 하나 고르고, 그때 팀과 본인이 각각 어떤 판단을 했으며 결과가 어땠는지 아주 자세하게 설명해 주세요".repeat(2);
-// 첫 화면 로딩만 넉넉히 기다린다(메모리가 부족한 개발 PC에서 세션 응답이 5초를 넘긴 적이 있음). 이후 확인은 기본 시간
-const LOAD = { timeout: 20_000 };
 const TEAM = "우리 팀은 서비스 응답 속도를 개선하기 위해 캐시 구조를 바꾸고 배포 과정을 다시 설계해서 결과적으로 사용자 불만을 크게 줄였습니다";
 
 async function session(request: APIRequestContext, texts: string[]) {
@@ -26,7 +24,7 @@ test("typed answers: status grid, rule-based points with answer links, and reaso
 
   await page.goto(`/practice/sessions/${s.id}`);
   const card = page.locator("section.insights");
-  await expect(card.getByRole("heading", { name: "한눈에 보기" })).toBeVisible(LOAD);
+  await expect(card.getByRole("heading", { name: "한눈에 보기" })).toBeVisible();
 
   const grid = card.getByRole("table", { name: "답변별 코칭 점검 상태" });
   await expect(grid.getByRole("row").filter({ hasText: "Q1" })).toContainText("–판단유보");
@@ -59,7 +57,7 @@ test("a session with no answers yet shows a short note instead of charts", async
   const s = await session(request, ["지원 동기를 말씀해 주세요."]);
   await page.goto(`/practice/sessions/${s.id}`);
   const card = page.locator("section.insights");
-  await expect(card.getByText("아직 답변이 없어요")).toBeVisible(LOAD);
+  await expect(card.getByText("아직 답변이 없어요")).toBeVisible();
   await expect(card.getByRole("table")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
