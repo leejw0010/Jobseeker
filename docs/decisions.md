@@ -168,4 +168,34 @@
 - 날짜·상태: 2026-11-03 · 유효(기준값은 잠정)
 - 결정: 회고 맨 위 "한눈에 보기"는 세션 상세 응답에 이미 있는 값(코칭 보고서, 녹음 길이, 전사문, 자기평가)만으로 브라우저에서 계산한다. 새 API·스키마·LLM 호출이 없다. 보완점은 코칭 보완 → 제한 시간 초과 → 너무 짧음 → 역할 표현 없음 → 세션 평균 대비 말 빠르기 → 자기평가 1~2점 순서의 고정 규칙으로 고르고, 문구도 정해 둔다(코칭 보고서가 있으면 그 이유를 근거로 쓴다). 인용은 지금 전사문에 그대로 있는 부분만 보인다. 말 빠르기는 일반 인구 기준 없이 같은 세션 평균과만 비교하고, 녹음 길이에 침묵이 들어 있다는 점을 화면에 적는다. 말버릇 횟수는 세지 않는다. 기준값(40%, 1초, 25%, 3개, 5초, 50자, 2점, 5개)은 `web/src/review/insights.ts` 한 곳에 둔다.
 - 이유: 사용자가 유료 LLM 호출을 원하지 않음. 같은 입력이면 같은 결과가 나와 테스트할 수 있고, 녹음·전사문을 새로 밖으로 보내지 않는다. 전사는 말버릇을 빼고 적는 경우가 많아 셀 수 없다(A 평가). 무료 LLM(로컬 Ollama 등)은 `OPENAI_BASE_URL`로 기존 코칭 경로에 붙일 수 있으므로 별도 단계(R3)로 둔다.
-- 근거: [specs/2026-11-03-r1-review-insights-design.md](superpowers/specs/2026-11-03-r1-review-insights-design.md), `web/src/review/insights.ts`, `web/e2e/review-insights*.spec.ts`
+- 근거: [specs/2026-11-03-r1-review-insights-design.md](superpowers/specs/2026-11-03-r1-review-insights-design.md), `web/src/review/insights.ts`, `web/e2e/review-insights.spec.ts`, `web/tests/unit/review-insights-math.spec.ts`
+
+### D-23 녹음은 업로드마다 다른 경로에 저장하고, 겹치면 나중에 시작한 녹음이 이김
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: `POST /practice/answers/{id}/audio`는 `{user_id}/{session_id}/{answer_id}.{토큰12자}.{확장자}`에 저장하고, 답변 행을 잠근 뒤 커밋한다. `recorded_at`은 업로드를 시작한 시각으로 저장하고, 커밋 직전 행의 `recorded_at`이 이 업로드의 시작 시각보다 나중이면 이 업로드를 409로 버리고 자기 파일만 지운다. 이전 녹음 파일은 새 녹음을 연결·커밋한 뒤 지우고, 못 지우면 고아 파일로 표시해 다음 만료 정리가 지운다. 예전 행의 토큰 없는 경로도 소유 경로로 인정한다.
+- 이유: 같은 경로를 덮어쓰면 겹친 업로드에서 한 녹음의 전사문이 다른 녹음 파일과 짝지어지고, 전사 후 원본 삭제가 다른 요청의 파일을 지울 수 있었다(`test_concurrent_uploads_never_pair_one_recording_with_another_transcript`로 재현). 이전 파일을 먼저 지우던 방식은 새 업로드가 실패하면 녹음을 잃었다.
+- 근거: `backend/app/routers/practice.py` `upload_audio`, `backend/app/retention.py` `owned_audio_path`·`recorded_since`, `backend/tests/test_privacy.py`
+
+### D-24 Track 제약은 SQLite와 Supabase를 같게: URL 고유(409), 버전 번호는 문항 잠금 뒤, 필수 필드 null은 422
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: 모델에 `schema.sql`과 같은 `applications_user_url_uq`(사용자·URL, URL 있는 건만)를 두고 로컬 SQLite 업그레이드도 이 인덱스를 만든다(이미 겹치면 경고만). 웹·API의 생성·수정이 겹치는 URL이면 409, 빈 URL은 null로 저장한다. `/track/sync`는 동시 첫 동기화가 고유 제약에 걸리면 한 번 더 돌아 기존 건을 갱신한다. 버전은 `services/track_versions.py`가 문항 행을 잠근 뒤 최신 번호를 다시 읽어 정한다. PATCH에서 회사·직무·분류·단계·상태의 명시적 null은 422로 막는다. 로컬 SQLite도 외래 키를 켠다.
+- 이유: 같은 요청이 SQLite에서는 중복 행을, Supabase에서는 500을 냈고, 동시 버전 저장은 고유 제약 500, null PATCH는 NOT NULL 500이었다.
+- 근거: `backend/app/models.py`, `backend/app/db.py`, `backend/app/routers/track.py`, `backend/app/schemas.py`, `backend/tests/test_track.py`·`test_migration.py`
+
+### D-25 서비스 계층은 라우터 역방향 의존을 없앨 때만 만든다
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: 라우터와 백그라운드 작업이 함께 쓰는 업무 처리만 `backend/app/services/`로 옮긴다(`answer_coaching`, `track_versions`). 서비스는 HTTP 예외를 쓰지 않고 도메인 예외를 던지며 라우터가 상태 코드로 바꾼다. `main.py` 밖에서는 `routers`를 가져오지 않는다(`tests/test_architecture.py`). 녹음 업로드·다시 전사 조정은 역방향 의존이 없어 이번에는 옮기지 않았고, 웹의 `hooks/`·`components/practice/` 같은 이름만 바꾸는 이동도 하지 않았다.
+- 이유: `debrief.py`가 라우터 내부 함수 `_report`를 지연 import하는 순환이 있었다. 이름만 바꾸는 이동은 다른 브랜치와 충돌만 늘린다(외부 분석 보고서의 권고와도 같음).
+- 근거: `backend/app/services/`, `backend/app/debrief.py`, `backend/tests/test_architecture.py`
+
+### D-26 설정은 시작할 때 검증하고, 인증을 켠 서버의 토큰은 uuid `sub`만 받음
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: `Settings`를 환경변수 매핑에서 만들고 숫자 설정이 숫자가 아니면 변수 이름과 함께 `ConfigError`로 시작을 막는다. `AUTH_DISABLED=false`인데 `SUPABASE_JWT_SECRET`이 비면 시작하지 않고, `AUTH_DISABLED=true`로 Postgres에 연결하면 경고한다. `AUTH_DISABLED`는 `true`일 때만 개발 모드다. JWT의 `sub`가 없거나 uuid가 아니면 401. 웹 로그인 화면과 토큰 제공자 등록은 팀원 연동 작업으로 남기고, 확장에는 `setAccessToken()`/`getAccessToken()`(`chrome.storage.session`) 연결 지점만 둔다.
+- 이유: 사용자 결정(2026-11-03, "백엔드 강화만"). 인증 오설정은 모든 요청 401이나 500으로만 드러났다. 웹 로그인은 새 의존성(@supabase/supabase-js)이 필요하고 팀원 담당이다.
+- 근거: `backend/app/config.py`, `backend/app/auth.py`, `backend/tests/test_config.py`·`test_auth.py`, `extension-track/settings.js`
+
+### D-27 테스트 격리: e2e 녹음은 실행별 임시 폴더, 문서 스크린샷은 명시할 때만, 계산 테스트는 서버 없이
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: `playwright.config.ts`가 실행마다 임시 녹음 폴더를 만들어 백엔드 `RECORDINGS_DIR`로 넘기고, 임시 폴더 밖이면 시작을 거부한다. 문서 스크린샷은 `UPDATE_DOC_SCREENSHOTS=1`일 때만 `docs/screenshots/`에 쓴다. 브라우저 없는 계산·확장 함수 테스트는 `web/tests/unit/`과 `playwright.unit.config.ts`(`npm run test:unit`)로 옮긴다(새 테스트 도구 없음). 백엔드에서 DB 전체를 훑는 정리 테스트는 `isolated_db` 픽스처로 테스트 전용 DB·녹음 폴더를 쓴다.
+- 이유: e2e가 동의를 철회하면 임시 DB에 없는 개발 사용자 녹음까지 `backend/recordings/`에서 지울 수 있었다. 공유 DB에서 만료 정리 한 번이 다른 테스트의 녹음 16개를 함께 지워 결과가 실행 순서에 의존했다.
+- 근거: `web/playwright.config.ts`, `web/e2e/env.ts`, `web/playwright.unit.config.ts`, `backend/tests/conftest.py`

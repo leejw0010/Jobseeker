@@ -15,7 +15,7 @@
 4. **압축해제된 확장 프로그램 로드** → 이 `extension-track` 폴더 선택
 5. 퍼즐 아이콘에서 JobSeeker를 고정해 두면 편합니다.
 
-백엔드·웹 주소가 다르면 팝업 오른쪽 위 **설정**에서 바꿉니다. 배포 주소로 바꿀 때는 `manifest.json`의 `host_permissions`에도 추가해야 합니다.
+백엔드·웹 주소가 다르면 팝업 오른쪽 위 **설정**에서 바꿉니다. 배포 주소로 바꿀 때는 `manifest.json`의 `host_permissions`에도 추가해야 합니다. 설정 화면은 저장한 API 주소가 `host_permissions`에 없으면 경고를 띄웁니다(백엔드 CORS가 `chrome-extension://`을 허용하므로 요청 자체는 되지만, 배포 주소는 두 곳을 함께 맞춥니다).
 
 ## ① Apply 확장과 합치는 방법
 
@@ -24,7 +24,8 @@
 - `popup.html`, `popup.css`, `popup.js`, `api.js`, `extract.js`, `settings.js`를 ① 확장 폴더로 옮기고 `action.default_popup`을 `popup.html`로 지정
 - `permissions`에 `activeTab`, `scripting`, `storage`, `host_permissions`에 백엔드 주소 추가
 - ①이 지원서 제출을 감지하면 같은 `POST /track/sync`에 `essays`(문항·답변)와 `submitted: true`를 보내면 됩니다. 팝업에서 먼저 저장한 공고와 URL이 같으면 같은 지원 건으로 합쳐집니다.
-- 로그인을 붙이면 `api.js`의 `getToken()`이 Supabase 액세스 토큰을 돌려주게 바꿉니다.
+- 로그인을 붙이는 쪽은 `settings.js`의 `setAccessToken(token)`으로 Supabase 액세스 토큰을 넣고, 로그아웃 때 `setAccessToken(null)`을 부릅니다. `api.js`의 `getToken()`이 이 값(`chrome.storage.session`, 브라우저를 닫으면 지워짐)을 읽어 `Authorization: Bearer`로 붙입니다. 토큰이 없으면 개발 모드(`AUTH_DISABLED=true`) 서버에서만 동작합니다.
+- 자동 테스트: 공고 추정(`extract.js`), 토큰 저장, 주소 권한 검사는 `web/tests/unit/extension.spec.ts`(`cd web && npm run test:unit`, 가짜 `chrome` 객체)가 검사합니다. 팝업 화면·실제 Chrome 권한·페이지 주입(`readPage`)은 검사하지 않습니다.
 
 ## 회사·직무 추정 방식
 

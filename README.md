@@ -46,10 +46,11 @@ OpenAI 경로는 음성 인식 응답을 대체한 테스트(`test_transcription
 cd web
 npm ci
 npx playwright install chromium
-npm run test:e2e
+npm run test:unit   # 서버 없이 계산·확장 함수만(web/tests/unit, 영상 지표·시선 보정·회고 지표·확장 추출)
+npm run test:e2e    # 브라우저 흐름(web/e2e)
 ```
 
-테스트는 임시 SQLite DB와 전용 포트(8011, 5179)의 서버를 실행하며 기존 개발 서버를 재사용하지 않습니다. `CHROMIUM_EXECUTABLE_PATH`로 기존 Chromium을 지정할 수도 있습니다. 실제 OpenAI 코칭 품질 및 운영 Supabase 연결은 별도 검증이 필요합니다.
+e2e는 임시 SQLite DB, **실행마다 새로 만든 임시 녹음 폴더**(`RECORDINGS_DIR`, 임시 폴더 밖이면 시작을 거부), 전용 포트(8011, 5179)의 서버를 실행하며 기존 개발 서버·`backend/recordings/`를 쓰지 않습니다. 문서용 스크린샷(`docs/screenshots/coaching-review-*.png`)은 `UPDATE_DOC_SCREENSHOTS=1`일 때만 덮어쓰고, 기본은 `test-results/`에 저장합니다. `mobile` 프로젝트는 화면 크기만 휴대폰에 맞춘 Chromium이라 모바일 Safari·실제 기기 권한 동작은 검사하지 않습니다. `CHROMIUM_EXECUTABLE_PATH`로 기존 Chromium을 지정할 수도 있습니다. 실제 OpenAI 코칭 품질 및 운영 Supabase 연결은 별도 검증이 필요합니다.
 
 캡스톤 설계(26-2) JobSeeker 중 **② AI 인적성·면접 연습**과 **③ 지원 이력·버전 관리** 부분입니다.
 발표자료의 스택(React+TS, FastAPI, Supabase, OpenAI)을 그대로 따랐습니다.
@@ -57,7 +58,7 @@ npm run test:e2e
 ```
 jobseeker/
 ├─ supabase/             Supabase에 붙여 넣을 테이블·RLS·Storage 버킷(schema.sql)과 마이그레이션(migrations/)
-├─ backend/              FastAPI (Practice·Track API, pytest 219개)
+├─ backend/              FastAPI (Practice·Track API, pytest 281개)
 ├─ web/                  React + TypeScript (Vite) 웹 화면
 ├─ extension-track/      크롬 확장 팝업 (공고 저장, 최근 지원 현황, 대시보드 열기)
 └─ docs/screenshots/     실제 실행 화면
@@ -124,7 +125,8 @@ jobseeker/
 ### 1) 백엔드
 ```bash
 cd backend
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r requirements-dev.txt   # 실행 패키지 + pytest. 배포 서버는 requirements.txt만
+# 검증한 정확한 버전으로 맞추려면: python3 -m pip install -r requirements-dev.txt -c requirements-lock.txt
 cp .env.example .env        # 값을 비워 두면 로컬 SQLite + 로그인 없이 동작
 python3 -m uvicorn app.main:app --reload --port 8000
 # API 문서: http://localhost:8000/docs
@@ -143,7 +145,7 @@ npm run dev                 # http://localhost:5173
 
 ### 4) Supabase 연결(배포 시)
 1. Supabase SQL Editor에서 `supabase/schema.sql` 실행. 이미 예전 스키마로 만든 프로젝트라면 `supabase/migrations/`의 `20261015_interview_coaching.sql`과 `20261015_practice_p0.sql`을 실행하면 됩니다(두 파일은 서로 의존하지 않음). 로컬 SQLite는 서버를 켤 때 빠진 테이블·컬럼을 자동으로 추가합니다.
-2. `backend/.env`에 `DATABASE_URL`(Connection string), `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` 입력, `AUTH_DISABLED=false`
+2. `backend/.env`에 `DATABASE_URL`(Connection string), `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` 입력, `AUTH_DISABLED=false`. `AUTH_DISABLED=false`인데 `SUPABASE_JWT_SECRET`이 비어 있으면 서버가 시작하지 않고, `AUTH_DISABLED=true`로 Postgres에 연결하면 경고 로그를 남깁니다. 숫자 설정(`AUDIO_RETENTION_DAYS` 등)이 숫자가 아니면 변수 이름을 알려 주며 시작하지 않습니다.
 3. `OPENAI_API_KEY`를 넣으면 맞춤 질문(LLM), AI 답변 코칭·꼬리질문, 세션 디브리프 요약이 켜집니다. 전사는 키와 상관없이 기본으로 로컬(`STT_PROVIDER=local`)에서 하고, `STT_PROVIDER=openai`로 바꿀 때만 키로 OpenAI 전사를 씁니다. 모델은 `OPENAI_CHAT_MODEL`(질문 생성·답변 코칭·꼬리질문), `OPENAI_FEEDBACK_MODEL`(세션 디브리프 요약, 비우면 `OPENAI_CHAT_MODEL`), `OPENAI_STT_MODEL`로 바꿀 수 있어요. 원본 녹음 보관 기한은 `AUDIO_RETENTION_DAYS`, 만료 정리 주기는 `PURGE_INTERVAL_MIN`입니다.
 
 키가 없어도 앱은 동작합니다. 맞춤 질문은 자소서 문장에서 경험 서술을 골라 만드는 규칙 기반으로 대체되고, 전사는 로컬 모델이 하며(전사문은 직접 고치거나 입력할 수 있음), 답변 코칭은 기본 점검으로 바뀌고 세션 디브리프 요약은 만들지 않습니다.
@@ -152,6 +154,7 @@ npm run dev                 # http://localhost:5173
 
 - **로그인(1단계 계정·DB 담당):** 웹에서 Supabase 로그인 후 `setAuthTokenProvider(async () => (await supabase.auth.getSession()).data.session?.access_token ?? null)`만 호출하면 모든 API에 토큰이 붙습니다(`web/src/api.ts`). 백엔드는 토큰의 `sub`를 사용자 id로 씁니다.
   - Supabase 프로젝트가 비대칭 JWT 서명 키(JWKS)를 쓰도록 설정돼 있다면 `backend/app/auth.py`의 HS256 검증을 JWKS 검증으로 바꿔야 합니다.
+- **확장 로그인 토큰:** `extension-track/settings.js`의 `setAccessToken(token)`으로 Supabase 액세스 토큰을 넣으면 확장의 모든 API 요청에 붙습니다(`chrome.storage.session`에만 보관, `setAccessToken(null)`로 지움). 넣는 쪽(로그인 화면·① 확장과의 통합)은 아직 없습니다.
 - **① Apply(크롬 확장):** 지원서 제출 시 `POST /track/sync`로 아래 형식을 보내면 Track에 저장됩니다. 예전 답변 재사용은 `GET /track/answers/search?q=키워드`를 쓰면 됩니다. CORS는 `chrome-extension://` 출처를 허용해 두었습니다.
   ```json
   {"company":"토스","position":"서버 개발자","job_category":"개발","url":"https://...",
@@ -188,10 +191,18 @@ npm run dev                 # http://localhost:5173
 | POST | `/track/sync` | 확장 프로그램 동기화 |
 | GET | `/track/stats` | 통계 |
 
+응답 규칙(2026-11-03, 경로·필드는 그대로):
+- 같은 사용자의 같은 공고 URL은 한 건입니다(Supabase `applications_user_url_uq`와 같음). `POST /track/applications`·`PATCH /track/applications/{id}`가 이미 있는 URL이면 **409**, 빈 URL은 `null`로 저장합니다. `POST /track/sync`는 동시에 처음 들어온 같은 URL도 한 건으로 합칩니다.
+- `PATCH /track/applications/{id}`에서 회사·직무·분류·단계·상태를 `null`로 보내면 **422**(예전에는 DB 오류 500). URL·지원일·메모는 `null`이면 비웁니다.
+- `POST /practice/answers/{id}/audio`: 같은 답변에 업로드가 겹치면 나중에 시작한 녹음이 이기고, 먼저 시작해 늦게 끝난 업로드는 **409**(그 파일만 지움). 녹음은 업로드마다 다른 경로(`{user_id}/{session_id}/{answer_id}.{토큰}.{확장자}`)에 저장하고, 새 녹음을 연결한 뒤 이전 파일을 지웁니다. `recorded_at`은 업로드를 시작한 시각입니다.
+- 녹음 듣기·다시 전사에서 저장소 권한·장애·연결 실패는 "녹음 없음"(404)이 아니라 **502**입니다.
+- 인증을 켠 서버(`AUTH_DISABLED=false`)는 만료·서명·대상(`aud`)이 틀리거나 `sub`가 없거나 uuid가 아닌 토큰을 **401**로 거부합니다.
+
 ## 검증한 것
 
 - 백엔드 pytest 161개 통과(2026-10-30 기준. 로컬 STT 25개 포함: 사용자 간 데이터 격리, 버전 중복 방지, 동기화 upsert, 통과율 계산, 답변 코칭·인용 검증·꼬리질문, 녹음 동의·원본 삭제·만료 정리·삭제 실패 재시도·고아 파일 정리, 업로드·다시 전사 도중 동의 철회와 삭제, 디브리프·다시 연습·작업 중복과 요청 겹침, 잘못된 형식의 id, 로컬 STT의 지연 로딩·재사용·캐시 우선·다운로드/로딩/라이브러리 실패·무음·깨진 파일·바쁨·동시 실행 제한. OpenAI 경로와 로컬 모델은 모의 응답·가짜 모델로 확인)
 - 2026-11-01: 백엔드 pytest 219개 통과(STT 평가 도구 `test_stt_eval.py` 58개 추가. 평가 도구는 실제 모델 없이 채점·실행 기록·자원 감시를 검사).
+- 2026-11-03: 백엔드 pytest 281개, `npm run test:unit` 68개, `npm run test:e2e` 34개 통과(12개는 desktop 전용 흐름이라 mobile에서 건너뜀). 녹음 동시 업로드, Track URL 고유·버전 경합·PATCH null, 인증 설정·JWT 오류, 마이크 늦은 권한 응답, 자소서 저장 중 입력 보존, 검색 응답 역전을 추가로 검사. 실제 Postgres·Supabase에서의 동시 요청·JWT는 아직 확인하지 않음
 - Playwright 브라우저 테스트(`npm run test:e2e`) 21개 통과(데스크톱·모바일 각 8개 화면 흐름 + 카메라 분석 계산 5개, 계산 테스트는 데스크톱에서만 실행)
 - 가짜 마이크와 가짜 OpenAI 서버로 동의 → 녹음 → 자동 디브리프(답변 코칭 위) → 다시 연습 → 설정(보관·모두 지우기·동의 철회), 키 없는 모드, 전사 실패·코칭 실패·지어낸 인용·디브리프 실패 같은 실패 경로까지 브라우저에서 145개 항목 확인. 390px 폭에서 가로 스크롤 없음
 - 로컬 Postgres 16(Supabase 흉내)에 새 프로젝트(`schema.sql`)와 예전 프로젝트(이전 스키마 + 두 마이그레이션, 두 번 실행)를 만들어 백엔드 흐름 확인

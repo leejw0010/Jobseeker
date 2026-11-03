@@ -4,11 +4,11 @@
 
 ## 현재 브랜치 상태
 
-- `feature/architecture-fixes`(2026-11-03 현재 작업): 기존 로컬 STT·시선 실험실·회고 기능 위에 백엔드 서비스 분리, 인증·설정 검증, 녹음 동시 업로드 보호, Track 중복·버전 처리, 웹 계산 테스트 분리 작업을 모음. 사용자 요청으로 현재 작업물 48개 파일을 `49aceee`로 커밋. `git push -u origin feature/architecture-fixes`는 `could not read Username for 'https://github.com': No such device or address`로 실패. 연결된 GitHub 앱도 저장소 권한이 `push: false`라 업로드하지 못했음.
-- 첫 커밋 뒤 추가로 발견한 `web/e2e/recorder.spec.ts`·`track.spec.ts`도 후속 커밋에 보관. 아래 e2e 실행이 끝난 뒤 추가된 테스트라 해당 두 파일의 브라우저 실행은 미검증.
-- 보관 중 추가된 웹 변경(녹음 권한·중복 시작 처리, 별점 저장 중 재입력 방지, Track 비동기 응답·버전 편집 처리, 공용 컴포넌트·요청 타입 분리)도 후속 커밋에 포함. 추가 후 `npm run build` → **종료 코드 0**, `npm run test:unit` → **61 passed (2.0m)** 재확인. 브라우저 흐름은 위 두 테스트와 함께 미검증.
-- 이번 저장 시점 자동 검증(2026-11-03): `cd backend && .venv/bin/python -m pytest -q` → **281 passed in 43.93s**; `cd web && npm run build` → **종료 코드 0**; `npm run test:unit` → **61 passed (17.1s)**. 샌드박스에서 멈춘 pytest는 제한 밖에서 재실행한 결과임.
-- 이번 브라우저 검증: `cd web && PATH=../backend/.venv/bin:$PATH npm run test:e2e` → **27 failed, 5 skipped**. 전부 브라우저 시작 단계에서 `error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory`로 실패하여 화면 흐름은 검증하지 못함. 샌드박스 안에서는 먼저 `Timed out waiting 60000ms from config.webServer.`가 발생해 제한 밖에서 재실행함. 문서 스크린샷은 실행 전 상태로 백업·복원했음. 실제 OpenAI·Supabase 서비스 검증은 이번에 실행하지 않음.
+- `feature/architecture-fixes`(2026-11-03 현재 작업, `feature/review-insights` eaa8477에서 갈라짐): 외부 아키텍처 분석 보고서(2026-11-03)의 지적을 코드로 확인한 뒤 고친 작업. 사용자 요청으로 Codex가 진행 중 작업물을 `49aceee`·`a8fcea3`·`cd8fc53`·`f4e3212`로 커밋함. `git push -u origin feature/architecture-fixes`는 `could not read Username for 'https://github.com': No such device or address`로 실패했고, 연결된 GitHub 앱도 저장소 권한이 `push: false`라 업로드하지 못했음. 그 뒤의 확장·문서 변경은 아직 커밋 전.
+  - 고친 것: e2e 녹음 폴더 격리(P0), 마이크 늦은 권한 응답·중복 요청, 같은 답변 동시 업로드, Track URL 고유성·버전 번호 경합·PATCH null, 자소서 저장 중 입력 보존, 목록 응답 역전, 실패 처리·재진입, 별점 재진입, `debrief → router` 역방향 의존 제거(`app/services/`), 저장소 오류 분류, 질문 생성 응답 검증, 카메라 비전송 검사 주소, 미분석 공백의 미검출 구간 병합, STT 보고서 세트 선택, 설정 검증·JWT 경로 강화, 확장 토큰 연결 지점·주소 권한 경고, 열거값 대조, 의존성 분리·버전 기록, 계산 테스트 분리, 정리 테스트 DB 격리, SQLite 외래 키. 결정은 [decisions.md](decisions.md) D-23~D-27.
+  - 자동 검증(2026-11-03, 마지막 변경 뒤 직접 실행): `cd backend && .venv/bin/python -m pytest -q` → **281 passed in 21.12s**; `cd web && npm run build` → 통과; `npm run test:unit` → **68 passed (6.4s)**; `LD_LIBRARY_PATH=$HOME/.cache/playwright-syslibs/root/usr/lib/x86_64-linux-gnu PATH=../backend/.venv/bin:$PATH npm run test:e2e` → **34 passed, 12 skipped (3.6m)**, 실패 없음(desktop `camera.spec.ts` 포함). 스크린샷은 AGENTS.md 절차로 백업·복원했고 실행 전후 `git status -- docs/screenshots/` 변경 없음. 새 테스트는 고치기 전 코드에서 먼저 실패하는 것을 확인함(동시 업로드는 "먼저 시작한 녹음" 전사문이 두 번째 녹음 파일과 짝지어짐, PATCH null은 `IntegrityError`, 공유 DB의 만료 정리는 다른 테스트 녹음 16개를 함께 지움 등).
+  - 앞선 Codex 실행의 e2e **27 failed, 5 skipped**는 전부 브라우저 시작 단계의 `libnspr4.so` 없음이었음(위 `LD_LIBRARY_PATH` 없이 실행). 화면 흐름 실패가 아님.
+  - 실제 외부 서비스(OpenAI·Supabase) 검증은 하지 않음. 새 URL 고유 인덱스·행 잠금·JWT 경로는 SQLite와 pytest로만 확인했고 실제 Postgres·Supabase에서는 확인하지 않음.
 - `main`: PR #1(확장 팝업)과 PR #2(`codex/evidence-interview-coach`, 제출본 기반 면접 코칭)까지 머지됨.
 - `feature/practice-p0`(작업 중): `main`보다 8커밋 앞서 있고 `origin/feature/practice-p0`와 같음(1a12453). P0 기능과 리뷰 지적 1~21번, 재확인 지적 수정까지 끝났음.
 - **PR #3:** https://github.com/leejw0010/Jobseeker/pull/3 · `feature/practice-p0` → `main` · 2026-10-28 GitHub API(`GET /repos/leejw0010/Jobseeker/pulls/3`)로 확인한 당시 **Open, 미병합, draft 아님**, head 1a12453. (`gh`는 설치돼 있지 않음.)
@@ -31,7 +31,8 @@
 | 시선 분석 0단계(개발 전용 실험실 `/dev/gaze-lab`): 특징 추출, G2 화면 좌표 릿지 회귀(묶음 교차 검증), G1 렌즈 응시 분류기(별도 응시로 평가), 표본 주기 측정, D 250ms 격자. 면접 화면·회고에는 아직 없음 | `web/src/video/gaze/`, `web/src/pages/GazeLab.tsx` (브랜치 `feature/gaze-calibration`) |
 | 회고 한눈에 보기(R1): 코칭 상태 격자, 답변 시간·말 빠르기(분당 음절, 녹음 길이 기준)·자기평가 막대와 표 보기, 규칙 기반 보완점(최대 5개, 답변 카드 링크). 세션 응답 값만 쓰고 LLM 호출 없음 | `web/src/review/insights.ts`, `web/src/components/ReviewInsights.tsx` (브랜치 `feature/review-insights`) |
 | Track: 자소서 버전 단어 단위 diff | 프런트엔드 `web/src/components/Diff.tsx`(백엔드에는 diff 로직 없음) |
-| 인증: JWT(HS256) 검증 후 `sub` 사용, 라우터에서 `user_id` 필터 | `app/auth.py`, `routers/*` ([architecture.md](architecture.md) "인증과 데이터 접근 경계") |
+| 인증: JWT(HS256) 검증 후 uuid `sub`만 사용(없거나 형식이 다르면 401), 라우터에서 `user_id` 필터. 시작 시 설정 검증(`Settings.check`) | `app/auth.py`, `app/config.py`, `routers/*` ([architecture.md](architecture.md) "인증과 데이터 접근 경계") |
+| 공용 업무 처리: 답변 점검(`answer_coaching`), 자소서 버전 번호(`track_versions`) | `app/services/` (2026-11-03) |
 
 ## 2. 자동 테스트 (외부 서비스 없이)
 
@@ -43,12 +44,17 @@
 | 자동 디브리프·다시 연습 | `test_debrief.py`, e2e 시나리오 1 | e2e는 키 없는 모드에서 디브리프가 남은 답변을 기본 점검하는 것과 작업 종료(`debrief_running`)만 확인. AI 요약 카드는 e2e 대상 아님 |
 | STT 요청 형식·재시도·오류 처리 | `test_transcription.py`, e2e 시나리오 5 | 모의 응답. 실제 인식 정확도는 아님 |
 | 로컬 STT | `test_local_stt.py`(25개) | 가짜 모델 + PyAV로 만든 실제 WebM/Opus. 키 없이 전사·원본 삭제, 지연 로딩 1회·재사용·동시 첫 요청 1회 로딩, 캐시 우선·다운로드 1회, 다운로드/로딩 실패 후 재시도, 라이브러리 import 실패(500이 아니라 `failed`), 무음·깨진 파일·너무 긴 녹음·바쁨·모델 오류, 한 번에 하나 실행, 동의 403, 보관→수정→기본 코칭→녹음 삭제, `off`·미설치, `/health` 분리. **인식 정확도는 검사하지 않음.** e2e는 `STT_PROVIDER=off`로 돌려 로컬 전사를 열지 않음 |
-| 시선 분석 0단계 | `gaze-math.spec.ts`(계산 30개), `gaze-lab.spec.ts`(실험실 흐름 4개) | 합성 얼굴과 가짜 검출기. 누출 없는 묶음 교차 검증, 보수적 렌즈 임계값·분포 밖 unknown, 오차보다 작은 영역은 판정 안 함, NaN 없는 실패, 창 크기 변경 무효화, 전송 없음, 프로덕션 번들 제외. **실제 정확도는 검사하지 않음** |
-| 회고 한눈에 보기 | `review-insights-math.spec.ts`(계산 11개), `review-insights.spec.ts`(화면 2개 × desktop·mobile) | 음절 수, 말 빠르기 조건(녹음·전사·5초), 세션 평균 3개 이상일 때만 빠름·느림, 모의시험만 시간 규칙, 역할 규칙, 코칭 보완 묶음과 전사문에 있는 인용만 표시, 우선순위, 5개 제한, NaN 없음. 화면은 글 답변 세션의 격자·보완점 링크·이유 문장·표 보기·모바일 가로 넘침 없음. **녹음 답변이 있는 화면은 e2e로 검사하지 않음**(작업 공간 스크립트로 가짜 녹음을 올려 눈으로만 확인). 기준값이 실제로 도움이 되는지는 사용자 검증 전 |
+| 시선 분석 0단계 | `web/tests/unit/gaze-math.spec.ts`(계산 30개), `gaze-lab.spec.ts`(실험실 흐름 4개) | 합성 얼굴과 가짜 검출기. 누출 없는 묶음 교차 검증, 보수적 렌즈 임계값·분포 밖 unknown, 오차보다 작은 영역은 판정 안 함, NaN 없는 실패, 창 크기 변경 무효화, 전송 없음, 프로덕션 번들 제외. **실제 정확도는 검사하지 않음** |
+| 회고 한눈에 보기 | `web/tests/unit/review-insights-math.spec.ts`(계산 11개), `review-insights.spec.ts`(화면 2개 × desktop·mobile) | 음절 수, 말 빠르기 조건(녹음·전사·5초), 세션 평균 3개 이상일 때만 빠름·느림, 모의시험만 시간 규칙, 역할 규칙, 코칭 보완 묶음과 전사문에 있는 인용만 표시, 우선순위, 5개 제한, NaN 없음. 화면은 글 답변 세션의 격자·보완점 링크·이유 문장·표 보기·모바일 가로 넘침 없음. **녹음 답변이 있는 화면은 e2e로 검사하지 않음**(작업 공간 스크립트로 가짜 녹음을 올려 눈으로만 확인). 기준값이 실제로 도움이 되는지는 사용자 검증 전 |
 | 잘못된 id → 404 | `test_malformed_ids.py` | |
 | 스키마 | `test_migration.py` | **로컬 SQLite 업그레이드**와 **id 컬럼의 Postgres `UUID` 타입 컴파일**만 검사. Supabase SQL 실행·RLS·Storage 정책은 검사하지 않음 |
-| 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라), `video-metrics.spec.ts`(계산만, 브라우저 없이) | `none`/`edge` 시간이 겹치지 않음, 이마만 넘은 얼굴은 검출 100%·찾지 못한 시간 0, 답변·분석 시간(탭 가림·도중 종료·표본 없음), 넘은 쪽 문구의 좌우 반전, 미리보기 `contain`, 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
-| Track: 지원 건·단계·버전 중복 방지·복원·sync upsert·통계 | `test_track.py` | 백엔드 API만. 프런트엔드 단어 diff(`Diff.tsx`)는 pytest·e2e 모두 직접 검증하지 않음 |
+| 카메라 자세 분석 | e2e `camera.spec.ts`(가짜 검출기 + Chromium 가짜 카메라, 실제로 모은 API 요청이 있는지 먼저 확인), `web/tests/unit/video-metrics.spec.ts`(계산만, 브라우저 없이. 긴 미분석 공백은 `none` 구간을 끊음) | `none`/`edge` 시간이 겹치지 않음, 이마만 넘은 얼굴은 검출 100%·찾지 못한 시간 0, 답변·분석 시간(탭 가림·도중 종료·표본 없음), 넘은 쪽 문구의 좌우 반전, 미리보기 `contain`, 켜기·끄기·다시 켜기, 회고 수치 표시, 화면을 떠날 때 카메라 트랙 정리, 수치를 API로 보내지 않음, 새로고침하면 사라짐, 카메라 거부·모델 실패 시 기존 흐름 유지. **실제 MediaPipe 모델·실제 얼굴로는 검사하지 않음** |
+| Track: 지원 건·단계·버전 중복 방지·복원·sync upsert·통계, URL 고유(409)·동시 sync·버전 번호 경합·PATCH null(422) | `test_track.py`, `test_migration.py`(인덱스·외래 키) | 백엔드 API만. 프런트엔드 단어 diff(`Diff.tsx`)는 pytest·e2e 모두 직접 검증하지 않음 |
+| Track 화면 비동기 흐름 | e2e `track.spec.ts`(desktop 4개) | 저장 중 이어 쓴 자소서 보존, 되돌리기, 늦게 온 검색 응답 무시, 수정 실패 메시지·서버 값 유지. 단계 기록·문항 추가 실패는 같은 처리기를 쓰지만 따로 검사하지 않음 |
+| 마이크 수명·별점 재진입 | e2e `recorder.spec.ts`(desktop 3개) | 화면을 떠난 뒤 온 마이크 권한 스트림을 닫음, 권한을 묻는 동안 두 번 시작해도 요청·녹음 한 번, 별점 저장 중 재전송 없음. 실제 브라우저 권한 창은 아님(`getUserMedia`를 붙잡아 흉내) |
+| 설정·인증·계층·열거값 | `test_config.py`, `test_auth.py`, `test_architecture.py`, `test_enums.py` | 숫자 설정 오류·인증 설정 조합, JWT 만료·서명·aud·sub, 라우터 역방향 import 금지, 모델·스키마·SQL·types.ts 열거값 일치. 실제 Supabase JWT는 아님 |
+| 확장 순수 함수 | `web/tests/unit/extension.spec.ts` | 공고 추정, 토큰 저장(`chrome.storage.session` 대역), 주소 권한 검사. 팝업 화면·Chrome 권한·페이지 주입은 아님 |
+| 녹음 동시 업로드·저장소 오류 | `test_privacy.py` | 겹친 업로드는 나중에 시작한 녹음이 이김(409), 이전 파일은 연결 뒤 삭제·실패 시 다음 정리, 저장소 401·403·500·연결 실패는 502. 만료 정리 테스트는 `isolated_db`로 테스트 전용 DB |
 
 2026-10-28에 직접 실행한 결과:
 - `backend/.venv/bin/python -m pytest -q` → **136 passed**, 경고 1개(Starlette TestClient의 httpx 사용 중단 예고).
@@ -171,14 +177,16 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 
 ## 미해결 문제
 
-- e2e를 실행하면 추적 중인 `docs/screenshots/coaching-review-{desktop,mobile}.png`를 덮어씀(`web/e2e/coaching.spec.ts:70`). 지금은 AGENTS.md의 백업·복원 절차로 대응. **추후 테스트 수정 필요:** 스크린샷 경로를 환경 변수로 받거나 기본값을 `test-results/`로 바꾸고, 문서용 갱신은 명시적으로 켤 때만 하도록.
 - 이 개발 PC(메모리 3.7GB, 스왑 1GB 가득)에서는 전체 e2e의 desktop `camera.spec.ts`가 브랜치와 무관하게 시간 초과로 실패함(2026-11-03, 브랜치 전 코드에서도 재현). 메모리가 넉넉한 환경에서 다시 확인 필요.
 - e2e 설정은 PATH의 `python`을 씀. venv를 PATH에 넣지 않으면 백엔드가 뜨지 않음.
-- 이 머신의 Playwright 브라우저는 2026-10-30에 v1248로 다시 받았지만 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)가 없어 `LD_LIBRARY_PATH`로 임시 지정해야 뜸. 근본 해결은 `sudo npx playwright install-deps chromium`.
+- 이 머신의 Playwright 브라우저는 2026-10-30에 v1248로 다시 받았지만 시스템 라이브러리(`libnspr4`·`libnss3`·`libasound2t64`)가 없어 `LD_LIBRARY_PATH=$HOME/.cache/playwright-syslibs/root/usr/lib/x86_64-linux-gnu`로 지정해야 뜸(없으면 모든 e2e가 브라우저 시작에서 실패). 근본 해결은 `sudo npx playwright install-deps chromium`.
 - 로컬 STT 실패 사유(무음·바쁨·모델 실패 등)는 답변마다 저장하지 않아 화면은 "인식하지 못했거나 전사 요청이 실패했어요"로만 알림(서버 로그와 `/health`의 `stt.error`에는 남음). 사유별 안내가 필요하면 DB 컬럼 추가(스키마 변경 3곳)가 필요함.
 - 로컬 STT는 동기 라우트 안에서 돎. 첫 전사 때 모델을 내려받으면 그 요청이 다운로드 시간만큼 걸림(미리 `python -m app.stt download` 권장).
 - 앱 로거(`app.stt`)의 INFO 로그(모델 로딩·전사 시간)는 uvicorn 기본 설정에서 출력되지 않음. WARNING만 보임.
-- 확장 `api.js`에 인증 토큰이 없어서 `AUTH_DISABLED=false` 환경에서는 401이 남.
+- 확장은 `setAccessToken()`으로 넣은 토큰만 보냄. 토큰을 넣는 로그인 쪽이 없어 `AUTH_DISABLED=false` 환경에서는 여전히 401이 남(웹 토큰 제공자 등록도 팀원 연동으로 남음, D-26).
+- 2026-11-03 이전 로컬 SQLite에 같은 사용자의 같은 URL 지원 건이 이미 두 건 이상 있으면 `applications_user_url_uq`를 만들지 못하고 경고만 남김. 그 DB는 겹친 건을 정리한 뒤 다시 시작해야 SQLite에서도 409가 남.
+- 새 행 잠금(문항 버전, 답변 업로드)과 URL 고유 인덱스의 동작은 SQLite로만 검사함. 실제 Postgres·Supabase에서 동시 요청 확인 필요.
+- `recorded_at`은 이제 업로드를 시작한 시각(전에는 커밋 시각). 필드 이름·형식은 그대로지만 값의 뜻이 조금 바뀜(D-23).
 - 디브리프 작업은 서버 재시작 시 사라짐(설계상 재시도로 복구, [decisions.md](decisions.md) D-13).
 - 백엔드 DB 연결에 RLS가 두 번째 방어선으로 동작하지 않을 수 있음([architecture.md](architecture.md) "인증과 데이터 접근 경계").
 - [decisions.md](decisions.md)의 외부 근거(논문·기업 정책·법 조문) 원문을 아직 확인하지 않음.
@@ -194,8 +202,7 @@ README에 적힌 다른 수동 확인(가짜 OpenAI 서버로 145개 항목, 로
 2. 실제 OpenAI 키로 STT·코칭 품질 확인, 결과를 이 문서에 기록.
 3. 실제 Supabase 프로젝트에 스키마·마이그레이션을 적용하고 RLS·Storage·JWT 확인. 백엔드 접속 역할과 `auth.uid()` 값 확인. JWKS를 쓰는 프로젝트라면 `auth.py` 수정.
 4. React Router 7.x 업그레이드 여부 결정과 GHSA-wrjc 정식 검토.
-5. e2e 스크린샷 경로 분리(테스트 수정).
-6. 팀원 연동: 웹 로그인 토큰 제공자, ① Apply 확장의 `/track/sync` essays 전송, 확장 `getToken()`.
+5. 팀원 연동: 웹 로그인 토큰 제공자(`setAuthTokenProvider`), ① Apply 확장의 `/track/sync` essays 전송, 확장 `setAccessToken()` 호출.
 
 ## 이어서 작업할 때
 

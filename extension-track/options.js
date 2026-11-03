@@ -1,11 +1,20 @@
-import { getSettings, saveSettings } from "./settings.js";
+import { getSettings, hostPermissionWarning, saveSettings } from "./settings.js";
 
 const form = document.getElementById("form");
+const warning = document.getElementById("warning");
+const showWarning = (apiUrl) => {
+  const msg = hostPermissionWarning(apiUrl, chrome.runtime.getManifest());
+  warning.hidden = !msg;
+  warning.textContent = msg ?? "";
+};
 const s = await getSettings();
 form.apiUrl.value = s.apiUrl;
 form.webUrl.value = s.webUrl;
+showWarning(s.apiUrl);
 form.onsubmit = async (e) => {
   e.preventDefault();
-  await saveSettings({ apiUrl: form.apiUrl.value.trim(), webUrl: form.webUrl.value.trim() });
+  const apiUrl = form.apiUrl.value.trim();
+  await saveSettings({ apiUrl, webUrl: form.webUrl.value.trim() });
+  showWarning(apiUrl);
   document.getElementById("saved").hidden = false;
 };
