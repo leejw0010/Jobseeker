@@ -8,7 +8,7 @@
 import { gazeFeatures, isFeatures, type GazeFeatures } from "./features";
 import type { GroupedSample } from "./regression";
 import type { LensSample } from "./lens";
-import { PROTOCOL, collect, mockPanelRect, type FixationData, type Pose } from "./calibration";
+import { PROTOCOL, collect, mockPanelRect, type Fixation, type FixationData, type Pose } from "./calibration";
 import type { Frame } from "./sampler";
 
 type Pt = { x: number; y: number };
@@ -177,7 +177,7 @@ export const POSE_GEOMETRY: Record<Pose, { yaw: number; pitch: number; scale: nu
 
 /** PROTOCOL 전체를 가상 사용자가 따라 한 결과. lensOffset: 렌즈가 화면 위쪽 띠 가운데보다 위에 있는 각도(라디안) */
 export function syntheticRun(o: { noise?: number; lensOffset?: number; validRatio?: number; seed?: number;
-  view?: { w: number; h: number } } = {}): FixationData[] {
+  view?: { w: number; h: number }; override?: (fx: Fixation) => Partial<FaceParams> } = {}): FixationData[] {
   const view = o.view ?? VIEW, noise = o.noise ?? 0.0001, seed = o.seed ?? 1, valid = o.validRatio ?? 1;
   const lensGaze = { gazeX: 0, gazeY: topGaze(view) - (o.lensOffset ?? 0.12) };
   const r = rng(seed * 31 + 7);
@@ -192,7 +192,7 @@ export function syntheticRun(o: { noise?: number; lensOffset?: number; validRati
     const gaze = fx.target === "lens" ? lensGaze : screenToGaze(target![0], target![1], view);
     const n = fx.role === "rate" || fx.role === "typing" ? 10 : 15;
     const frames: Frame[] = Array.from({ length: n }, (_, i) => ({ t: i * 66, width: 640, height: 480, detectMs: 5,
-      points: r.next() < valid ? syntheticFace({ ...gaze, yaw: pose.yaw, pitch: pose.pitch, scale: 0.2 * pose.scale, noise,
+      points: r.next() < valid ? syntheticFace({ ...gaze, yaw: pose.yaw, pitch: pose.pitch, scale: 0.2 * pose.scale, noise, ...o.override?.(fx),
         seed: seed * 100_003 + k * 101 + i }) : null }));
     const rate = fx.hz ? { targetHz: fx.hz, achievedHz: fx.hz, detectP50: 5, detectP95: 8, busyPct: 8, lagP95: 10, longTasks: 0 } : undefined;
     return collect(frames, fx, { target: fx.target === "lens" || fx.target === "typing" ? undefined : target, rate, panelRect });

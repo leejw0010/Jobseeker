@@ -319,3 +319,37 @@ test("aggregate exposes only summary numbers and verdicts", () => {
   expect(out["g1.verdict"]).toBe("pass");
   expect(typeof out["g2.e50Pct"]).toBe("number");
 });
+
+// ───────── 0단계 진단(2026-11-03): 렌즈 응시별 확률·분포 밖 비율, 앞→끝 자세 변화, 점별 오차 ─────────
+
+test("diagnostics: per-group lens probabilities, start→end drift, per-point errors", () => {
+  const r = evaluateRun(syntheticRun({ noise: 0.0001, seed: 21 }), VIEW, PANELS);
+  expect(r.diag.lens.map((g) => g.id)).toEqual(["val-lens-forward", "val-lens-left", "val-lens-right", "val-top-40", "val-top-50", "val-top-60"]);
+  const fwd = r.diag.lens.find((g) => g.id === "val-lens-forward")!;
+  expect(fwd.medianP!).toBeGreaterThan(0.8);
+  expect(fwd.oodRate!).toBeLessThan(0.2);
+  expect(fwd.toward! + fwd.away! + fwd.unknown!).toBeCloseTo(1, 6);
+  expect(Math.abs(r.diag.drift.open!)).toBeLessThan(0.05);
+  expect(Math.abs(r.diag.drift.scale!)).toBeLessThan(0.05);
+  expect(Object.keys(r.diag.errors)).toEqual(expect.arrayContaining(["val-25-25", "val-75-75", "val-30-50-left", "val-top-50"]));
+  expect(Object.keys(r.diag.fit)).toEqual(expect.arrayContaining(["grid-50-50", "grid-92-92"]));
+  expect(r.diag.errors["val-25-25"]!).toBeLessThan(60);
+});
+
+test("diagnostics expose a late posture change and refused (out-of-range) lens looks", () => {
+  // 끝쪽 렌즈 검증 응시만 고개를 많이 돌리고 눈을 덜 뜬 경우
+  const late = (fx: Fixation) => (fx.id === "val-lens-forward" ? { yaw: 0.45, eyeOpen: 0.7 } : {});
+  const r = evaluateRun(syntheticRun({ noise: 0.0001, seed: 22, override: late }), VIEW, PANELS);
+  expect(r.diag.lens.find((g) => g.id === "val-lens-forward")!.oodRate!).toBeGreaterThan(0.5);
+  expect(r.diag.drift.open!).toBeLessThan(-0.2);
+  expect(r.diag.drift.hx!).toBeLessThan(0); // 사용자 오른쪽으로 돌리면 코끝이 원본 프레임 −x로
+});
+
+test("aggregate includes diagnostics without coordinates", () => {
+  const out = aggregate(evaluateRun(syntheticRun({ noise: 0.0001, seed: 23 }), VIEW, PANELS));
+  expect(typeof out["diag.lens.val-lens-forward.medianP"]).toBe("number");
+  expect(typeof out["diag.drift.open"]).toBe("number");
+  expect(typeof out["diag.err.val-25-25"]).toBe("number");
+  expect(typeof out["diag.fit.grid-50-50"]).toBe("number");
+  expect(Object.keys(out).some((k) => /sample|point|landmark|frame|coord/i.test(k))).toBe(false);
+});

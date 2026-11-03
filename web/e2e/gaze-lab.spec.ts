@@ -62,3 +62,21 @@ test("changing the window size during the test invalidates the run", async ({ pa
   await expect(page.getByText("창 크기·위치·배율이 바뀌어 이번 시험은 무효예요")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "처음부터 다시" })).toBeVisible();
 });
+
+test("dots are drawn exactly where they are scored, and diagnostics are shown", async ({ page }) => {
+  await startLab(page, "gaze", { skipRate: true });
+  const dot = page.locator("[data-gaze-target]").first();
+  await expect(dot).toBeVisible();
+  const m = await dot.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, tx: Number(el.dataset.targetX), ty: Number(el.dataset.targetY) };
+  });
+  // 채점 좌표(스크롤바를 뺀 화면 기준)와 실제로 그린 점의 가운데가 같아야 한다
+  expect(Math.abs(m.cx - m.tx)).toBeLessThan(1);
+  expect(Math.abs(m.cy - m.ty)).toBeLessThan(1);
+  await expect(page.getByRole("heading", { name: "시험 결과" })).toBeVisible({ timeout: 150_000 });
+  const diag = page.getByTestId("lab-diag");
+  await expect(diag).toContainText("val-lens-forward");
+  await expect(diag).toContainText("시험 앞→끝 변화");
+  await expect(diag).toContainText("val-25-25");
+});

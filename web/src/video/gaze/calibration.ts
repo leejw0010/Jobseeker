@@ -157,6 +157,15 @@ export type FeasibilityReport = {
   rates: { hz: number; achievedHz: number | null; detectP50: number | null; detectP95: number | null; busyPct: number | null;
            lagP95: number | null; longTasks: number | null; valid: number | null; dDetected: number | null; pass: boolean }[];
   typing: { lagP95: number | null; longTasks: number | null; busyPct: number | null } | null;
+  /** 진단(판정에는 쓰지 않음): 검증 응시별 렌즈 확률·분포 밖 비율, 시험 앞(렌즈 학습)→끝(렌즈 검증) 자세·눈 변화,
+   *  처음 보는 위치의 응시별 오차(errors)와 학습 격자의 맞춤 잔차(fit, 같은 데이터로 학습했으므로 정확도 아님) */
+  diag: {
+    lens: { id: string; n: number; medianP: number | null; oodRate: number | null; toward: number | null; away: number | null;
+            unknown: number | null }[];
+    drift: Record<"open" | "scale" | "faceX" | "faceY" | "hx" | "hy" | "ex" | "ey", number | null>;
+    errors: Record<string, number | null>;
+    fit: Record<string, number | null>;
+  };
   rateVerdict: Verdict;
   recommendedHz: 4 | 10 | 15;
 };
@@ -223,7 +232,7 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
     if (!lens) return [];
     const ts = d.samples.map((s) => s.t), out = d.samples.map((s) => lens!.predict(s.f, openRatio(s.f)));
     const p = smoothMean(ts, out.map((o) => o.p));
-    return out.map((o, i) => ({ p: p[i], decision: o.ood ? "unknown" : p[i] >= lens!.thresholds.hi ? "toward"
+    return out.map((o, i) => ({ p: p[i], ood: o.ood, decision: o.ood ? "unknown" : p[i] >= lens!.thresholds.hi ? "toward"
       : p[i] <= lens!.thresholds.lo ? "away" : "unknown" }));
   };
   const lensVal = (pose: Pose) => of((f) => f.role === "validate" && f.target === "lens" && f.pose === pose).flatMap(lensRun);
@@ -290,6 +299,23 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
   });
   const typingD = of((f) => f.role === "typing")[0];
   const typing = typingD?.rate ? { lagP95: typingD.rate.lagP95, longTasks: typingD.rate.longTasks, busyPct: typingD.rate.busyPct } : null;
+  // ── 진단 ──
+  const LENS_DIAG = ["val-lens-forward", "val-lens-left", "val-lens-right", "val-top-40", "val-top-50", "val-top-60"];
+  const diagLens = LENS_DIAG.map((id) => {
+    const runs = of((f) => f.id === id).flatMap(lensRun);
+    return { id, n: runs.length, medianP: runs.length ? median(runs.map((o) => o.p)) : null, oodRate: frac(runs, (o) => o.ood),
+      toward: frac(runs, (o) => o.decision === "toward"), away: frac(runs, (o) => o.decision === "away"),
+      unknown: frac(runs, (o) => o.decision === "unknown") };
+  });
+  const endF = of((f) => f.id === "val-lens-forward").flatMap((d) => d.samples.map((s) => s.f));
+  const mid = (fs: GazeFeatures[], k: keyof GazeFeatures) => median(fs.map((f) => f[k]));
+  const delta = (k: keyof GazeFeatures) => (baseF.length && endF.length ? mid(endF, k) - mid(baseF, k) : null);
+  const ratio = (k: keyof GazeFeatures) => (baseF.length && endF.length ? mid(endF, k) / mid(baseF, k) - 1 : null);
+  const drift = { open: ratio("open"), scale: ratio("scale"), faceX: delta("faceX"), faceY: delta("faceY"), hx: delta("hx"),
+    hy: delta("hy"), ex: delta("ex"), ey: delta("ey") };
+  const errors = Object.fromEntries(of((f) => f.role === "validate" && isScreen(f)).map((d) => [d.fixation.id, fixError(d)]));
+  const fit = Object.fromEntries(of((f) => f.role === "train" && f.id.startsWith("grid-")).map((d) => [d.fixation.id, fixError(d)]));
+
   const r10 = rates.find((r) => r.hz === 10)!, r15 = rates.find((r) => r.hz === 15)!;
   const rateVerdict: Verdict = r10.achievedHz === null ? "inconclusive" : r10.pass ? "pass" : "fail";
   const recommendedHz = r15.pass && r10.pass ? 15 : r10.pass ? 10 : 4;
@@ -301,6 +327,7 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
     g1: { verdict: g1Verdict, reason: g1Reason, cvAuc: lens?.cv.auc ?? null, valAuc, lensForward, lensTurned, topFalse, screenFalse,
       hi: lens?.thresholds.hi ?? null, lo: lens?.thresholds.lo ?? null },
     panels, minPanelPx, panelVerdict, distance, rates, typing, rateVerdict, recommendedHz,
+    diag: { lens: diagLens, drift, errors, fit },
   };
 }
 
@@ -326,5 +353,9 @@ export function aggregate(r: FeasibilityReport): Record<string, number | string 
   if (r.typing) put("typing.", r.typing);
   out["rate.verdict"] = r.rateVerdict;
   out["rate.recommendedHz"] = r.recommendedHz;
+  r.diag.lens.forEach((g) => put(`diag.lens.${g.id}.`, g));
+  put("diag.drift.", r.diag.drift);
+  put("diag.err.", r.diag.errors);
+  put("diag.fit.", r.diag.fit);
   return out;
 }

@@ -25,7 +25,7 @@ const num = (v: number | null | undefined, d = 0) => (v == null ? "–" : v.toFi
 const worst = (vs: Verdict[]): Verdict => (vs.includes("fail") ? "fail" : vs.includes("inconclusive") ? "inconclusive" : "pass");
 
 type Phase = "intro" | "running" | "invalid" | "done";
-type Current = { fx: Fixation; panel?: Rect; step: number; total: number };
+type Current = { fx: Fixation; panel?: Rect; target?: [number, number]; step: number; total: number };
 type RunSummary = Record<string, number | string | null>;
 
 export default function GazeLab() {
@@ -51,7 +51,8 @@ export default function GazeLab() {
 
   const run = useCallback(async () => {
     const k = timeScale(), collectHz = k < 1 ? 60 : 15;
-    const view = { w: innerWidth, h: innerHeight }, geo = geometry();
+    // 채점 좌표는 스크롤바를 뺀 화면 기준(시험 화면을 덮는 고정 레이어와 같은 크기)
+    const view = { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight }, geo = geometry();
     const queue = PROTOCOL.filter((f) => !(skipRate && (f.role === "rate" || f.role === "typing"))).map((fx) => ({ fx, attempt: 0 }));
     const data: FixationData[] = [];
     setReport(null);
@@ -60,7 +61,9 @@ export default function GazeLab() {
     for (let i = 0; i < queue.length; i++) {
       const { fx, attempt } = queue[i];
       const panel = fx.target === "panel" ? mockPanelRect(view, fx.panelPx!) : undefined;
-      setCurrent({ fx, panel, step: i + 1, total: queue.length });
+      const target: [number, number] | undefined = panel ? [panel.left + panel.width / 2, panel.top + panel.height / 2]
+        : typeof fx.target === "object" ? [fx.target.x * view.w, fx.target.y * view.h] : undefined;
+      setCurrent({ fx, panel, target, step: i + 1, total: queue.length });
       setTargetHz(fx.hz ?? collectHz);
       await sleep(fx.settleMs * k);
       const frames: Frame[] = [];
@@ -74,8 +77,6 @@ export default function GazeLab() {
         setPhase("invalid");
         return;
       }
-      const target: [number, number] | undefined = panel ? [panel.left + panel.width / 2, panel.top + panel.height / 2]
-        : typeof fx.target === "object" ? [fx.target.x * view.w, fx.target.y * view.h] : undefined;
       const d = collect(frames, fx, { target, rate: fx.hz ? rateSnapshot() : undefined, panelRect: panel });
       // 유효 표본이 모자란 학습·검증 응시는 끝에 다시 잰다(최대 MAX_RETRY번)
       if (d.samples.length < MIN_VALID && attempt < MAX_RETRY && (fx.role === "train" || fx.role === "validate")) {
@@ -133,8 +134,9 @@ export default function GazeLab() {
 
 /** 시험 중 화면 전체: 지금 볼 대상 하나와 안내. 가짜 검출기(e2e)는 data-gaze-* 표시를 읽어 그곳을 본다 */
 function Overlay({ current }: { current: Current }) {
-  const { fx, panel } = current;
-  const marker = { "data-gaze-pose": fx.pose };
+  const { fx, panel, target } = current;
+  // 채점에 쓰는 좌표를 그대로 그리고 표시해 둔다(점의 위치와 채점 좌표가 어긋나지 않게)
+  const marker = { "data-gaze-pose": fx.pose, ...(target ? { "data-target-x": target[0], "data-target-y": target[1] } : {}) };
   return <div className="gaze-lab-overlay">
     <p className="gaze-lab-prompt" data-testid="lab-prompt">{fx.prompt} <span className="muted small">({current.step}/{current.total})</span></p>
     {fx.target === "lens" ? <div className="gaze-lab-lens" data-gaze-lens="" {...marker}>▲ 카메라 렌즈(외장 카메라면 그 렌즈)</div>
@@ -142,8 +144,7 @@ function Overlay({ current }: { current: Current }) {
         style={{ left: panel.left, top: panel.top, width: panel.width, height: panel.height }} />
         : fx.target === "typing" ? <textarea className="gaze-lab-typing" data-gaze-target="" {...marker} autoFocus
           placeholder="아무 글이나 입력하세요" aria-label="글 입력 시험" />
-          : typeof fx.target === "object" ? <div className="gaze-lab-dot" data-gaze-target="" {...marker}
-            style={{ left: `${fx.target.x * 100}%`, top: `${fx.target.y * 100}%` }} /> : null}
+          : target ? <div className="gaze-lab-dot" data-gaze-target="" {...marker} style={{ left: target[0], top: target[1] }} /> : null}
   </div>;
 }
 
@@ -179,6 +180,7 @@ function Results({ report: r, runs, onCopy, copied, onClear }: { report: Feasibi
       : <p className="small muted" data-testid="lab-rates">주기 시험을 건너뛰었어요.</p>}
     {r.typing && <p className="small">글 입력 중(초당 10회): 지연 p95 {num(r.typing.lagP95)}ms · 긴 작업 {r.typing.longTasks} · 메인 스레드 점유 {num(r.typing.busyPct, 1)}%.
       CPU 사용률은 브라우저가 알려 주지 않으니 OS 작업 관리자 값을 따로 적어 주세요.</p>}
+    <Diagnostics r={r} />
     <h3>실행 {runs.length}번 요약</h3>
     <p className="small">H1 통과 {passCount("g1.verdict")} · H2 통과 {passCount("g2.verdict")} · 질문 패널 {passCount("panel.verdict")} · 표본 주기 {passCount("rate.verdict")}
       (설계 기준은 3번 중 2번 이상)</p>
@@ -186,3 +188,29 @@ function Results({ report: r, runs, onCopy, copied, onClear }: { report: Feasibi
     {copied && <p className="small" role="status">{copied}</p>}
   </section>;
 }
+
+const DRIFT_LABEL: [keyof FeasibilityReport["diag"]["drift"], string, boolean][] = [
+  ["open", "눈 뜬 정도", true], ["scale", "얼굴 크기(거리)", true], ["faceX", "얼굴 위치 가로(프레임 비율)", false],
+  ["faceY", "얼굴 위치 세로(프레임 비율)", false], ["hx", "고개 좌우 특징", false], ["hy", "고개 상하 특징", false],
+  ["ex", "홍채 가로(눈 폭 단위)", false], ["ey", "홍채 세로(눈 폭 단위)", false],
+];
+
+/** 판정에는 쓰지 않는 진단: 실패 원인을 가리기 위한 것(집계 복사에도 들어감, 특징점·좌표 없음) */
+function Diagnostics({ r }: { r: FeasibilityReport }) {
+  const signed = (v: number | null, asPct: boolean) => (v == null ? "–" : asPct ? `${v > 0 ? "+" : ""}${Math.round(v * 100)}%` : `${v > 0 ? "+" : ""}${v.toFixed(3)}`);
+  return <div data-testid="lab-diag">
+    <h3>진단(판정에는 쓰지 않음)</h3>
+    <p className="small muted">렌즈 응시: 처음 보는 응시별 렌즈 확률 중앙값과 분포 밖으로 막힌 비율. 확률이 낮으면 분류기가 렌즈 응시로 보지 않은 것이고,
+      분포 밖 비율이 높으면 보정 때와 자세·눈이 달라 판정을 거절한 것이에요.</p>
+    <table><thead><tr><th>응시</th><th>표본</th><th>확률 중앙</th><th>분포 밖</th><th>toward</th><th>away</th><th>unknown</th></tr></thead>
+      <tbody>{r.diag.lens.map((g) => <tr key={g.id}><td>{g.id}</td><td>{g.n}</td><td>{num(g.medianP, 2)}</td><td>{pct(g.oodRate)}</td>
+        <td>{pct(g.toward)}</td><td>{pct(g.away)}</td><td>{pct(g.unknown)}</td></tr>)}</tbody></table>
+    <p className="small">시험 앞→끝 변화(렌즈 학습 응시 → 마지막 렌즈 검증 응시, 중앙값 기준):{" "}
+      {DRIFT_LABEL.map(([k, label, asPct]) => `${label} ${signed(r.diag.drift[k], asPct)}`).join(" · ")}</p>
+    <table><thead><tr><th>처음 보는 위치</th><th>오차</th></tr></thead>
+      <tbody>{Object.entries(r.diag.errors).map(([id, e]) => <tr key={id}><td>{id}</td><td>{num(e)}px</td></tr>)}</tbody></table>
+    <p className="small muted">보정 격자 맞춤 잔차(같은 점으로 학습했으므로 정확도가 아님):{" "}
+      {Object.entries(r.diag.fit).map(([id, e]) => `${id} ${num(e)}px`).join(" · ")}</p>
+  </div>;
+}
+
