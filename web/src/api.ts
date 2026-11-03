@@ -1,6 +1,8 @@
 import type {
   Application,
+  ApplicationCreate,
   ApplicationDetail,
+  ApplicationPatch,
   Category,
   CoachingRubric,
   DeleteResult,
@@ -134,9 +136,9 @@ export const api = {
   applications: (f: { status?: string; stage?: string; job_category?: string; q?: string } = {}) =>
     req<Application[]>("GET", `/track/applications${qs(f)}`),
   application: (id: string) => req<ApplicationDetail>("GET", `/track/applications/${id}`),
-  createApplication: (b: Partial<Application> & { company: string; position: string }) =>
+  createApplication: (b: ApplicationCreate) =>
     req<ApplicationDetail>("POST", "/track/applications", b),
-  updateApplication: (id: string, b: Partial<Application>) =>
+  updateApplication: (id: string, b: ApplicationPatch) =>
     req<ApplicationDetail>("PATCH", `/track/applications/${id}`, b),
   deleteApplication: (id: string) => req<void>("DELETE", `/track/applications/${id}`),
   addEvent: (id: string, b: { stage: string; result: string; event_date?: string; memo?: string }) =>

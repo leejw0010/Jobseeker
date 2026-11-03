@@ -1,24 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { StageTrack } from "../components/track/StageTrack";
+import { StatusChip } from "../components/track/StatusChip";
 import { JOB_CATEGORIES, STAGES, STATUSES, type Application } from "../types";
-
-export function StageTrack({ a }: { a: Pick<Application, "stage" | "status"> }) {
-  const cur = STAGES.indexOf(a.stage);
-  return (
-    <div className="stage-track" title={`${a.stage} · ${a.status}`}>
-      {STAGES.map((s, i) => (
-        <span key={s} className={i < cur || (i === cur && a.status === "합격") ? "on" : i === cur && a.status === "불합격" ? "fail" : i === cur ? "on" : ""}
-          style={i === cur && a.status === "진행중" ? { opacity: 0.45 } : undefined} />
-      ))}
-    </div>
-  );
-}
-
-export function StatusChip({ status }: { status: string }) {
-  const cls = status === "합격" ? "good" : status === "불합격" ? "bad" : status === "진행중" ? "accent" : "";
-  return <span className={`chip ${cls}`}>{status}</span>;
-}
 
 const EMPTY = { company: "", position: "", job_category: "개발", url: "", applied_at: "" };
 
@@ -30,7 +15,14 @@ export default function TrackList() {
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const load = () => api.applications(f).then(setRows).catch((e) => setErr(e.message));
+  // 필터를 빨리 바꾸면 응답 순서가 뒤바뀔 수 있다: 가장 나중에 보낸 조회의 응답만 반영한다
+  const latest = useRef(0);
+  const load = () => {
+    const mine = ++latest.current;
+    api.applications(f)
+      .then((r) => { if (mine === latest.current) { setRows(r); setErr(null); } })
+      .catch((e) => { if (mine === latest.current) setErr(e.message); });
+  };
   useEffect(() => {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);

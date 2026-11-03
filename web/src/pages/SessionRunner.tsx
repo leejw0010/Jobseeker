@@ -119,18 +119,28 @@ export default function SessionRunner() {
     } catch { setPhase("ready"); }
   }, [beginSegment, inputMode, start, session]);
 
+  // 마이크 권한을 묻는 동안 '답변 시작'을 다시 눌러도 한 번만 시작한다(녹음기가 둘 생기지 않게)
+  const starting = useRef(false);
+  const [startingUi, setStartingUi] = useState(false);
   const beginQuestion = async () => {
-    if (!session) return;
-    setErr(null);
-    setDraft("");
-    setUploadFailed(false);
-    setConsentFor(null); // 앞 질문에서 띄운 동의 패널(다시 전사 등)은 이 질문과 상관없다
-    try { if (inputMode === "audio") await ensureStream(); } catch { return; }
-    if (mock && session.prep_sec > 0) {
-      deadline.current = performance.now() + session.prep_sec * 1000;
-      setLeft(session.prep_sec);
-      setPhase("prep");
-    } else await beginAnswer();
+    if (!session || starting.current) return;
+    starting.current = true;
+    setStartingUi(true);
+    try {
+      setErr(null);
+      setDraft("");
+      setUploadFailed(false);
+      setConsentFor(null); // 앞 질문에서 띄운 동의 패널(다시 전사 등)은 이 질문과 상관없다
+      try { if (inputMode === "audio") await ensureStream(); } catch { return; }
+      if (mock && session.prep_sec > 0) {
+        deadline.current = performance.now() + session.prep_sec * 1000;
+        setLeft(session.prep_sec);
+        setPhase("prep");
+      } else await beginAnswer();
+    } finally {
+      starting.current = false;
+      setStartingUi(false);
+    }
   };
 
   useEffect(() => {
@@ -224,7 +234,7 @@ export default function SessionRunner() {
         {inputMode === "audio" && consent === "needed" ? <>
           {consentPanel(null, "동의하고 시작", () => void beginQuestion())}
           <div className="row"><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>
-        </> : <div className="row"><button className="primary" onClick={beginQuestion}>답변 시작</button><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>}
+        </> : <div className="row"><button className="primary" disabled={startingUi} onClick={beginQuestion}>답변 시작</button><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>}
       </>}
       {phase === "prep" && <><p className="phase">답변 준비 시간</p><div className="timer">{fmt(left)}</div><button className="primary" onClick={beginAnswer}>바로 답변 시작</button></>}
       {phase === "answer" && <>

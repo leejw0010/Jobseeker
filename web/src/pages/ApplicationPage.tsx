@@ -1,20 +1,50 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import Diff from "../components/Diff";
-import { JOB_CATEGORIES, STAGES, STATUSES, type ApplicationDetail, type EssayItem } from "../types";
-import { StageTrack, StatusChip } from "./TrackList";
+import { StageTrack } from "../components/track/StageTrack";
+import { StatusChip } from "../components/track/StatusChip";
+import { JOB_CATEGORIES, STAGES, STATUSES, type ApplicationDetail, type ApplicationPatch, type EssayItem } from "../types";
+
+/** 한 번에 하나만 보내는 비동기 동작. 실패하면 서버 메시지를 돌려준다(화면 전체를 오류로 바꾸지 않는다) */
+function useAction() {
+  const running = useRef(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (fn: () => Promise<unknown>, onFail?: () => void) => {
+    if (running.current) return;
+    running.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+      onFail?.();
+    } finally {
+      running.current = false;
+      setPending(false);
+    }
+  };
+  return { run, pending, error };
+}
 
 function EssayCard({ item, onChange, onDelete }: { item: EssayItem; onChange: (i: EssayItem) => void; onDelete: () => void }) {
   const latest = item.versions[item.versions.length - 1];
   const [draft, setDraft] = useState(latest?.content ?? "");
   const [sel, setSel] = useState<number>(latest?.version_no ?? 0);
   const [compare, setCompare] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const { run, pending, error: err } = useAction();
+  // 입력란에 마지막으로 채운 서버 내용. 입력란이 이 값 그대로일 때만(사용자가 고치지 않았을 때만) 새 최신 버전으로 바꾼다:
+  // 저장하는 동안 이어서 쓴 글이 저장 응답에 덮이지 않는다
+  const synced = useRef(latest?.content ?? "");
 
   useEffect(() => {
     const l = item.versions[item.versions.length - 1];
-    setDraft(l?.content ?? "");
+    const next = l?.content ?? "";
+    const prevSynced = synced.current;
+    synced.current = next;
+    setDraft((d) => (d === prevSynced ? next : d));
     setSel(l?.version_no ?? 0);
   }, [item.versions.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -22,19 +52,21 @@ function EssayCard({ item, onChange, onDelete }: { item: EssayItem; onChange: (i
   const prev = item.versions.find((v) => v.version_no === sel - 1);
   const over = item.char_limit != null && draft.length > item.char_limit;
 
-  const save = async (submitted: boolean) => {
-    try {
-      onChange(await api.addVersion(item.id, { content: draft, is_submitted: submitted }));
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  };
+  // 저장 응답이 오면 위 effect가 입력란을 맞춘다: 그사이 더 쓴 글은 synced와 달라 그대로 남는다
+  const save = (submitted: boolean) => run(async () => onChange(await api.addVersion(item.id, { content: draft, is_submitted: submitted })));
+  /** 되돌리기는 사용자가 고른 내용으로 입력란을 바꾸는 동작이다 */
+  const restore = (versionId: string, content: string) => run(async () => {
+    const next = await api.restoreVersion(versionId);
+    setDraft(content);
+    synced.current = content;
+    onChange(next);
+  });
 
   return (
     <section className="card">
       <div className="row">
         <h3 className="grow" style={{ margin: 0 }}>{item.question_text}</h3>
-        <button className="small danger" onClick={onDelete}>문항 삭제</button>
+        <button className="small danger" disabled={pending} onClick={onDelete}>문항 삭제</button>
       </div>
       <div className="spacer" />
       <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: 16 }}>
@@ -53,7 +85,7 @@ function EssayCard({ item, onChange, onDelete }: { item: EssayItem; onChange: (i
               <div className="row small">
                 <span className="grow muted">v{selected.version_no} 보기</span>
                 {prev && <label style={{ flexDirection: "row", alignItems: "center" }}><input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} />v{prev.version_no}와 비교</label>}
-                <button onClick={async () => onChange(await api.restoreVersion(selected.id))}>이 버전으로 되돌리기</button>
+                <button disabled={pending} onClick={() => restore(selected.id, selected.content)}>이 버전으로 되돌리기</button>
               </div>
               <div className="spacer" />
               {compare && prev ? <Diff before={prev.content} after={selected.content} /> : <div className="diff">{selected.content}</div>}
@@ -71,8 +103,8 @@ function EssayCard({ item, onChange, onDelete }: { item: EssayItem; onChange: (i
                 <span className={`grow ${over ? "err" : "muted"}`}>
                   {draft.length}자{item.char_limit ? ` / ${item.char_limit}자` : ""} (공백 제외 {draft.replace(/\s/g, "").length}자)
                 </span>
-                <button disabled={!draft || draft === latest?.content} onClick={() => save(false)}>새 버전 저장</button>
-                <button className="primary" disabled={!draft} onClick={() => save(true)}>제출본으로 저장</button>
+                <button disabled={pending || !draft || draft === latest?.content} onClick={() => save(false)}>새 버전 저장</button>
+                <button className="primary" disabled={pending || !draft} onClick={() => save(true)}>제출본으로 저장</button>
               </div>
             </>
           )}
@@ -92,6 +124,8 @@ export default function ApplicationPage() {
   const [newEssay, setNewEssay] = useState({ question_text: "", char_limit: "" });
 
   const reload = () => api.application(id).then(setA).catch((e) => setErr(e.message));
+  // 수정·기록·삭제는 한 번에 하나씩 보내고, 실패하면 메시지를 보여 준 뒤 서버 상태로 다시 맞춘다
+  const { run, pending, error: actionErr } = useAction();
   useEffect(() => {
     reload();
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -102,7 +136,7 @@ export default function ApplicationPage() {
   if (err) return <p className="err">{err}</p>;
   if (!a) return <p className="muted">불러오는 중…</p>;
 
-  const patch = async (b: Partial<ApplicationDetail>) => setA(await api.updateApplication(a.id, b));
+  const patch = (b: ApplicationPatch) => run(async () => setA(await api.updateApplication(a.id, b)), reload);
 
   return (
     <>
@@ -143,8 +177,9 @@ export default function ApplicationPage() {
           <div className="spacer" />
           <div className="row">
             <button onClick={() => nav(`/practice?application=${a.id}`)}>이 지원 건으로 면접 질문 만들기</button>
-            <button className="danger" onClick={async () => { if (confirm("지원 건과 자소서 버전을 모두 삭제할까요?")) { await api.deleteApplication(a.id); nav("/track"); } }}>삭제</button>
+            <button className="danger" disabled={pending} onClick={() => { if (confirm("지원 건과 자소서 버전을 모두 삭제할까요?")) run(async () => { await api.deleteApplication(a.id); nav("/track"); }); }}>삭제</button>
           </div>
+          {actionErr && <p className="err" role="alert">{actionErr}</p>}
         </section>
 
         <section className="card">
@@ -157,7 +192,7 @@ export default function ApplicationPage() {
                   <td>{e.stage}</td>
                   <td><StatusChip status={e.result === "대기" ? "보류" : e.result} /></td>
                   <td className="small">{e.memo}</td>
-                  <td><button className="small danger" onClick={async () => { await api.deleteEvent(e.id); reload(); }}>×</button></td>
+                  <td><button className="small danger" disabled={pending} onClick={() => run(async () => { await api.deleteEvent(e.id); await reload(); }, reload)}>×</button></td>
                 </tr>
               ))}
               {a.events.length === 0 && <tr><td className="muted">아직 기록이 없습니다.</td></tr>}
@@ -176,10 +211,10 @@ export default function ApplicationPage() {
           <div className="spacer" />
           <div className="row">
             <input className="grow" placeholder="메모 (예: 면접 질문, 분위기)" value={ev.memo} onChange={(e) => setEv({ ...ev, memo: e.target.value })} />
-            <button className="primary" onClick={async () => {
+            <button className="primary" disabled={pending} onClick={() => run(async () => {
               setA(await api.addEvent(a.id, { stage: ev.stage, result: ev.result, event_date: ev.event_date || undefined, memo: ev.memo || undefined }));
               setEv({ ...ev, memo: "" });
-            }}>기록</button>
+            })}>기록</button>
           </div>
           <p className="small muted">합격을 기록하면 다음 단계로 넘어가고, 불합격을 기록하면 상태가 '불합격'이 됩니다.</p>
         </section>
@@ -189,17 +224,17 @@ export default function ApplicationPage() {
       {a.essay_items.map((item) => (
         <EssayCard key={item.id} item={item}
           onChange={(next) => setA({ ...a, essay_items: a.essay_items.map((x) => (x.id === next.id ? next : x)) })}
-          onDelete={async () => { if (confirm("문항과 모든 버전을 삭제할까요?")) { await api.deleteEssay(item.id); reload(); } }} />
+          onDelete={() => { if (confirm("문항과 모든 버전을 삭제할까요?")) run(async () => { await api.deleteEssay(item.id); await reload(); }, reload); }} />
       ))}
       <section className="card">
         <div className="row">
           <input className="grow" placeholder="새 문항 (예: 지원 동기와 입사 후 포부를 서술하시오)" value={newEssay.question_text} onChange={(e) => setNewEssay({ ...newEssay, question_text: e.target.value })} />
           <input style={{ width: 110 }} type="number" placeholder="글자 수 제한" value={newEssay.char_limit} onChange={(e) => setNewEssay({ ...newEssay, char_limit: e.target.value })} />
-          <button disabled={!newEssay.question_text.trim()} onClick={async () => {
+          <button disabled={pending || !newEssay.question_text.trim()} onClick={() => run(async () => {
             await api.addEssay(a.id, { question_text: newEssay.question_text.trim(), char_limit: newEssay.char_limit ? +newEssay.char_limit : null });
             setNewEssay({ question_text: "", char_limit: "" });
-            reload();
-          }}>문항 추가</button>
+            await reload();
+          })}>문항 추가</button>
         </div>
       </section>
     </>

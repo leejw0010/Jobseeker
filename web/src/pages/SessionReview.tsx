@@ -66,7 +66,11 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
   }, [a.id, a.audio_available, a.recorded_at]);
 
   /** syncText: 서버가 전사문을 새로 만든 경우에만 입력란을 덮어쓴다(작성 중인 내용 보호). */
+  // 저장·점검 중에 다른 동작(별점 연속 클릭 등)이 끼어들지 않게 한 번에 하나만 보낸다
+  const acting = useRef(false);
   const act = async (fn: () => Promise<PracticeAnswer>, syncText = false) => {
+    if (acting.current) return;
+    acting.current = true;
     setBusy(true);
     setErr(null);
     setNeedConsent(null);
@@ -81,6 +85,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
       else setErr((e as Error).message);
       onReload();
     } finally {
+      acting.current = false;
       setBusy(false);
     }
   };
@@ -146,7 +151,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
       <div className="spacer" />
       <div className="row">
         <span className="small muted">자기 평가</span>
-        <Stars value={a.self_rating} onChange={(v) => act(() => api.reflect(a.id, { self_rating: v }))} />
+        <Stars value={a.self_rating} disabled={busy} onChange={(v) => act(() => api.reflect(a.id, { self_rating: v }))} />
       </div>
       <label>회고 메모
         <textarea style={{ minHeight: 70 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="다음엔 무엇을 바꿀지" />

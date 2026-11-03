@@ -190,6 +190,31 @@ export interface Application {
   updated_at: string;
 }
 
+/** POST /track/applications 요청(backend ApplicationIn). 서버가 정하는 id·source·시각은 보내지 않는다 */
+export interface ApplicationCreate {
+  company: string;
+  position: string;
+  job_category?: string;
+  url?: string | null;
+  applied_at?: string | null;
+  stage?: Stage;
+  status?: Status;
+  notes?: string | null;
+}
+
+/** PATCH /track/applications/{id} 요청(backend ApplicationPatch). 보낸 필드만 바꾼다.
+ *  회사·직무·분류·단계·상태는 null로 비울 수 없고(422), URL·지원일·메모는 null이면 비운다 */
+export interface ApplicationPatch {
+  company?: string;
+  position?: string;
+  job_category?: string;
+  url?: string | null;
+  applied_at?: string | null;
+  stage?: Stage;
+  status?: Status;
+  notes?: string | null;
+}
+
 export interface StageEvent {
   id: string;
   stage: Stage;
