@@ -4,7 +4,8 @@
 
 ## 현재 브랜치 상태
 
-- `feature/architecture-fixes`(2026-11-03 현재 작업): 기존 로컬 STT·시선 실험실·회고 기능 위에 백엔드 서비스 분리, 인증·설정 검증, 녹음 동시 업로드 보호, Track 중복·버전 처리, 웹 계산 테스트 분리 작업을 모음. 사용자 요청으로 현재 작업물을 커밋·GitHub 보관.
+- `feature/architecture-fixes`(2026-11-03 현재 작업): 기존 로컬 STT·시선 실험실·회고 기능 위에 백엔드 서비스 분리, 인증·설정 검증, 녹음 동시 업로드 보호, Track 중복·버전 처리, 웹 계산 테스트 분리 작업을 모음. 사용자 요청으로 현재 작업물 48개 파일을 `49aceee`로 커밋. `git push -u origin feature/architecture-fixes`는 `could not read Username for 'https://github.com': No such device or address`로 실패. 연결된 GitHub 앱도 저장소 권한이 `push: false`라 업로드하지 못했음.
+- 첫 커밋 뒤 추가로 발견한 `web/e2e/recorder.spec.ts`·`track.spec.ts`도 후속 커밋에 보관. 아래 e2e 실행이 끝난 뒤 추가된 테스트라 해당 두 파일의 브라우저 실행은 미검증.
 - 이번 저장 시점 자동 검증(2026-11-03): `cd backend && .venv/bin/python -m pytest -q` → **281 passed in 43.93s**; `cd web && npm run build` → **종료 코드 0**; `npm run test:unit` → **61 passed (17.1s)**. 샌드박스에서 멈춘 pytest는 제한 밖에서 재실행한 결과임.
 - 이번 브라우저 검증: `cd web && PATH=../backend/.venv/bin:$PATH npm run test:e2e` → **27 failed, 5 skipped**. 전부 브라우저 시작 단계에서 `error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory`로 실패하여 화면 흐름은 검증하지 못함. 샌드박스 안에서는 먼저 `Timed out waiting 60000ms from config.webServer.`가 발생해 제한 밖에서 재실행함. 문서 스크린샷은 실행 전 상태로 백업·복원했음. 실제 OpenAI·Supabase 서비스 검증은 이번에 실행하지 않음.
 - `main`: PR #1(확장 팝업)과 PR #2(`codex/evidence-interview-coach`, 제출본 기반 면접 코칭)까지 머지됨.
