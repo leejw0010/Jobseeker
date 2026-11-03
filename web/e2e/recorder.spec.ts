@@ -53,7 +53,8 @@ test("clicking start twice while asking asks once and records once", async ({ pa
   await page.goto(`/practice/sessions/${session.id}/run`);
   const start = page.getByRole("button", { name: "답변 시작", exact: true });
   await start.click();
-  await start.click();
+  await expect(start).toBeDisabled(); // 권한을 묻는 동안은 다시 누를 수 없다
+  await start.dispatchEvent("click"); // 그래도 이벤트가 들어오면 무시한다
   await page.waitForTimeout(300);
   await grant(page);
   await expect(page.getByText("녹음 중 · 경과 시간")).toBeVisible();
