@@ -44,8 +44,14 @@ def cleared_since(prefs: UserSettings, started: datetime) -> bool:
     return prefs.audio_cleared_at is not None and _utc(prefs.audio_cleared_at) >= _utc(started)
 
 
+def recorded_since(a: PracticeAnswer, started: datetime) -> bool:
+    """started(이 업로드를 시작한 시각) 뒤에 시작한 녹음이 이미 이 답변에 저장됐는가. recorded_at은 업로드를 시작한 시각이다."""
+    return a.recorded_at is not None and _utc(a.recorded_at) > _utc(started)
+
+
 def owned_audio_path(a: PracticeAnswer) -> str | None:
-    """audio_path가 이 답변의 경로 규칙({user_id}/{session_id}/{answer_id}.{확장자})과 맞을 때만 돌려준다.
+    """audio_path가 이 답변의 경로 규칙({user_id}/{session_id}/{answer_id}.{토큰}.{확장자}, 예전 행은 토큰 없이
+    {answer_id}.{확장자})과 맞을 때만 돌려준다.
 
     서비스 키로 저장소를 읽고 지우므로, 다른 사람 파일을 가리키게 바뀐 경로는 믿지 않는다.
     """
@@ -53,7 +59,8 @@ def owned_audio_path(a: PracticeAnswer) -> str | None:
     if not path or not a.session:
         return None
     prefix = f"{a.session.user_id}/{a.session_id}/{a.id}."
-    return path if path.startswith(prefix) and re.fullmatch(r"[A-Za-z0-9]{1,10}", path[len(prefix):]) else None
+    rest = path[len(prefix):]
+    return path if path.startswith(prefix) and re.fullmatch(r"(?:[0-9a-f]{12}\.)?[A-Za-z0-9]{1,10}", rest) else None
 
 
 def delete_audio(a: PracticeAnswer, now: datetime | None = None) -> bool:
@@ -164,7 +171,7 @@ def delete_user_audio(db: Session, user_id: str, now: datetime | None = None) ->
 
 
 def delete_session_files(db: Session, user_id: str, session_id: str, answer_ids: Iterable[str] | None = None) -> None:
-    """지운 세션(answer_ids를 주면 그 답변들)의 녹음 파일을 경로 규칙({user_id}/{session_id}/{answer_id}.확장자)으로 찾아 지운다.
+    """지운 세션(answer_ids를 주면 그 답변들)의 녹음 파일을 경로 규칙({user_id}/{session_id}/{answer_id}.로 시작하는 파일)으로 찾아 지운다.
 
     답변 행을 지우고 커밋한 뒤에 부른다. 세션·질문 삭제가 답변을 읽은 뒤에 커밋된 업로드의 녹음은 읽은 행에 없어 먼저 지우지
     못했지만 그 행은 함께 지워졌다. 목록을 못 읽었거나 못 지운 파일이 있으면 다음 만료 정리가 다시 지우게 표시한다.

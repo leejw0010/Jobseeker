@@ -1,9 +1,7 @@
 import { expect, test } from "@playwright/test";
-import { faceFeatures, summarizeSegment, type FaceSample, type Point } from "../src/video/metrics";
-import { createDGrid, createRateStats, nextRate, type RateSnapshot } from "../src/video/gaze/sampler";
+import { faceFeatures, summarizeSegment, type FaceSample, type Point } from "../../src/video/metrics";
+import { createDGrid, createRateStats, nextRate, type RateSnapshot } from "../../src/video/gaze/sampler";
 
-// 시선 분석(G) 0단계의 계산 테스트. 브라우저 없이 계산만 확인하므로 desktop 프로젝트에서만 돈다
-test.beforeEach(({}, testInfo) => test.skip(testInfo.project.name !== "desktop"));
 
 /** D 계산용 가운데 얼굴(video-metrics.spec.ts와 같은 모양) */
 function dFace(): Point[] {
@@ -75,8 +73,8 @@ test("rate stats summarise the last window: achieved rate, detection percentiles
 
 // ───────── Task 2: 눈·고개 특징, 합성 얼굴 ─────────
 
-import { gazeFeatures, type GazeFeatures } from "../src/video/gaze/features";
-import { syntheticFace } from "../src/video/gaze/synthetic";
+import { gazeFeatures, type GazeFeatures } from "../../src/video/gaze/features";
+import { syntheticFace } from "../../src/video/gaze/synthetic";
 
 test("features are aspect-corrected and roll-invariant", () => {
   const a = gazeFeatures(syntheticFace({ gazeX: 0.2, gazeY: -0.1, yaw: 0, pitch: 0, aspect: 4 / 3 }), 640, 480) as GazeFeatures;
@@ -126,8 +124,8 @@ test("synthetic noise is reproducible by seed", () => {
 
 // ───────── Task 3: G2 화면 좌표 회귀 ─────────
 
-import { fitRidge, groupedFolds, selectG2 } from "../src/video/gaze/regression";
-import { syntheticGrid } from "../src/video/gaze/synthetic";
+import { fitRidge, groupedFolds, selectG2 } from "../../src/video/gaze/regression";
+import { syntheticGrid } from "../../src/video/gaze/synthetic";
 
 test("ridge recovers linear coefficients and stays finite on duplicate columns", () => {
   const X = [...Array(50)].map((_, i) => [1, i / 10, (i % 7) / 7]);
@@ -184,8 +182,8 @@ test("too few groups is an explicit failure", () => {
 
 // ───────── Task 4: G1 렌즈 응시 분류기 ─────────
 
-import { auc, fitLogistic, lensThresholds, trainLens } from "../src/video/gaze/lens";
-import { farFeatures, lensFeatures, syntheticLens } from "../src/video/gaze/synthetic";
+import { auc, fitLogistic, lensThresholds, trainLens } from "../../src/video/gaze/lens";
+import { farFeatures, lensFeatures, syntheticLens } from "../../src/video/gaze/synthetic";
 
 test("logistic stays finite on perfectly separable data and learns the direction", () => {
   const X = [[1, -2], [1, -1], [1, 1], [1, 2]], y = [0, 0, 1, 1];
@@ -238,8 +236,8 @@ test("too few lens or top-band fixations is an explicit failure", () => {
 
 // ───────── Task 5: 보정 순서와 실현 가능성 지표 ─────────
 
-import { PROTOCOL, aggregate, classifyRegion, collect, evaluateRun, mockPanelRect, type Fixation } from "../src/video/gaze/calibration";
-import { VIEW, fakeFrames, syntheticRun } from "../src/video/gaze/synthetic";
+import { PROTOCOL, aggregate, classifyRegion, collect, evaluateRun, mockPanelRect, type Fixation } from "../../src/video/gaze/calibration";
+import { VIEW, fakeFrames, syntheticRun } from "../../src/video/gaze/synthetic";
 
 const PANELS = Object.fromEntries([32, 120, 240].map((h) => [h, mockPanelRect(VIEW, h)]));
 const noNaN = (v: unknown): boolean => (typeof v === "number" ? !Number.isNaN(v)

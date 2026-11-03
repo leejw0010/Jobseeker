@@ -1,7 +1,10 @@
+import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+log = logging.getLogger(__name__)
 
 
 def _load_dotenv() -> None:
@@ -19,39 +22,70 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
+class ConfigError(ValueError):
+    """환경변수 값이 잘못됐다. 메시지에 변수 이름을 담는다(값이 비밀일 수 있는 변수는 값을 싣지 않는다)."""
+
+
+def _number(env: Mapping[str, str], name: str, default, kind):
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return kind(raw)
+    except ValueError:
+        what = "정수" if kind is int else "숫자"
+        raise ConfigError(f"{name}은(는) {what}여야 해요(지금 값: {raw!r})") from None
+
+
 class Settings:
-    database_url: str = os.getenv("DATABASE_URL") or f"sqlite:///{BASE_DIR / 'jobseeker.db'}"
-    auth_disabled: bool = os.getenv("AUTH_DISABLED", "true").lower() == "true"
-    jwt_secret: str = os.getenv("SUPABASE_JWT_SECRET", "")
-    supabase_url: str = os.getenv("SUPABASE_URL", "").rstrip("/")
-    supabase_service_key: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    storage_bucket: str = os.getenv("STORAGE_BUCKET", "recordings")
-    local_recordings_dir: Path = BASE_DIR / "recordings"
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-    openai_stt_model: str = os.getenv("OPENAI_STT_MODEL", "whisper-1")
-    # 세션 디브리프 요약 전용 모델(비우면 채팅 모델). 답변 코칭·꼬리질문은 채팅 모델을 쓴다
-    openai_feedback_model: str = os.getenv("OPENAI_FEEDBACK_MODEL") or openai_chat_model
-    # 테스트·e2e에서 가짜 서버를 가리킬 수 있게 API 주소를 바꿀 수 있다
-    openai_base_url: str = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
-    # 음성 전사 제공자: local(faster-whisper, 외부 전송 없음) | openai | off. LLM용 OpenAI 키와 따로 정한다
-    stt_provider: str = (os.getenv("STT_PROVIDER") or "local").strip().lower()
-    # 로컬 전사: 다국어 Whisper 크기(tiny·base·small·medium·large-v3 등)나 모델 폴더 경로
-    local_stt_model: str = os.getenv("LOCAL_STT_MODEL") or "base"
-    local_stt_device: str = os.getenv("LOCAL_STT_DEVICE") or "cpu"
-    local_stt_compute_type: str = os.getenv("LOCAL_STT_COMPUTE_TYPE") or "int8"
-    local_stt_cpu_threads: int = int(os.getenv("LOCAL_STT_CPU_THREADS") or min(4, os.cpu_count() or 1))
-    local_stt_beam_size: int = int(os.getenv("LOCAL_STT_BEAM_SIZE") or 5)
-    # 모델 캐시 폴더(비우면 Hugging Face 기본 캐시 ~/.cache/huggingface). 한 번 받으면 네트워크 없이 다시 쓴다
-    local_stt_model_dir: str = os.getenv("LOCAL_STT_MODEL_DIR", "")
-    local_stt_allow_download: bool = os.getenv("LOCAL_STT_ALLOW_DOWNLOAD", "true").lower() == "true"
-    # 다른 전사가 도는 동안 기다리는 최대 시간(초)과 자동 전사할 최대 녹음 길이(초)
-    local_stt_queue_timeout_sec: float = float(os.getenv("LOCAL_STT_QUEUE_TIMEOUT_SEC") or 60)
-    local_stt_max_audio_sec: float = float(os.getenv("LOCAL_STT_MAX_AUDIO_SEC") or 900)
-    # 원본 녹음 보관 기간(일)과 만료 녹음 정리 주기(분)
-    audio_retention_days: int = int(os.getenv("AUDIO_RETENTION_DAYS") or 30)
-    purge_interval_min: int = int(os.getenv("PURGE_INTERVAL_MIN") or 60)
-    cors_origins: list[str] = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+    """환경변수(기본: os.environ, backend/.env 포함)에서 만든 설정. 테스트는 매핑을 넘겨 따로 만들 수 있다."""
+
+    def __init__(self, env: Mapping[str, str] | None = None):
+        env = os.environ if env is None else env
+        self.database_url: str = env.get("DATABASE_URL") or f"sqlite:///{BASE_DIR / 'jobseeker.db'}"
+        # true일 때만 개발 모드(로그인 없이 X-User-Id). 그 밖의 값은 인증을 켠 것으로 본다
+        self.auth_disabled: bool = env.get("AUTH_DISABLED", "true").lower() == "true"
+        self.jwt_secret: str = env.get("SUPABASE_JWT_SECRET", "")
+        self.supabase_url: str = env.get("SUPABASE_URL", "").rstrip("/")
+        self.supabase_service_key: str = env.get("SUPABASE_SERVICE_ROLE_KEY", "")
+        self.storage_bucket: str = env.get("STORAGE_BUCKET", "recordings")
+        # 로컬 녹음 폴더. e2e·테스트는 실행마다 임시 폴더를 넘겨 개발용 녹음을 건드리지 않는다
+        self.local_recordings_dir: Path = Path(env.get("RECORDINGS_DIR") or BASE_DIR / "recordings")
+        self.openai_api_key: str = env.get("OPENAI_API_KEY", "")
+        self.openai_chat_model: str = env.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+        self.openai_stt_model: str = env.get("OPENAI_STT_MODEL", "whisper-1")
+        # 세션 디브리프 요약 전용 모델(비우면 채팅 모델). 답변 코칭·꼬리질문은 채팅 모델을 쓴다
+        self.openai_feedback_model: str = env.get("OPENAI_FEEDBACK_MODEL") or self.openai_chat_model
+        # 테스트·e2e에서 가짜 서버를 가리킬 수 있게 API 주소를 바꿀 수 있다
+        self.openai_base_url: str = (env.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        # 음성 전사 제공자: local(faster-whisper, 외부 전송 없음) | openai | off. LLM용 OpenAI 키와 따로 정한다
+        self.stt_provider: str = (env.get("STT_PROVIDER") or "local").strip().lower()
+        # 로컬 전사: 다국어 Whisper 크기(tiny·base·small·medium·large-v3 등)나 모델 폴더 경로
+        self.local_stt_model: str = env.get("LOCAL_STT_MODEL") or "base"
+        self.local_stt_device: str = env.get("LOCAL_STT_DEVICE") or "cpu"
+        self.local_stt_compute_type: str = env.get("LOCAL_STT_COMPUTE_TYPE") or "int8"
+        self.local_stt_cpu_threads: int = _number(env, "LOCAL_STT_CPU_THREADS", min(4, os.cpu_count() or 1), int)
+        self.local_stt_beam_size: int = _number(env, "LOCAL_STT_BEAM_SIZE", 5, int)
+        # 모델 캐시 폴더(비우면 Hugging Face 기본 캐시 ~/.cache/huggingface). 한 번 받으면 네트워크 없이 다시 쓴다
+        self.local_stt_model_dir: str = env.get("LOCAL_STT_MODEL_DIR", "")
+        self.local_stt_allow_download: bool = env.get("LOCAL_STT_ALLOW_DOWNLOAD", "true").lower() == "true"
+        # 다른 전사가 도는 동안 기다리는 최대 시간(초)과 자동 전사할 최대 녹음 길이(초)
+        self.local_stt_queue_timeout_sec: float = _number(env, "LOCAL_STT_QUEUE_TIMEOUT_SEC", 60.0, float)
+        self.local_stt_max_audio_sec: float = _number(env, "LOCAL_STT_MAX_AUDIO_SEC", 900.0, float)
+        # 원본 녹음 보관 기간(일)과 만료 녹음 정리 주기(분)
+        self.audio_retention_days: int = _number(env, "AUDIO_RETENTION_DAYS", 30, int)
+        self.purge_interval_min: int = _number(env, "PURGE_INTERVAL_MIN", 60, int)
+        self.cors_origins: list[str] = [o.strip() for o in env.get("CORS_ORIGINS", "http://localhost:5173").split(",")
+                                        if o.strip()]
+
+    def check(self) -> None:
+        """서버 시작 전에 부른다. 띄워도 동작할 수 없는 조합은 ConfigError, 배포라면 위험한 조합은 경고 로그."""
+        if not self.auth_disabled and not self.jwt_secret:
+            raise ConfigError("AUTH_DISABLED=false인데 SUPABASE_JWT_SECRET이 비어 있어 모든 요청이 401이 돼요. "
+                              "Supabase 프로젝트의 JWT Secret을 넣어 주세요")
+        if self.auth_disabled and not self.database_url.startswith("sqlite"):
+            log.warning("AUTH_DISABLED=true(개발 모드)로 Postgres에 연결합니다: X-User-Id 헤더를 그대로 믿어요. "
+                        "배포 환경이라면 AUTH_DISABLED=false로 두세요")
 
 
 settings = Settings()

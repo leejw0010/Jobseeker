@@ -13,7 +13,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
@@ -22,6 +21,7 @@ from .config import settings
 from .db import SessionLocal
 from .models import PracticeAnswer, PracticeSession
 from .schemas import WeakAnswerOut
+from .services import answer_coaching
 
 log = logging.getLogger(__name__)
 
@@ -154,8 +154,7 @@ def _beat(db: Session, s: PracticeSession, mine: datetime | None) -> None:
 
 
 def _coach_all(db: Session, s: PracticeSession, mine: datetime | None, tried: set[tuple[str, str]]) -> None:
-    """코칭 보고서가 없는 답변을 /coach와 같은 경로로 점검한다. 점검 중 전사문이 바뀐 답변(409)은 건너뛴다."""
-    from .routers.practice import _report  # 라우터가 이 모듈을 가져오므로 순환을 피해 여기서 가져온다
+    """코칭 보고서가 없는 답변을 /coach와 같은 서비스(services.answer_coaching)로 점검한다. 점검 중 전사문이 바뀐 답변은 건너뛴다."""
 
     # 점검하는 동안 앞 순서 답변이 새로 녹음되거나 고쳐질 수 있으니, 새로 점검할 것이 없을 때까지 다시 돈다.
     # 같은 (답변, 전사문)은 한 작업에서 한 번만 시도하므로 실패한 점검을 되풀이하지 않는다.
@@ -168,10 +167,10 @@ def _coach_all(db: Session, s: PracticeSession, mine: datetime | None, tried: se
             tried.add((a.id, a.transcript))
             progressed = True
             try:
-                _report(a, db)
+                answer_coaching.coach(a, db)
                 db.commit()
-            except HTTPException as e:  # 409: 점검하는 동안 전사문이 바뀜(_report가 이미 rollback)
-                log.info("점검하는 동안 답변이 바뀌어 점검을 버렸습니다(%s, %s)", a.id, e.status_code)
+            except answer_coaching.TranscriptChanged:  # 점검하는 동안 전사문이 바뀜(서비스가 이미 rollback)
+                log.info("점검하는 동안 답변이 바뀌어 점검을 버렸습니다(%s)", a.id)
             except Exception:  # 한 답변의 점검 실패는 디브리프 전체를 막지 않는다(그 답변은 보고서 없음)
                 db.rollback()
                 log.exception("디브리프 중 답변 점검 실패(%s)", a.id)

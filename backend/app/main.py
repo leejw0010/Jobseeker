@@ -18,6 +18,7 @@ from .seed import seed_question_bank
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings.check()  # 띄워도 동작할 수 없는 설정(인증을 켰는데 JWT 비밀값 없음 등)이면 시작하지 않는다
     init_db()
     if settings.stt_provider not in ("local", "openai", "off"):
         logging.getLogger(__name__).warning("STT_PROVIDER=%r is not local|openai|off: transcription is off",

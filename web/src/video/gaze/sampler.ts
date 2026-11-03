@@ -1,6 +1,7 @@
 /** 표본 주기와 성능 통계. 검출은 기존 검출기 하나로 하고, 주기만 바꾼다(설계 10절). */
 import { SAMPLE_MS } from "../metrics";
 import { RATE_POLICY, type Rate } from "./constants";
+import { nearestRank } from "../stats";
 
 /** 한 번의 검출 결과. 특징점은 이 탭 메모리에서만 쓰고 저장·전송하지 않는다 */
 export type Frame = {
@@ -39,11 +40,8 @@ export function createDGrid(periodMs: number = SAMPLE_MS) {
 
 type Entry = { t: number; detectMs: number; lagMs: number; longTask?: boolean };
 
-const nearestRank = (xs: number[], q: number) => {
-  if (!xs.length) return 0;
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
-};
+// 표본이 없으면 0으로 보고한다(최근 10초에 측정한 것이 없음)
+const rank = (xs: number[], q: number) => (xs.length ? nearestRank(xs, q) : 0);
 
 /** 최근 windowMs 동안의 검출 시간·지연·긴 작업 통계 */
 export function createRateStats(windowMs: number = RATE_POLICY.windowMs) {
@@ -63,10 +61,10 @@ export function createRateStats(windowMs: number = RATE_POLICY.windowMs) {
       return {
         targetHz,
         achievedHz: span > 0 ? ((frames.length - 1) / span) * 1000 : 0,
-        detectP50: nearestRank(detect, 0.5),
-        detectP95: nearestRank(detect, 0.95),
+        detectP50: rank(detect, 0.5),
+        detectP95: rank(detect, 0.95),
         busyPct: covered > 0 ? (detect.reduce((a, b) => a + b, 0) / covered) * 100 : 0,
-        lagP95: nearestRank(frames.map((e) => e.lagMs), 0.95),
+        lagP95: rank(frames.map((e) => e.lagMs), 0.95),
         longTasks: entries.filter((e) => e.longTask).length,
       };
     },

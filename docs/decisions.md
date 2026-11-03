@@ -138,7 +138,7 @@
 - 날짜·상태: 2026-10-28 · 유효
 - 결정: MediaPipe Face Landmarker를 브라우저에서 돌리고(서버 영상 모델·OpenAI Vision 미사용), 결과 수치는 탭 메모리에만 둔다. API·DB 스키마는 바꾸지 않는다. 고개 방향은 변환 행렬의 각도 대신 특징점 비율(코끝 위치 ÷ 얼굴 폭·이마–턱 길이)을 쓰고, 각 답변의 중앙값 대비 변화로 표시한다. WASM은 앱과 함께 배포하고 모델 파일만 Google 공식 주소에서 받는다.
 - 이유: 사용자 요청(경량·브라우저 분석, 원본 미저장·미업로드, 결과는 우선 메모리). 행렬 각도는 축 규약을 실제 얼굴로 검증하지 못해 부호·크기를 확신할 수 없고, 비율 지표는 방향이 분명하다. 기준값(좌우 0.12, 숙임 0.06)은 대략 20°·15°를 노린 기하 추정이며 실제 웹캠으로 맞춰 보지 않았다.
-- 근거: `web/src/video/metrics.ts`, `web/src/components/useFaceAnalysis.ts`, README "카메라 자세 분석", `web/e2e/camera.spec.ts`, `web/e2e/video-metrics.spec.ts`
+- 근거: `web/src/video/metrics.ts`, `web/src/components/useFaceAnalysis.ts`, README "카메라 자세 분석", `web/e2e/camera.spec.ts`, `web/tests/unit/video-metrics.spec.ts`
 
 ### D-18 음성 전사는 기본으로 로컬 faster-whisper, LLM 키와 분리
 - 날짜·상태: 2026-10-30 · 유효
@@ -150,7 +150,7 @@
 - 날짜·상태: 2026-10-30 · 유효(D-17 보완)
 - 결정: "화면을 벗어난 시간"(`none`+`edge`)을 없애고 "얼굴을 찾지 못한 시간"(`none`)과 "얼굴 일부가 프레임 밖"(`edge`)으로 나눈다. 얼굴 검출 비율(`in`+`edge`)은 그대로 두고 계산 방법을 화면에 적는다. 답변 시간과 분석한 시간을 따로 보여 주고 그 차이는 어느 지표에도 넣지 않는다. 미리보기는 `object-fit: contain`(좌우 반전 유지)으로 바꾸고, 면접 중 `edge`일 때 넘은 쪽을 미리보기 기준으로 알린다. 실제 웹캠 점검용 진단은 개발 서버(`VITE_CAMERA_DEBUG=true`)에서만 보이고 저장·전송하지 않는다. `EDGE_MARGIN`·회전·숙임 기준값과 상태 판정 규칙은 바꾸지 않는다.
 - 이유: `edge` 프레임을 검출 비율과 이탈 시간이 함께 세서 "검출 100%, 이탈 100%"가 동시에 나올 수 있었다(사용자 보고: 얼굴이 화면 안인데 이탈로 판정). 미리보기 `cover`는 카메라가 4:3이 아니면 분석 프레임 일부를 잘라 보여 줬다. `none`은 검출 실패일 수도 있어 의도된 이탈의 증거가 아니다. 판정 기준을 바꿀 근거(실제 웹캠 결과)가 아직 없다.
-- 근거: [specs/2026-10-30-d-camera-metrics-design.md](superpowers/specs/2026-10-30-d-camera-metrics-design.md), `web/src/video/metrics.ts`, `web/e2e/video-metrics.spec.ts`·`camera.spec.ts`, [progress.md](progress.md) "카메라 지표 점검(D) 수동 절차"
+- 근거: [specs/2026-10-30-d-camera-metrics-design.md](superpowers/specs/2026-10-30-d-camera-metrics-design.md), `web/src/video/metrics.ts`, `web/tests/unit/video-metrics.spec.ts`·`camera.spec.ts`, [progress.md](progress.md) "카메라 지표 점검(D) 수동 절차"
 
 ### D-20 기본 음성 전사 모델은 `base` 유지, `small` 평가는 하드웨어 한계로 미완료
 - 날짜·상태: 2026-11-01 · 유효(D-18 보완)

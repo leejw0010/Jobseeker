@@ -3,6 +3,7 @@
  *  교차 검증 오차는 모델 선택에만 쓰고 정확도로 보고하지 않는다(정확도는 처음 보는 검증 위치로만 잰다). */
 import { LAMBDAS, M2_GAIN } from "./constants";
 import type { GazeFeatures } from "./features";
+import { median } from "../stats";
 
 export class CalibrationError extends Error {
   constructor(readonly code: string) {
@@ -25,10 +26,6 @@ export type G2Model = {
 const design = (f: GazeFeatures, kind: ModelKind): number[] =>
   kind === "M1" ? [f.ex, f.ey, f.hx, f.hy] : [f.ex, f.ey, f.hx, f.hy, f.ex * f.ex, f.ey * f.ey, f.ex * f.ey];
 
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
 
 /** 열별 평균·표준편차로 표준화한다. 값이 변하지 않는 열은 0이 된다(릿지가 계수를 0으로 둔다) */
 export function standardizer(rows: number[][]) {

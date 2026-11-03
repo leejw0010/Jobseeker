@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { API } from "./env";
 
 // 회고 한눈에 보기(R1): 세션 상세 값만으로 그린 그래프와 규칙 보완점. 외부 서비스를 부르지 않는다
-const API = "http://127.0.0.1:8011";
 const LONG_Q = "지금까지 경험한 프로젝트 가운데 가장 어려웠던 순간을 하나 고르고, 그때 팀과 본인이 각각 어떤 판단을 했으며 결과가 어땠는지 아주 자세하게 설명해 주세요".repeat(2);
 // 첫 화면 로딩만 넉넉히 기다린다(메모리가 부족한 개발 PC에서 세션 응답이 5초를 넘긴 적이 있음). 이후 확인은 기본 시간
 const LOAD = { timeout: 20_000 };

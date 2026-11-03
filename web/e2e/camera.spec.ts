@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { API, BROWSER_API } from "./env";
 
 // 카메라 자세 분석(선택 기능). 검출기는 playwright.config.ts의 VITE_E2E_FAKE_FACE로 가짜를 쓰고, 카메라는 Chromium의 가짜 장치를 쓴다
-const API = "http://127.0.0.1:8011";
 async function seed(request: APIRequestContext) {
   const q = await (await request.post(`${API}/practice/questions`, { data: { category: "인성", text: `카메라 분석 질문 ${Date.now()}-${Math.random()}` } })).json();
   return (await request.post(`${API}/practice/sessions`, { data: { mode: "free", question_ids: [q.id], prep_sec: 0, answer_sec: 10 } })).json();
@@ -40,7 +40,7 @@ test("camera analysis measures during the answer, shows numbers in review, and k
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const sent: string[] = [];
-  page.on("request", (r) => { if (r.url().startsWith(API)) sent.push(r.postData() ?? ""); });
+  page.on("request", (r) => { if (r.url().startsWith(BROWSER_API)) sent.push(r.postData() ?? ""); });
   await watchCamera(page);
   const session = await seed(request);
   await page.goto(`/practice/sessions/${session.id}/run`);
@@ -72,7 +72,8 @@ test("camera analysis measures during the answer, shows numbers in review, and k
   await expect(card.locator("tbody tr td").nth(3)).toHaveText(/^\d+%$/);
   await expect(card.locator("tbody tr td").nth(6)).toHaveText(/^\d+%$/); // 고개 방향 기준을 잡았다
   await expect(card).not.toContainText(/자신감이|긴장한|합격 가능성이 (높|낮)/);
-  // 수치는 서버로 보내지 않는다
+  // 수치는 서버로 보내지 않는다. 먼저 API 요청을 실제로 모았는지(글 답변 저장) 확인한다: 비어 있으면 아래 검사는 의미가 없다
+  expect(sent.some((b) => b.includes("일정 관리를 맡았습니다"))).toBe(true);
   expect(sent.filter((b) => /detectedMs|noneMs|edgeMs|turnedMs|yaw|pitch|overshoot/.test(b))).toEqual([]);
   // 메모리에만 있으므로 새로고침하면 사라진다
   await page.reload();

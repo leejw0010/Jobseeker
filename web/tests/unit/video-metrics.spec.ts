@@ -2,10 +2,8 @@ import { expect, test } from "@playwright/test";
 import {
   CORE_LANDMARKS, MAX_GAP_MS, MIN_HEAD_SAMPLES, SAMPLE_MS, combineSummaries, edgeLabel, faceFeatures, summarizeSegment,
   type FaceSample, type Point,
-} from "../src/video/metrics";
+} from "../../src/video/metrics";
 
-// 브라우저 없이 계산만 확인한다. 화면 크기와 상관없으므로 desktop 프로젝트에서만 돈다
-test.beforeEach(({}, testInfo) => test.skip(testInfo.project.name !== "desktop"));
 
 /** 가운데 얼굴(폭 0.2, 이마–턱 0.35). dx·dy만큼 코끝을 옮기고, offsetX만큼 얼굴 전체를 옮긴다 */
 function face(dx = 0, dy = 0, offsetX = 0): Point[] {
@@ -161,4 +159,14 @@ test("classification is unchanged for the existing fixtures", () => {
   expect(faceFeatures(face(0, 0, 0.405)).state).toBe("in"); // 오른쪽 볼이 1.005: 여유(0.01) 안
   expect(faceFeatures(null)).toEqual({ state: "none" });
   expect(faceFeatures([])).toEqual({ state: "none" });
+});
+
+test("a long unanalyzed gap closes the not-found run instead of merging both sides", () => {
+  // 얼굴 없음 1.25초(마지막 표본은 MAX_GAP_MS까지만 셈) → 5초 넘게 분석 못 함 → 다시 얼굴 없음 1초
+  const none = (t: number): FaceSample => ({ t, state: "none" });
+  const s = [none(0), none(250), none(6000), none(6250), none(6500), none(6750)];
+  const out = summarizeSegment(s, { start: 0, end: 7000 });
+  expect(out.noneMs).toBe(250 + MAX_GAP_MS + 1000);
+  expect(out.noneEpisodes).toBe(2);
+  expect(out.longestNoneMs).toBe(250 + MAX_GAP_MS);
 });

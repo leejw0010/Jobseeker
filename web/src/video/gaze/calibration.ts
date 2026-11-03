@@ -10,6 +10,7 @@ import { gazeFeatures, isFeatures, type FeatureInvalid, type GazeFeatures } from
 import { auc, trainLens, type LensModel, type LensSample } from "./lens";
 import { CalibrationError, selectG2, type G2Model } from "./regression";
 import type { Frame, RateSnapshot } from "./sampler";
+import { median, nearestRank } from "../stats";
 
 export type Pose = "forward" | "left" | "right" | "up" | "down" | "near" | "far";
 export type Role = "train" | "validate" | "panel" | "distance" | "rate" | "typing" | "rest";
@@ -120,14 +121,6 @@ export function classifyRegion(p: [number, number], rect: Rect, view: { w: numbe
 
 // ───────── 평가 ─────────
 
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
-const nearestRank = (xs: number[], q: number) => {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
-};
 const frac = <T,>(xs: T[], ok: (x: T) => boolean) => (xs.length ? xs.filter(ok).length / xs.length : null);
 /** 실시간 판정과 같은 평활: 최근 0.6초 안의 값으로(점은 중앙값, 확률은 평균) */
 const SMOOTH_MS = 600;

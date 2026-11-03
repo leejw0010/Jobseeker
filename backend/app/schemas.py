@@ -1,7 +1,7 @@
 from datetime import date, datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, computed_field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, computed_field, model_validator
 
 Stage = Literal["서류", "인적성", "1차면접", "2차면접", "최종"]
 Status = Literal["진행중", "합격", "불합격", "보류"]
@@ -18,6 +18,14 @@ def _as_utc(v: datetime) -> datetime:
 
 
 UTCDatetime = Annotated[datetime, AfterValidator(_as_utc)]
+
+
+def _blank_as_none(v):
+    # 빈 공고 URL은 '없음'이다(고유 제약 applications_user_url_uq는 URL이 있는 건만 센다)
+    return None if isinstance(v, str) and not v.strip() else v
+
+
+OptionalURL = Annotated[str | None, BeforeValidator(_blank_as_none)]
 
 
 # ───────────── ② Practice ─────────────
@@ -244,7 +252,7 @@ class ApplicationIn(BaseModel):
     company: str
     position: str
     job_category: str = "기타"
-    url: str | None = None
+    url: OptionalURL = None
     applied_at: date | None = None
     stage: Stage = "서류"
     status: Status = "진행중"
@@ -252,14 +260,24 @@ class ApplicationIn(BaseModel):
 
 
 class ApplicationPatch(BaseModel):
+    """보낸 필드만 바꾼다. 필수 필드(회사·직무·분류·단계·상태)는 null로 비울 수 없고, 나머지는 null이면 비운다."""
+
     company: str | None = None
     position: str | None = None
     job_category: str | None = None
-    url: str | None = None
+    url: OptionalURL = None
     applied_at: date | None = None
     stage: Stage | None = None
     status: Status | None = None
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def _required_not_null(self):
+        nulls = [k for k in ("company", "position", "job_category", "stage", "status")
+                 if k in self.model_fields_set and getattr(self, k) is None]
+        if nulls:
+            raise ValueError(f"비울 수 없는 항목이에요: {', '.join(nulls)}")
+        return self
 
 
 class ApplicationOut(ORM):

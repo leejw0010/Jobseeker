@@ -1,5 +1,7 @@
 /** 카메라 자세 분석의 계산과 보관. 얼굴 특징점(정규화 좌표)에서 수치만 만들고, 영상·이미지·특징점 원본은 남기지 않는다.
- *  브라우저 API를 쓰지 않아 Node에서도 테스트할 수 있다(web/e2e/video-metrics.spec.ts). */
+ *  브라우저 API를 쓰지 않아 Node에서도 테스트할 수 있다(web/tests/unit/video-metrics.spec.ts, npm run test:unit). */
+
+import { median } from "./stats";
 
 export type Point = { x: number; y: number };
 /** 표본마다 정확히 하나. in: 특징점 전부가 카메라 프레임 안 · edge: 얼굴은 찾았지만 특징점 일부가 프레임 밖
@@ -84,10 +86,6 @@ export function edgeLabel(o: Overshoot): string {
   return sides.length ? `얼굴 ${sides.join("·")}이 화면 밖에 있어요` : "얼굴 일부가 화면 밖에 있어요";
 }
 
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
 
 /** 한 답변 동안의 표본을 요약한다. 각 표본은 다음 표본까지(마지막은 답변 끝까지, 끝을 모르면 SAMPLE_MS) 이어진 것으로
  *  보되 MAX_GAP_MS를 넘지 않는다. 고개 방향은 이 답변의 중앙값을 기준으로 한 상대 변화다(처음부터 숙이고 있었으면 숙임으로
@@ -98,7 +96,8 @@ export function summarizeSegment(samples: FaceSample[], span?: Span): SegmentSum
     noneEpisodes: 0, longestNoneMs: 0, headMs: 0, turnedMs: 0, downMs: 0,
   };
   const last = (t: number) => (span ? span.end - t : SAMPLE_MS);
-  const dur = samples.map((s, i) => Math.max(0, Math.min(MAX_GAP_MS, (samples[i + 1]?.t ?? s.t + last(s.t)) - s.t)));
+  const gap = samples.map((s, i) => (samples[i + 1]?.t ?? s.t + last(s.t)) - s.t);
+  const dur = gap.map((g) => Math.max(0, Math.min(MAX_GAP_MS, g)));
   let run = 0;
   const closeRun = () => {
     if (run >= EPISODE_MS) out.noneEpisodes++;
@@ -107,7 +106,13 @@ export function summarizeSegment(samples: FaceSample[], span?: Span): SegmentSum
   };
   samples.forEach((s, i) => {
     out.analyzedMs += dur[i];
-    if (s.state === "none") { out.noneMs += dur[i]; run += dur[i]; return; }
+    if (s.state === "none") {
+      out.noneMs += dur[i];
+      run += dur[i];
+      // 다음 표본까지 MAX_GAP_MS보다 오래 분석하지 못했다: 그 공백 너머의 none과 이어진 구간으로 세지 않는다
+      if (gap[i] > MAX_GAP_MS) closeRun();
+      return;
+    }
     closeRun();
     if (s.state === "in") out.inMs += dur[i];
     else out.edgeMs += dur[i];

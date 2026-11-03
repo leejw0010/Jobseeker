@@ -4,11 +4,13 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from ..auth import current_user_id
 from ..db import get_db
-from ..models import STAGES, AnswerVersion, Application, EssayItem, StageEvent, valid_id
+from ..models import STAGES, STATUSES, AnswerVersion, Application, EssayItem, StageEvent, valid_id
+from ..services import track_versions
 from ..schemas import (
     ApplicationDetail,
     ApplicationIn,
@@ -50,16 +52,20 @@ def _own_item(db: Session, user_id: str, item_id: str) -> EssayItem:
     return item
 
 
-def _add_version(item: EssayItem, content: str, source: str, is_submitted: bool) -> AnswerVersion | None:
-    """직전 버전과 내용이 같으면 새 버전을 만들지 않는다(제출 표시만 갱신)."""
-    latest = item.versions[-1] if item.versions else None
-    if latest and latest.content == content:
-        latest.is_submitted = latest.is_submitted or is_submitted
-        return None
-    v = AnswerVersion(version_no=(latest.version_no + 1) if latest else 1, content=content,
-                      char_count=len(content), source=source, is_submitted=is_submitted)
-    item.versions.append(v)
-    return v
+DUPLICATE_URL = "같은 공고 URL로 저장한 지원 건이 이미 있어요"
+
+
+def _find_by_url(db: Session, user_id: str, url: str) -> Application | None:
+    return db.scalar(select(Application).where(Application.user_id == user_id, Application.url == url))
+
+
+def _commit_unique_url(db: Session) -> None:
+    """지원 건 저장. 같은 사용자의 같은 URL이 이미 있으면(고유 제약) 409."""
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(409, DUPLICATE_URL) from e
 
 
 # ───────── 지원 건 ─────────
@@ -92,7 +98,7 @@ def list_applications(
 def create_application(body: ApplicationIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     app = Application(user_id=user_id, source="web", **body.model_dump())
     db.add(app)
-    db.commit()
+    _commit_unique_url(db)
     return _own_app(db, user_id, app.id)
 
 
@@ -107,7 +113,7 @@ def update_application(app_id: str, body: ApplicationPatch, user_id: str = Depen
     app = _own_app(db, user_id, app_id)
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(app, k, v)
-    db.commit()
+    _commit_unique_url(db)
     return _own_app(db, user_id, app_id)
 
 
@@ -161,7 +167,7 @@ def add_essay_item(app_id: str, body: EssayItemIn, user_id: str = Depends(curren
     item = EssayItem(question_text=body.question_text, char_limit=body.char_limit)
     app.essay_items.append(item)
     if body.content:
-        _add_version(item, body.content, "web", False)
+        track_versions.add_version(db, item, body.content, "web", False)
     db.commit()
     return _own_item(db, user_id, item.id)
 
@@ -180,7 +186,7 @@ def list_versions(item_id: str, user_id: str = Depends(current_user_id), db: Ses
 @router.post("/essays/{item_id}/versions", response_model=EssayItemOut, status_code=201)
 def add_version(item_id: str, body: VersionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     item = _own_item(db, user_id, item_id)
-    _add_version(item, body.content, body.source, body.is_submitted)
+    track_versions.add_version(db, item, body.content, body.source, body.is_submitted)
     db.commit()
     return _own_item(db, user_id, item_id)
 
@@ -193,7 +199,7 @@ def restore_version(version_id: str, user_id: str = Depends(current_user_id), db
     if not v:
         raise HTTPException(404, "버전을 찾을 수 없습니다")
     item = _own_item(db, user_id, v.essay_item_id)
-    _add_version(item, v.content, "web", False)
+    track_versions.add_version(db, item, v.content, "web", False)
     db.commit()
     return _own_item(db, user_id, item.id)
 
@@ -222,8 +228,19 @@ def search_answers(q: str, user_id: str = Depends(current_user_id), db: Session 
 @router.post("/sync", response_model=SyncOut)
 def sync_from_extension(body: SyncIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     """크롬 확장이 지원서를 제출하면 호출. 같은 URL의 지원 건이 있으면 갱신, 없으면 생성.
-    문항은 질문 텍스트로 매칭하고, 내용이 바뀐 경우에만 새 버전을 쌓는다."""
-    app = db.scalar(select(Application).where(Application.user_id == user_id, Application.url == body.url))
+    문항은 질문 텍스트로 매칭하고, 내용이 바뀐 경우에만 새 버전을 쌓는다.
+
+    같은 URL의 동기화가 동시에 처음 들어오면 둘 다 새로 만들려 한다. 늦게 커밋한 쪽은 고유 제약에 걸리므로
+    되돌리고 한 번 더 돈다: 이번에는 먼저 만든 행을 찾아 갱신한다."""
+    try:
+        return _sync(db, user_id, body)
+    except IntegrityError:
+        db.rollback()
+        return _sync(db, user_id, body)
+
+
+def _sync(db: Session, user_id: str, body: SyncIn) -> SyncOut:
+    app = _find_by_url(db, user_id, body.url)
     created = app is None
     if created:
         app = Application(user_id=user_id, company=body.company, position=body.position,
@@ -231,7 +248,7 @@ def sync_from_extension(body: SyncIn, user_id: str = Depends(current_user_id), d
                           applied_at=body.applied_at or (date.today() if body.submitted else None),
                           source="extension")
         db.add(app)
-        db.flush()
+        db.flush()  # 고유 제약 충돌을 여기서 알린다
     elif body.submitted and not app.applied_at:
         app.applied_at = body.applied_at or date.today()
     app = _own_app(db, user_id, app.id) if not created else app
@@ -243,7 +260,7 @@ def sync_from_extension(body: SyncIn, user_id: str = Depends(current_user_id), d
             item = EssayItem(question_text=e.question_text.strip(), char_limit=e.char_limit)
             app.essay_items.append(item)
             by_text[item.question_text] = item
-        if _add_version(item, e.content, "extension", body.submitted):
+        if track_versions.add_version(db, item, e.content, "extension", body.submitted):
             new_versions += 1
     db.commit()
     return SyncOut(application_id=app.id, created=created, new_versions=new_versions)
@@ -282,7 +299,7 @@ def stats(user_id: str = Depends(current_user_id), db: Session = Depends(get_db)
     by_cat: dict[str, list[Application]] = defaultdict(list)
     for a in apps:
         by_cat[a.job_category].append(a)
-    status_counts = {s: sum(1 for a in apps if a.status == s) for s in ["진행중", "합격", "불합격", "보류"]}
+    status_counts = {s: sum(1 for a in apps if a.status == s) for s in STATUSES}
     monthly: dict[str, int] = defaultdict(int)
     for a in apps:
         d = a.applied_at or a.created_at.date()

@@ -1,16 +1,32 @@
+import logging
 from collections.abc import Iterator
 from datetime import timedelta
 
-from sqlalchemy import Engine, create_engine, inspect, select, text, update
+from sqlalchemy import Engine, create_engine, event, inspect, select, text, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
 
+log = logging.getLogger(__name__)
+
+
+def make_engine(url: str) -> Engine:
+    """DB 엔진. SQLite는 연결마다 외래 키를 켠다(기본은 꺼져 있다): Supabase(Postgres)처럼 없는 행을 가리키지 못하고
+    on delete cascade·set null도 같게 동작한다."""
+    sqlite = url.startswith("sqlite")
+    eng = create_engine(url, connect_args={"check_same_thread": False} if sqlite else {})
+    if sqlite:
+        @event.listens_for(eng, "connect")
+        def _foreign_keys(dbapi_conn, _record):
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA foreign_keys=ON")
+            cur.close()
+    return eng
+
+
 _is_sqlite = settings.database_url.startswith("sqlite")
-engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
-)
+engine = make_engine(settings.database_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
@@ -55,6 +71,31 @@ def add_missing_columns(bind: Engine) -> list[str]:
     return added
 
 
+def add_missing_indexes(bind: Engine) -> list[str]:
+    """모델에는 있지만 기존 테이블에 없는 인덱스를 만든다. 만든 인덱스 이름 목록.
+
+    create_all은 이미 있는 테이블에 인덱스를 더하지 않는다. 고유 인덱스를 만들 수 없을 만큼 예전 행이 이미 겹치면
+    (같은 URL의 지원 건 두 개 등) 데이터는 건드리지 않고 경고만 남긴다. 그 DB는 겹친 행을 정리한 뒤 다시 시작하면 된다.
+    """
+    insp = inspect(bind)
+    tables = set(insp.get_table_names())
+    added: list[str] = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in tables:
+            continue
+        have = {i["name"] for i in insp.get_indexes(table.name)}
+        for index in table.indexes:
+            if index.name in have:
+                continue
+            try:
+                index.create(bind)
+            except (IntegrityError, OperationalError) as e:
+                log.warning("인덱스 %s를 만들지 못했어요(이미 겹치는 행이 있을 수 있어요): %s", index.name, e.orig)
+                continue
+            added.append(index.name)
+    return added
+
+
 def backfill_legacy(bind: Engine) -> None:
     """예전 행 보정: 녹음이 있는 답변은 만든 시각을 녹음 시각으로 보고, 보관 기한(만든 시각 + 보관 기간)을 붙인다.
 
@@ -74,11 +115,12 @@ def backfill_legacy(bind: Engine) -> None:
 
 
 def upgrade_sqlite(bind: Engine) -> list[str]:
-    """테이블 생성 → 빠진 컬럼 추가 → 예전 행 보정."""
+    """테이블 생성 → 빠진 컬럼·인덱스 추가 → 예전 행 보정. 추가한 컬럼 목록을 돌려준다."""
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind)
     added = add_missing_columns(bind)
+    add_missing_indexes(bind)
     backfill_legacy(bind)
     return added
 

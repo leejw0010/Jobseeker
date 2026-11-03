@@ -1,9 +1,7 @@
 import { expect, test } from "@playwright/test";
-import { answerMetrics, sessionInsights, splitPoints, syllableCount, type ImprovementPoint } from "../src/review/insights";
-import type { CoachingReport, PracticeAnswer, PracticeSession } from "../src/types";
+import { answerMetrics, sessionInsights, splitPoints, syllableCount, type ImprovementPoint } from "../../src/review/insights";
+import type { CoachingReport, PracticeAnswer, PracticeSession } from "../../src/types";
 
-// 회고 한눈에 보기(R1)의 계산 테스트. 브라우저 없이 계산만 확인하므로 desktop 프로젝트에서만 돈다
-test.beforeEach(({}, testInfo) => test.skip(testInfo.project.name !== "desktop"));
 
 let n = 0;
 function ans(over: Partial<PracticeAnswer> = {}): PracticeAnswer {

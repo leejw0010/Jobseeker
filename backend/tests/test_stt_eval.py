@@ -429,6 +429,26 @@ def test_build_report_end_to_end(tmp_path):
     assert (run / "clips.md").read_text(encoding="utf-8").count("## ") == 2 and (run / "summary.json").exists()
 
 
+def test_build_report_p_run_ignores_a_prepared_s_manifest(tmp_path):
+    """S 세트를 준비해 둔 채 P만 돌린 run-id(P·S는 run-id를 나눈다)도 P 결과로 판단한다(S 요약을 찾지 않는다)."""
+    from evals.stt.report import build_report
+    manifest = [_m("zeroth-000", "가나다라마바사")]
+    (tmp_path / "manifest-P.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "manifest-S.json").write_text(json.dumps([_m("spont-000", "준비만 한 자유 발화", set_name="S")],
+                                                         ensure_ascii=False), encoding="utf-8")
+    run = tmp_path / "results" / "p-only"
+    run.mkdir(parents=True)
+    for cfg, text, ms in (("base-default", "가나다라마바", 6000), ("small-default", "가나다라마바사", 9000)):
+        stem = f"{cfg}-P-t4-r1"
+        rows = [dict(_r("zeroth-000", text, ms=ms, sec=manifest[0]["audio_sec"]), config=cfg)]
+        (run / f"{stem}.jsonl").write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in rows), encoding="utf-8")
+        (run / f"{stem}.parent.json").write_text(json.dumps({"status": "ok", "threads": 4, "min_available_kb": 500_000,
+                                                             "swap_growth_kb": 0, "max_psi_full": 0.0}))
+        (run / f"{stem}.child.json").write_text(json.dumps({"load_ms": 2000, "hwm_kb": 600_000, "rss_after_load_kb": 400_000}))
+    text = build_report(tmp_path, "p-only")
+    assert "## 판단" in text and "**잠정:" in text  # S가 없는 실행의 판단은 잠정
+
+
 def test_fetch_rows_retries_server_errors_then_pages():
     import httpx
     from evals.stt.data import fetch_rows

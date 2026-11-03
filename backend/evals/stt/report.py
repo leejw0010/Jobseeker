@@ -310,8 +310,9 @@ def build_report(data_dir: Path, run_id: str) -> str:
         f = data_dir / f"manifest-{name}.json"
         if f.exists():
             manifest += json.loads(f.read_text(encoding="utf-8"))
-    has_s = any(c["set"] == "S" for c in manifest)
     results = load_results(run_dir)
+    # 주 평가 세트는 이 run-id가 실제로 돌린 세트로 정한다(manifest는 S를 준비만 해 둔 경우에도 있다. P·S는 run-id를 나눈다)
+    has_s = any((m := _STEM.match(stem)) and m["set"] == "S" for stem in results)
     accuracy, partial = accuracy_runs(results)
     lines = [f"# STT 평가 보고서 — {run_id}", ""]
     env_file = run_dir / "environment.json"

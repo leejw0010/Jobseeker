@@ -4,6 +4,9 @@
 
 ## 현재 브랜치 상태
 
+- `feature/architecture-fixes`(2026-11-03 현재 작업): 기존 로컬 STT·시선 실험실·회고 기능 위에 백엔드 서비스 분리, 인증·설정 검증, 녹음 동시 업로드 보호, Track 중복·버전 처리, 웹 계산 테스트 분리 작업을 모음. 사용자 요청으로 현재 작업물을 커밋·GitHub 보관.
+- 이번 저장 시점 자동 검증(2026-11-03): `cd backend && .venv/bin/python -m pytest -q` → **281 passed in 43.93s**; `cd web && npm run build` → **종료 코드 0**; `npm run test:unit` → **61 passed (17.1s)**. 샌드박스에서 멈춘 pytest는 제한 밖에서 재실행한 결과임.
+- 이번 브라우저 검증: `cd web && PATH=../backend/.venv/bin:$PATH npm run test:e2e` → **27 failed, 5 skipped**. 전부 브라우저 시작 단계에서 `error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory`로 실패하여 화면 흐름은 검증하지 못함. 샌드박스 안에서는 먼저 `Timed out waiting 60000ms from config.webServer.`가 발생해 제한 밖에서 재실행함. 문서 스크린샷은 실행 전 상태로 백업·복원했음. 실제 OpenAI·Supabase 서비스 검증은 이번에 실행하지 않음.
 - `main`: PR #1(확장 팝업)과 PR #2(`codex/evidence-interview-coach`, 제출본 기반 면접 코칭)까지 머지됨.
 - `feature/practice-p0`(작업 중): `main`보다 8커밋 앞서 있고 `origin/feature/practice-p0`와 같음(1a12453). P0 기능과 리뷰 지적 1~21번, 재확인 지적 수정까지 끝났음.
 - **PR #3:** https://github.com/leejw0010/Jobseeker/pull/3 · `feature/practice-p0` → `main` · 2026-10-28 GitHub API(`GET /repos/leejw0010/Jobseeker/pulls/3`)로 확인한 당시 **Open, 미병합, draft 아님**, head 1a12453. (`gh`는 설치돼 있지 않음.)

@@ -5,6 +5,7 @@
 import { LENS } from "./constants";
 import type { GazeFeatures } from "./features";
 import { CalibrationError, groupedFolds, solve, standardizer } from "./regression";
+import { nearestRank } from "../stats";
 
 export type LensSample = { f: GazeFeatures; openRatio: number; lens: boolean; topBand: boolean; group: string };
 export type LensDecision = "toward" | "away" | "unknown";
@@ -19,10 +20,6 @@ const row = (f: GazeFeatures, openRatio: number) => [f.ex, f.ey, f.hx, f.hy, ope
 const dot = (a: number[], b: number[]) => a.reduce((s, v, i) => s + v * b[i], 0);
 const sigmoid = (z: number) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
 const frac = (xs: number[], ok: (x: number) => boolean) => (xs.length ? xs.filter(ok).length / xs.length : 0);
-const nearestRank = (xs: number[], q: number) => {
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(q * s.length) - 1))];
-};
 
 /** 가중 L2 로지스틱 회귀(뉴턴법). X의 첫 열은 절편(벌점 없음). 완전히 갈리는 데이터에서도 L2 덕분에 계수가 유한하다 */
 export function fitLogistic(X: number[][], y: number[], w: number[], l2: number): number[] {
