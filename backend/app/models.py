@@ -173,7 +173,7 @@ class PracticeAnswer(Base):
 
     @property
     def recording_transcript_current(self) -> bool:
-        return bool(self.recorded_at and self.stt_status != "none" and self.recording_transcript_sha256 and (self.transcript or "").strip()
+        return bool(self.recorded_at and self.recording_transcript_sha256 and (self.transcript or "").strip()
                     and self.recording_transcript_sha256 == recording_transcript_hash(self.recorded_at, self.transcript))
 
     @property

@@ -44,9 +44,10 @@ def test_first_manual_transcription_can_bind_but_later_edits_do_not_rebind(clien
 def test_explicit_typed_answer_does_not_acquire_historical_recording_identity(client, monkeypatch):
     monkeypatch.setattr(settings, "stt_provider", "off")
     h, aid = session_answer(client)
-    upload(client, h, aid)
+    original = upload(client, h, aid)
     typed = client.patch(f"/practice/answers/{aid}", headers=h, json={"transcript": "녹음 대신 쓴 글 답변", "input_mode": "text"}).json()
     assert typed.get("recording_transcript_current") is False
+    assert typed["stt_status"] == original["stt_status"]
     client.patch(f"/practice/answers/{aid}", headers=h, json={"transcript": None})
     assert client.patch(f"/practice/answers/{aid}", headers=h, json={"transcript": "새 글 답변"}).json()["recording_transcript_current"] is False
 
@@ -65,8 +66,10 @@ with TestClient(app) as c:
  if {replace_recording!r}:
   r=c.post("/practice/answers/{aid}/audio", headers={h!r}, files={{"file":("replacement.webm",b"synthetic-new-audio","audio/webm")}}, data={{"duration_sec":"20"}})
   assert r.status_code == 200, r.text
+ before=c.get("/practice/sessions/{sid}",headers={h!r}).json()["answers"][0]
  r=c.patch("/practice/answers/{aid}", headers={h!r}, json={body!r})
  assert r.status_code == 200, r.text
+ assert r.json()["stt_status"] == before["stt_status"]
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env={
         **os.environ, "PRACTICE_INSIGHTS_ENABLED":"false", "STT_PROVIDER":"off",
@@ -75,3 +78,26 @@ with TestClient(app) as c:
     assert result.returncode == 0, result.stderr
     refreshed = client.get(f"/practice/sessions/{sid}", headers=h).json()["answers"][0]
     assert refreshed["recording_transcript_current"] is False
+
+
+def test_explicit_text_on_an_unmigrated_schema_preserves_recordings_and_stt(tmp_path):
+    code = '''from fastapi.testclient import TestClient
+from sqlalchemy import inspect
+from app.main import app
+from app.db import engine
+with TestClient(app) as c:
+ c.put("/practice/settings", json={"consent":True})
+ s=c.post("/practice/sessions",json={"mode":"free","count":1}).json()
+ aid=s["answers"][0]["id"]
+ original=c.post(f"/practice/answers/{aid}/audio",files={"file":("test.webm",b"synthetic","audio/webm")}).json()
+ response=c.patch(f"/practice/answers/{aid}",json={"transcript":"글 답변","input_mode":"text"})
+ assert response.status_code==200,response.text
+ assert response.json()["stt_status"]==original["stt_status"]=="unavailable"
+ assert response.json()["audio_available"] is True
+ assert "recording_transcript_sha256" not in {col["name"] for col in inspect(engine).get_columns("practice_answers")}
+'''
+    result=subprocess.run([sys.executable,"-c",code],capture_output=True,text=True,env={
+        **os.environ,"PRACTICE_INSIGHTS_ENABLED":"false","STT_PROVIDER":"off",
+        "DATABASE_URL":f"sqlite:///{tmp_path / 'old-schema.db'}","RECORDINGS_DIR":str(tmp_path / "old-schema-recordings"),
+    })
+    assert result.returncode==0,result.stderr

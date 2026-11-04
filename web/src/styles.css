@@ -220,4 +220,4 @@ summary { cursor: pointer; }
 
 /* Integrated coaching explanations and table headings are readable content. */
 .debrief-card .muted, .competency-review .muted, .voice-report .muted,
-.video-report .muted, .voice-report th { color: var(--text-2); }
+.video-report .muted, .video-report th, .voice-report th { color: var(--text-2); }

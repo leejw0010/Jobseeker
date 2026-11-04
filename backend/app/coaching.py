@@ -154,8 +154,10 @@ def build_report(question: str, transcript: str, context: dict, history: list[di
             payload={"question":question,"answer":transcript,"context":context,"history":history}
             include_evidence=settings.practice_competency_evidence_enabled and settings.practice_insights_enabled and classification is not None
             if include_evidence:
-                system += '\n선택 항목 competency_evidence: {"observations":[{"competency_key":"분류에 있는 역량 키","basis":"past_action|proposed_action|explanation","quote":"답변의 정확한 4~500자 연속 인용","reason":"관찰 근거"}]}. 역량별 최대 한 개. 실제 근거가 없으면 observations는 빈 배열. 역량 점수나 성격을 추정하지 마라.'
+                system += '\n선택 항목 competency_evidence: {"observations":[{"competency_key":"역량 사전에 있는 key","basis":"past_action|proposed_action|explanation","quote":"답변의 정확한 4~500자 연속 인용","reason":"관찰 근거"}]}. 전체 최대 세 개, 역량별 최대 한 개. 요구 역량 밖의 관찰은 요구 태그와 구분한다. 실제 근거가 없으면 observations는 빈 배열. 역량 점수나 성격을 추정하지 마라.'
                 payload["question_classification"]=classification
+                from .taxonomy import COMPETENCIES
+                payload["competency_taxonomy"]=COMPETENCIES
             raw = llm._chat(system,json.dumps(payload,ensure_ascii=False),json_mode=True)
             decoded=json.loads(raw)
             extension=decoded.pop("competency_evidence",None) if isinstance(decoded,dict) else None
@@ -198,7 +200,8 @@ def _evidence(raw, transcript: str, classification: dict) -> dict | None:
     try:
         if not isinstance(raw,dict) or not isinstance(raw.get("observations"),list): return None
         observations=[CompetencyObservation.model_validate(x).model_dump() for x in raw["observations"]]
-        allowed={x["key"] for x in classification.get("competencies",[])}
+        from .taxonomy import COMPETENCY_BY_KEY
+        allowed=set(COMPETENCY_BY_KEY)
         keys=[x["competency_key"] for x in observations]
         if len(observations)>3 or len(keys)!=len(set(keys)) or not set(keys)<=allowed: return None
         if any(len(x["quote"].strip())<4 or x["quote"] not in transcript for x in observations): return None

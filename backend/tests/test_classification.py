@@ -182,13 +182,27 @@ def test_evidence_extension_invalid_isolated_and_server_owned(monkeypatch):
     assert ev['transcript_sha256'] != 'forged'
     assert ev['question_classification_sha256'] == classification_hash(snap) and ev['status'] == 'analyzed'
     assert ev['observations'][0]['quote'] in text and len(calls) == 1
-    for invalid in [None, [], {'observations': [{'competency_key': 'leadership', 'basis': 'past_action', 'quote': '제가 오류를 분석하고', 'reason': '설명'}]}, {'observations': [{'competency_key': 'problem_solving', 'basis': 'past_action', 'quote': '없는 인용문입니다', 'reason': '설명'}]}]:
+    for invalid in [None, [], {'observations': [{'competency_key': 'unknown_key', 'basis': 'past_action', 'quote': '제가 오류를 분석하고', 'reason': '설명'}]}, {'observations': [{'competency_key': 'problem_solving', 'basis': 'past_action', 'quote': '없는 인용문입니다', 'reason': '설명'}]}]:
         monkeypatch.setattr(llm, '_chat', lambda *a, **k: json.dumps({**base, 'competency_evidence': invalid}))
         report = coaching.build_report('질문', text, {}, [], classification=snap)
         assert report['method'] == 'ai' and report.get('competency_evidence') is None and ('fallback_reason' not in report)
     monkeypatch.setattr(settings, 'practice_competency_evidence_enabled', False)
     monkeypatch.setattr(llm, '_chat', reply)
     assert coaching.build_report('질문', text, {}, [], classification=snap).get('competency_evidence') is None
+
+def test_nonrequired_dictionary_competency_evidence_is_valid_but_not_unknown_keys():
+    from app import coaching, taxonomy
+    from app.models import Question
+    q = Question(category='직무', text='문제 해결 경험')
+    taxonomy.assign(q, 'behavioral', ['problem_solving'])
+    snap = taxonomy.capture(q)
+    transcript = '제가 방향을 제시하고 업무 책임을 나눴습니다.'
+    raw = {'observations':[{'competency_key':'leadership', 'basis':'past_action', 'quote':'제가 방향을 제시하고', 'reason':'방향 설정을 서술함'}]}
+    evidence = coaching._evidence(raw, transcript, snap)
+    assert evidence is not None
+    assert taxonomy.current_evidence(evidence, transcript, snap)['observations'][0]['competency_key'] == 'leadership'
+    raw['observations'][0]['competency_key'] = 'unknown_key'
+    assert coaching._evidence(raw, transcript, snap) is None
 
 @pytest.mark.parametrize('field,value', [('transcript', '새로 작성한 답변입니다.'), ('self_rating', 2), ('reflection_note', '다음에는 검증 과정을 말하겠습니다.')])
 def test_debrief_hidden_after_any_input_edit(client, monkeypatch, field, value):

@@ -739,9 +739,9 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
 @router.patch("/answers/{answer_id}", response_model=AnswerOut)
 def reflect(answer_id: str, body: ReflectionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     a = _own_answer(db, user_id, answer_id)
-    if body.input_mode == "text":
-        # This existing field remains writable even when the optional schema is off.
-        a.stt_status = "none"
+    if body.input_mode == "text" and a.recorded_at and not settings.practice_insights_enabled:
+        from ..services.recording_identity import clear_optional_recording_identity
+        clear_optional_recording_identity(db, a.id)
     if settings.practice_insights_enabled and a.recorded_at and "transcript" in body.model_fields_set:
         if body.input_mode == "text":
             a.recording_transcript_sha256 = ""  # typed replacement is never a transcription

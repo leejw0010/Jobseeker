@@ -128,7 +128,7 @@ def current_evidence(raw, transcript: str | None, snapshot: dict | None) -> dict
             return None
         if evidence.taxonomy_version != snapshot.get("taxonomy_version"):
             return None
-        allowed = {item["key"] for item in snapshot.get("competencies", [])}
+        allowed = set(COMPETENCY_BY_KEY)
         keys = [observation.competency_key for observation in evidence.observations]
         if len(keys) != len(set(keys)) or not set(keys) <= allowed:
             return None

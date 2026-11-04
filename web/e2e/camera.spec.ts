@@ -82,6 +82,15 @@ test("camera analysis measures during the answer, shows numbers in review, and k
   await expect(card.locator("tbody tr td").nth(3)).toHaveText(/^\d+%$/);
   await expect(card.locator("tbody tr td").nth(6)).toHaveText(/^\d+%$/); // 고개 방향 기준을 잡았다
   await expect(card).not.toContainText(/자신감이|긴장한|합격 가능성이 (높|낮)/);
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({colorScheme});
+    const minimum = await card.evaluate(root => {
+      const luminance=(value:string)=>{const rgb=(value.match(/[\d.]+/g)??[]).slice(0,3).map(Number).map(n=>n/255).map(n=>n<=0.03928?n/12.92:((n+0.055)/1.055)**2.4);return 0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2];};
+      const background=luminance(getComputedStyle(root).backgroundColor);
+      return Math.min(...[...root.querySelectorAll('.muted,th')].map(el=>{const foreground=luminance(getComputedStyle(el).color);return (Math.max(foreground,background)+0.05)/(Math.min(foreground,background)+0.05);}));
+    });
+    expect(minimum).toBeGreaterThanOrEqual(4.5);
+  }
   // 수치는 서버로 보내지 않는다. 먼저 API 요청을 실제로 모았는지(글 답변 저장) 확인한다: 비어 있으면 아래 검사는 의미가 없다
   expect(sent.some((b) => b.includes("일정 관리를 맡았습니다"))).toBe(true);
   expect(sent.filter((b) => /detectedMs|noneMs|edgeMs|turnedMs|yaw|pitch|overshoot/.test(b))).toEqual([]);
