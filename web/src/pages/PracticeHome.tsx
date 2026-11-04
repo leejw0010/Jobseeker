@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { CATEGORIES, JOB_CATEGORIES, type Application, type Category, type Question } from "../types";
+import { ClassificationControls } from "../components/ClassificationControls";
+import { CATEGORIES, JOB_CATEGORIES, type Application, type Category, type Question, type PracticeTaxonomy, type ClassificationInput } from "../types";
 
 const SOURCE_LABEL = { bank: "공용", generated: "맞춤", custom: "직접 추가" } as const;
 
 export default function PracticeHome() {
   const nav = useNavigate();
   const [params] = useSearchParams();
+  const [taxonomy,setTaxonomy]=useState<PracticeTaxonomy|null>(null);
+  const [classification,setClassification]=useState<ClassificationInput>({});
+  const [genClassification,setGenClassification]=useState<ClassificationInput>({});
+  const [tagFilter,setTagFilter]=useState({type:'',keys:[] as string[],match:'any' as 'any'|'all'});
+  const [editing,setEditing]=useState<string|null>(null);
+  const [editTags,setEditTags]=useState<ClassificationInput>({});
+  useEffect(()=>{api.taxonomy().then(setTaxonomy).catch(()=>{});},[]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [apps, setApps] = useState<Application[]>([]);
   const [filter, setFilter] = useState({ category: "", job_category: "", source: "", q: "" });
@@ -38,13 +46,13 @@ export default function PracticeHome() {
   const reload = () => setReloadKey((k) => k + 1);
   useEffect(() => {
     let alive = true;
-    api.questions({ category: filter.category, job_category: filter.job_category, source: filter.source })
+    api.questions({ category: filter.category, job_category: filter.job_category, source: filter.source, ...(taxonomy?.enabled?{question_type:tagFilter.type?[tagFilter.type]:[],competency_key:tagFilter.keys,competency_match:tagFilter.match}:{}) })
       .then((qs) => alive && setQuestions(qs))
       .catch((e) => setErr(e.message));
     return () => {
       alive = false;
     };
-  }, [filter.category, filter.job_category, filter.source, reloadKey]);
+  }, [filter.category, filter.job_category, filter.source, reloadKey, taxonomy, tagFilter]);
   useEffect(() => {
     api.applications().then(setApps).catch(() => {});
   }, []);
@@ -88,6 +96,7 @@ export default function PracticeHome() {
         essay_basis: essayBasis,
         job_description: jobDescription,
         followups_enabled: followups,
+        ...(taxonomy?.enabled?{question_types:tagFilter.type?[tagFilter.type]:[],competency_keys:tagFilter.keys,competency_match:tagFilter.match}:{}),
       });
       nav(`/practice/sessions/${s.id}/run`);
     });
@@ -102,6 +111,7 @@ export default function PracticeHome() {
         essay_text: gen.essay_text || undefined,
         count: gen.count,
         essay_basis: essayBasis,
+        ...(taxonomy?.enabled?genClassification:{}),
       });
       if (made.length === 0) throw new Error("새로 만든 질문이 없습니다. 같은 질문이 이미 질문은행에 있어요.");
       setFilter((f) => ({ ...f, source: "generated", category: "" }));
@@ -111,7 +121,7 @@ export default function PracticeHome() {
 
   const addCustom = () =>
     run(async () => {
-      await api.addQuestion({ ...newQ, job_category: filter.job_category || null });
+      await api.addQuestion({ ...newQ, job_category: filter.job_category || null, ...(taxonomy?.enabled?classification:{}) });
       setNewQ({ ...newQ, text: "" });
       reload();
     });
@@ -174,6 +184,7 @@ export default function PracticeHome() {
             </label>
           </div>
           <div className="spacer" />
+          {taxonomy?.enabled&&<p className="small muted">아래 질문은행의 질문 유형·역량 필터가 모의시험 질문 선택에도 적용돼요.</p>}
           <button className="primary" disabled={busy || mockCats.length === 0} onClick={startMock}>모의시험 시작</button>
         </section>
 
@@ -198,6 +209,7 @@ export default function PracticeHome() {
             </>
           )}
           <div className="spacer" />
+          <ClassificationControls taxonomy={taxonomy} value={genClassification} onChange={setGenClassification} label="생성할 질문 분류"/>
           <div className="row">
             <label>개수<input type="number" min={1} max={10} value={gen.count} onChange={(e) => setGen({ ...gen, count: +e.target.value })} /></label>
             <button className="primary" disabled={busy} onClick={generate}>질문 생성</button>
@@ -225,14 +237,18 @@ export default function PracticeHome() {
           <input placeholder="검색" value={filter.q} onChange={(e) => setFilter({ ...filter, q: e.target.value })} />
         </div>
         <div className="spacer" />
+        {taxonomy?.enabled&&<fieldset><legend>질문 유형·역량 필터</legend><label>질문 유형 필터<select value={tagFilter.type} onChange={e=>setTagFilter({...tagFilter,type:e.target.value})}><option value="">전체 유형</option>{taxonomy.question_types.map(t=><option key={t.key} value={t.key}>{t.label}</option>)}</select></label><div className="row small">{taxonomy.competencies.map(c=><label className="check-label" key={c.key}><input type="checkbox" checked={tagFilter.keys.includes(c.key)} onChange={()=>setTagFilter({...tagFilter,keys:tagFilter.keys.includes(c.key)?tagFilter.keys.filter(k=>k!==c.key):[...tagFilter.keys,c.key]})}/>{c.label}</label>)}</div><label>역량 필터 조건<select value={tagFilter.match} onChange={e=>setTagFilter({...tagFilter,match:e.target.value as 'any'|'all'})}><option value="any">하나 이상 포함</option><option value="all">모두 포함</option></select></label></fieldset>}
         <ul className="qlist">
           {shown.map((q) => (
-            <li key={q.id}>
+            <li key={q.id} style={{flexWrap:"wrap"}}>
               <input type="checkbox" checked={selected.includes(q.id)} onChange={() => toggle(q.id)} aria-label="선택" />
               <span className="grow">{q.text}</span>
               <span className="chip">{q.category}</span>
               {q.job_category && <span className="chip">{q.job_category}</span>}
               <span className={`chip ${q.source !== "bank" ? "accent" : ""}`}>{SOURCE_LABEL[q.source]}</span>
+              {taxonomy?.enabled&&<><span className="chip">{taxonomy.question_types.find(t=>t.key===q.question_type)?.label??'유형 미분류'}</span>{q.competency_keys?.map(k=><span className="chip" key={k}>{taxonomy.competencies.find(c=>c.key===k)?.label??k}</span>)}</>}
+              {taxonomy?.enabled&&q.source!=="bank"&&<button className="small" onClick={()=>{setEditing(editing===q.id?null:q.id);setEditTags({question_type:q.question_type,competency_keys:q.competency_keys??[]});}}>분류 편집</button>}
+              {editing===q.id&&<div style={{flexBasis:'100%'}}><ClassificationControls taxonomy={taxonomy} value={editTags} onChange={setEditTags} label="질문 분류 편집"/><p className="small muted">기존 세션의 시작 시점 분류는 바뀌지 않아요.</p><button disabled={busy} onClick={()=>run(async()=>{await api.classifyQuestion(q.id,editTags);setEditing(null);reload();})}>분류 저장</button><button onClick={()=>setEditing(null)}>취소</button></div>}
               {q.source !== "bank" && (
                 <button className="small danger" onClick={() => run(async () => { await api.deleteQuestion(q.id); reload(); })}>삭제</button>
               )}
@@ -241,6 +257,7 @@ export default function PracticeHome() {
           {shown.length === 0 && <li className="muted">질문이 없습니다.</li>}
         </ul>
         <div className="spacer" />
+        <ClassificationControls taxonomy={taxonomy} value={classification} onChange={setClassification} label="직접 추가할 질문 분류"/>
         <div className="row">
           <select value={newQ.category} onChange={(e) => setNewQ({ ...newQ, category: e.target.value as Category })}>
             {CATEGORIES.map((c) => <option key={c}>{c}</option>)}

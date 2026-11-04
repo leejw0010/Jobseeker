@@ -5,6 +5,8 @@ import type {
   ApplicationPatch,
   Category,
   CoachingRubric,
+  ClassificationInput,
+  PracticeTaxonomy,
   DeleteResult,
   EssayItem,
   Health,
@@ -57,8 +59,10 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
-const qs = (p: Record<string, string | undefined>) => {
-  const s = new URLSearchParams(Object.entries(p).filter(([, v]) => v) as [string, string][]).toString();
+const qs = (p: Record<string, string | string[] | undefined>) => {
+  const params = new URLSearchParams();
+  Object.entries(p).forEach(([key, value]) => (Array.isArray(value) ? value : [value]).forEach((v) => { if (v) params.append(key, v); }));
+  const s = params.toString();
   return s ? `?${s}` : "";
 };
 
@@ -66,12 +70,14 @@ export const api = {
   health: () => req<Health>("GET", "/health"),
 
   // ② Practice
-  questions: (f: { category?: string; job_category?: string; source?: string; q?: string } = {}) =>
+  taxonomy: () => req<PracticeTaxonomy>("GET", "/practice/taxonomy"),
+  classifyQuestion: (id: string, b: ClassificationInput) => req<Question>("PUT", `/practice/questions/${id}/classification`, b),
+  questions: (f: { category?: string; job_category?: string; source?: string; q?: string; question_type?: string[]; competency_key?: string[]; competency_match?: "any" | "all" } = {}) =>
     req<Question[]>("GET", `/practice/questions${qs(f)}`),
-  addQuestion: (b: { category: Category; text: string; job_category?: string | null }) =>
+  addQuestion: (b: { category: Category; text: string; job_category?: string | null } & ClassificationInput) =>
     req<Question>("POST", "/practice/questions", b),
   deleteQuestion: (id: string) => req<void>("DELETE", `/practice/questions/${id}`),
-  generateQuestions: (b: {
+  generateQuestions: (b: ClassificationInput & {
     application_id?: string;
     company?: string;
     position?: string;
@@ -93,6 +99,9 @@ export const api = {
     essay_basis?: "submitted" | "latest";
     job_description?: string;
     followups_enabled?: boolean;
+    question_types?: string[];
+    competency_keys?: string[];
+    competency_match?: "any" | "all";
   }) => req<PracticeSession>("POST", "/practice/sessions", b),
   sessions: () => req<SessionSummary[]>("GET", "/practice/sessions"),
   session: (id: string) => req<PracticeSession>("GET", `/practice/sessions/${id}`),

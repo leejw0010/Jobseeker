@@ -50,6 +50,7 @@ export default function ConsentPanel({
       {notice && <p className="warn-text">{notice}</p>}
       <ul className="bullets">
         <li>JobSeeker는 면접 <b>연습 전용</b>이에요. 실제 면접 중에는 쓰지 마세요. 많은 기업이 면접 중 AI 도움을 금지해요.</li>
+        <li>녹음 중 브라우저에서 에너지 변화로 발화·휴지 후보를 계산해요. 감정·자신감을 판별하지 않아요. 관찰 요약은 이 탭 메모리에만 두며 서버·OpenAI로 보내지 않고 새로고침하면 사라져요.</li>
         <li>본인 목소리만 녹음해요. 다른 사람의 목소리가 들어가지 않게 해 주세요.</li>
         <li>{sttDestination(stt)}</li>
         <li>
@@ -65,6 +66,7 @@ export default function ConsentPanel({
         </li>
         <li>원본을 남기려면 아래에 체크하세요. 남겨도 {retentionDays}일이 지나면 자동으로 지워져요.</li>
         <li>AI가 만든 답변 코칭에는 ‘AI 코칭’, 세션 디브리프에는 ‘AI 생성’ 표시가 붙어요.</li>
+      <li>서버에서 역량 근거 기능을 켠 경우에만 기존 답변 코칭 요청에 시작 시점의 질문 유형·필요 역량을 함께 보내요. 전달 관찰 수치는 보내지 않아요.</li>
       </ul>
       <label style={{ flexDirection: "row", alignItems: "center" }}>
         <input
