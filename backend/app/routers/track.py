@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..auth import current_user_id
 from ..db import get_db
-from ..models import STAGES, AnswerVersion, Application, EssayItem, StageEvent
+from ..models import STAGES, AnswerVersion, Application, EssayItem, StageEvent, valid_id
 from ..schemas import (
     ApplicationDetail,
     ApplicationIn,
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/track", tags=["track"])
 
 
 def _own_app(db: Session, user_id: str, app_id: str) -> Application:
-    app = db.scalar(
+    app = valid_id(app_id) and db.scalar(
         select(Application)
         .where(Application.id == app_id, Application.user_id == user_id)
         .options(selectinload(Application.events),
@@ -40,7 +40,7 @@ def _own_app(db: Session, user_id: str, app_id: str) -> Application:
 
 
 def _own_item(db: Session, user_id: str, item_id: str) -> EssayItem:
-    item = db.scalar(
+    item = valid_id(item_id) and db.scalar(
         select(EssayItem).join(Application)
         .where(EssayItem.id == item_id, Application.user_id == user_id)
         .options(selectinload(EssayItem.versions))
@@ -144,8 +144,8 @@ def add_event(app_id: str, body: StageEventIn, user_id: str = Depends(current_us
 
 @router.delete("/events/{event_id}", status_code=204)
 def delete_event(event_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    ev = db.scalar(select(StageEvent).join(Application)
-                   .where(StageEvent.id == event_id, Application.user_id == user_id))
+    ev = valid_id(event_id) and db.scalar(select(StageEvent).join(Application)
+                                          .where(StageEvent.id == event_id, Application.user_id == user_id))
     if not ev:
         raise HTTPException(404, "기록을 찾을 수 없습니다")
     db.delete(ev)
@@ -188,8 +188,8 @@ def add_version(item_id: str, body: VersionIn, user_id: str = Depends(current_us
 @router.post("/versions/{version_id}/restore", response_model=EssayItemOut)
 def restore_version(version_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     """예전 버전 내용을 새 최신 버전으로 복사한다(이력은 지우지 않음)."""
-    v = db.scalar(select(AnswerVersion).join(EssayItem).join(Application)
-                  .where(AnswerVersion.id == version_id, Application.user_id == user_id))
+    v = valid_id(version_id) and db.scalar(select(AnswerVersion).join(EssayItem).join(Application)
+                                           .where(AnswerVersion.id == version_id, Application.user_id == user_id))
     if not v:
         raise HTTPException(404, "버전을 찾을 수 없습니다")
     item = _own_item(db, user_id, v.essay_item_id)

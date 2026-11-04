@@ -25,7 +25,8 @@ def test_generate_without_api_key_uses_essay(client):
     assert other == []
 
 
-def test_mock_session_flow(client):
+def test_mock_session_flow(client, consent):
+    consent(U1)
     r = client.post("/practice/sessions", json={"mode": "mock", "count": 3, "answer_sec": 60}, headers=U1)
     assert r.status_code == 201, r.text
     s = r.json()
@@ -38,6 +39,8 @@ def test_mock_session_flow(client):
     assert up.status_code == 200, up.text
     assert up.json()["stt_status"] == "unavailable"
     assert up.json()["duration_sec"] == 42.5
+    # 전사를 못 했으니 원본은 남는다(보관 기한 뒤 자동 삭제)
+    assert up.json()["audio_available"] and up.json()["recorded_at"] and up.json()["audio_expires_at"]
 
     audio = client.get(f"/practice/answers/{ans['id']}/audio", headers=U1)
     assert audio.status_code == 200 and audio.content.startswith(b"\x1aE")

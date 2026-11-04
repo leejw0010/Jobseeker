@@ -2,9 +2,13 @@ import type {
   Application,
   ApplicationDetail,
   Category,
+  CoachingRubric,
+  DeleteResult,
   EssayItem,
   PracticeAnswer,
   PracticeSession,
+  PracticeSettings,
+  PracticeSettingsUpdate,
   Question,
   SessionSummary,
   Stats,
@@ -100,7 +104,12 @@ export const api = {
   },
   audioUrl: async (answerId: string) => {
     const res = await fetch(`${BASE}/practice/answers/${answerId}/audio`, { headers: await headers() });
-    if (!res.ok) throw new ApiError(res.status, "녹음을 불러오지 못했습니다");
+    if (!res.ok) {
+      // 404는 두 경우다: 원본을 지웠다(서버가 삭제 기록을 보고 알린다) / 지우지 않았는데 저장소에서 파일을 찾지 못했다
+      const detail = await res.json().then((j) => j.detail, () => null);
+      const deleted = "원본 녹음은 삭제됐어요";
+      throw new ApiError(res.status, res.status !== 404 ? "녹음을 불러오지 못했습니다" : detail === deleted ? deleted : "녹음 파일을 찾지 못했어요");
+    }
     return URL.createObjectURL(await res.blob());
   },
   retryTranscribe: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/transcribe`),
@@ -110,6 +119,15 @@ export const api = {
   coach: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/coach`),
   followup: (answerId: string) => req<PracticeSession>("POST", `/practice/answers/${answerId}/followup`),
   redrill: (sessionId: string) => req<PracticeSession>("POST", `/practice/sessions/${sessionId}/redrill`),
+  debrief: (sessionId: string) => req<PracticeSession>("POST", `/practice/sessions/${sessionId}/debrief`),
+  rubric: () => req<CoachingRubric>("GET", "/practice/rubric"),
+  deleteAudio: (answerId: string) => req<PracticeAnswer>("DELETE", `/practice/answers/${answerId}/audio`),
+
+  // 녹음 동의·보관 설정
+  settings: () => req<PracticeSettings>("GET", "/practice/settings"),
+  updateSettings: (b: { consent?: boolean; keep_audio?: boolean }) =>
+    req<PracticeSettingsUpdate>("PUT", "/practice/settings", b),
+  deleteAllRecordings: () => req<DeleteResult>("DELETE", "/practice/recordings"),
 
   // ③ Track
   applications: (f: { status?: string; stage?: string; job_category?: string; q?: string } = {}) =>

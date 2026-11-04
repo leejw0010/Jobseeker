@@ -3,6 +3,9 @@ dist/
 __pycache__/
 .pytest_cache/
 .env
+.env.*
+!.env.example
+.venv/
 backend/jobseeker.db
 backend/recordings/
 web/test-results/

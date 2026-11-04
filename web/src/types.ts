@@ -30,7 +30,73 @@ export interface PracticeAnswer {
   coaching_report: CoachingReport | null;
   parent_answer_id: string | null;
   followup_reason: string | null;
+  /** 녹음한 시각("녹음으로 답했다"의 기준). 원본은 전사가 끝나면 지워질 수 있다 */
+  recorded_at: string | null;
+  audio_available: boolean;
+  audio_expires_at: string | null;
+  audio_deleted_at: string | null;
 }
+
+/** GET /practice/rubric: 코칭 기준(무엇을 보는지와 충분/보완 앵커) */
+export interface CoachingCriterionDef {
+  key: "specificity" | "relevance" | "consistency";
+  label: string;
+  checks: string;
+  anchors: { 충분: string; 보완: string };
+  /** 과거 경험 질문에서 보는 행동 앵커(STAR) */
+  star?: { when: string; anchors: string[] };
+}
+
+export interface CoachingRubric {
+  version: string;
+  statuses: Record<"충분" | "보완" | "판단유보", string>;
+  criteria: CoachingCriterionDef[];
+  note: string;
+}
+
+export interface PracticeSettings {
+  consented_at: string | null;
+  keep_audio: boolean;
+  retention_days: number;
+}
+
+/** 원본 녹음 삭제 결과. failed는 저장소 오류로 못 지운 개수(서버가 곧 다시 지운다).
+ *  unchecked는 저장소 폴더 목록을 읽지 못해 남은 파일이 있는지 모른다는 뜻(서버가 곧 다시 확인해 지운다) */
+export interface DeleteResult {
+  deleted: number;
+  failed: number;
+  unchecked: boolean;
+}
+
+/** PUT /practice/settings 응답. 동의를 철회했으면 삭제 결과가 함께 온다. */
+export type PracticeSettingsUpdate = PracticeSettings & DeleteResult;
+
+/** 다시 연습할 답변(서버가 코칭의 보완 항목·자기평가 1~2점으로 계산) */
+export interface WeakAnswer {
+  answer_id: string;
+  question_id: string;
+  order_no: number;
+  question_text: string;
+  reasons: string[];
+}
+
+export interface DebriefMoment {
+  answer_id: string;
+  order_no: number;
+  quote: string;
+  why: string | null;
+}
+
+/** 서버는 교훈·다음 행동 중 하나만 있어도 저장한다(빈 값은 null). */
+export interface Debrief {
+  lesson: string | null;
+  next_action: string | null;
+  moments: DebriefMoment[];
+  generated_at: string;
+  model: string;
+}
+
+export type DebriefStatus = "none" | "pending" | "done" | "failed" | "unavailable";
 
 export interface CoachingReport {
   method: "basic" | "ai";
@@ -71,6 +137,11 @@ export interface PracticeSession {
   answers: PracticeAnswer[];
   context_snapshot: InterviewContext | null;
   followups_enabled: boolean;
+  debrief: Debrief | null;
+  debrief_status: DebriefStatus;
+  /** 디브리프 작업(답변 점검 + 요약)이 아직 도는 중(마지막 진행 신호가 5분 안). 이때는 다시 요청해도 서버가 새로 시작하지 않는다 */
+  debrief_running: boolean;
+  redrill: WeakAnswer[];
 }
 
 export interface SessionSummary {

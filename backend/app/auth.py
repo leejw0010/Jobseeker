@@ -2,6 +2,7 @@ import jwt
 from fastapi import Header, HTTPException
 
 from .config import settings
+from .models import valid_id
 
 DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -15,6 +16,9 @@ def current_user_id(
     AUTH_DISABLED=true(개발 모드)면 X-User-Id 헤더나 고정 dev 사용자를 쓴다.
     """
     if settings.auth_disabled:
+        # Supabase(Postgres)의 user_id는 uuid 컬럼이다. 로컬 SQLite는 아무 문자열이나 쓸 수 있다
+        if x_user_id and not settings.database_url.startswith("sqlite") and not valid_id(x_user_id):
+            raise HTTPException(400, "X-User-Id 헤더는 UUID여야 해요")
         return x_user_id or DEV_USER_ID
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "로그인이 필요합니다")

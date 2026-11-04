@@ -13,8 +13,11 @@ from app import llm
 from app.config import settings
 
 
-def session_answer(client):
+def session_answer(client, keep_audio=False):
     headers = {"X-User-Id": f"speech-{uuid.uuid4()}"}
+    # 녹음 업로드·전사 다시 시도에는 녹음 동의가 필요하다. keep_audio=False면 전사에 성공한 원본은 바로 지운다
+    consent = client.put("/practice/settings", headers=headers, json={"consent": True, "keep_audio": keep_audio})
+    assert consent.status_code == 200, consent.text
     session = client.post("/practice/sessions", headers=headers, json={"mode": "free", "count": 1}).json()
     return headers, session["answers"][0]["id"]
 
@@ -62,7 +65,7 @@ def test_empty_or_invalid_transcription_keeps_audio_and_offers_retry(client, mon
 
 def test_mp4_retry_preserves_format_and_recognizes_the_stored_recording(client, monkeypatch):
     calls = provider(monkeypatch, {"error": "temporarily unavailable"}, status=503)
-    h, aid = session_answer(client)
+    h, aid = session_answer(client, keep_audio=True)  # 다시 전사한 뒤에도 저장된 원본 형식을 확인하려고 보관
     first = client.post(f"/practice/answers/{aid}/audio", headers=h,
                         files={"file": ("answer.m4a", b"simulated-mp4", "audio/mp4")})
     assert first.json()["stt_status"] == "failed"
@@ -77,7 +80,7 @@ def test_mp4_retry_preserves_format_and_recognizes_the_stored_recording(client, 
 
 def test_failed_retry_keeps_the_users_corrected_transcript(client, monkeypatch):
     provider(monkeypatch, {"text": "첫 인식 결과"})
-    h, aid = session_answer(client)
+    h, aid = session_answer(client, keep_audio=True)  # 첫 전사가 성공해도 다시 시도할 원본을 남기려고 보관
     client.post(f"/practice/answers/{aid}/audio", headers=h,
                 files={"file": ("answer.webm", b"simulated-audio", "audio/webm")})
     client.patch(f"/practice/answers/{aid}", headers=h, json={"transcript": "사용자가 고친 정확한 답변"})
