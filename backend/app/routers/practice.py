@@ -2,19 +2,20 @@
 import random
 import secrets
 from copy import deepcopy
+from typing import Literal
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .. import coaching, llm, storage, stt
+from .. import coaching, llm, storage, stt, taxonomy
 from ..auth import current_user_id
 from ..config import settings
 from ..db import get_db
-from ..debrief import debrief_running, drill_focus, drill_picks, prepare_debrief, run_debrief, weak_answers
+from ..debrief import debrief_fingerprint, debrief_running, drill_focus, drill_picks, prepare_debrief, run_debrief, weak_answers
 from ..models import (
     AnswerCoaching,
     Application,
@@ -45,6 +46,7 @@ from ..schemas import (
     PracticeSettingsIn,
     PracticeSettingsOut,
     PracticeSettingsUpdateOut,
+    ClassificationIn,
     QuestionIn,
     QuestionOut,
     ReflectionIn,
@@ -115,6 +117,9 @@ def _now() -> datetime:
 def _session_out(s: PracticeSession) -> SessionOut:
     """세션 응답. 다시 연습할 답변과 디브리프 작업이 도는 중인지는 저장하지 않고 응답마다 다시 계산한다."""
     out = SessionOut.model_validate(s)
+    if s.debrief and s.debrief.get("input_sha256") != debrief_fingerprint(s):
+        out.debrief=None
+        if out.debrief_status=="done": out.debrief_status="none"
     out.redrill = weak_answers(s)
     out.debrief_running = debrief_running(s)
     return out
@@ -213,8 +218,38 @@ def _apply_stt(a: PracticeAnswer, transcript: str, keep_audio: bool) -> None:
 
 # ───────── 질문은행 ─────────
 
+@router.get("/taxonomy")
+def get_taxonomy():
+    return {"enabled":settings.practice_insights_enabled,"taxonomy_version":taxonomy.TAXONOMY_VERSION,
+            "question_types":taxonomy.QUESTION_TYPES,"competencies":taxonomy.COMPETENCIES,"max_competencies":3}
+
+
+def _classification_filters(stmt, types, keys, match):
+    try:
+        return taxonomy.filter_questions(stmt,types,keys,match)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from None
+
+
+@router.put("/questions/{question_id}/classification", response_model=QuestionOut)
+def edit_classification(question_id: str, body: ClassificationIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    if not settings.practice_insights_enabled:
+        raise HTTPException(409,"질문 분류 기능이 활성화되지 않았습니다")
+    q = valid_id(question_id) and db.scalar(_visible_questions(user_id).where(Question.id==question_id,Question.user_id==user_id))
+    if not q:
+        raise HTTPException(404,"수정할 수 있는 질문이 아닙니다")
+    db.execute(update(Question).where(Question.id==q.id).values(text=Question.text),execution_options={"synchronize_session":False})
+    db.refresh(q)
+    taxonomy.assign(q,body.question_type,body.competency_keys)
+    db.commit()
+    return q
+
+
 @router.get("/questions", response_model=list[QuestionOut])
 def list_questions(
+    question_type: list[str] = Query(default=[]),
+    competency_key: list[str] = Query(default=[]),
+    competency_match: Literal["any", "all"] = "any",
     category: str | None = None,
     job_category: str | None = None,
     source: str | None = None,
@@ -222,7 +257,7 @@ def list_questions(
     user_id: str = Depends(current_user_id),
     db: Session = Depends(get_db),
 ):
-    stmt = _visible_questions(user_id)
+    stmt = _classification_filters(_visible_questions(user_id),question_type,competency_key,competency_match)
     if category:
         stmt = stmt.where(Question.category == category)
     if job_category:
@@ -236,7 +271,11 @@ def list_questions(
 
 @router.post("/questions", response_model=QuestionOut, status_code=201)
 def add_question(body: QuestionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    q = Question(user_id=user_id, source="custom", **body.model_dump())
+    if not settings.practice_insights_enabled and (body.question_type or body.competency_keys):
+        raise HTTPException(409,"질문 분류 기능이 활성화되지 않았습니다")
+    q = Question(user_id=user_id, source="custom", **body.model_dump(exclude={"question_type","competency_keys"}))
+    if {"question_type","competency_keys"} & body.model_fields_set:
+        taxonomy.assign(q,body.question_type,body.competency_keys)
     db.add(q)
     db.commit()
     return q
@@ -282,7 +321,11 @@ def generate(body: GenerateIn, user_id: str = Depends(current_user_id), db: Sess
             essay = coaching.essay_text(coaching.snapshot(app, body.essay_basis))
     if not (company or position or essay):
         raise HTTPException(422, "회사, 직무, 자소서 중 하나 이상이 필요합니다")
-    generated = llm.generate_questions(company or "", position or "", essay or "", body.count)
+    if not settings.practice_insights_enabled and (body.question_type or body.competency_keys):
+        raise HTTPException(409,"질문 분류 기능이 활성화되지 않았습니다")
+    preferences={"question_type":body.question_type,"competency_keys":body.competency_keys}
+    args=(company or "",position or "",essay or "",body.count)
+    generated = llm.generate_questions(*args,classification_preferences=preferences) if body.question_type or body.competency_keys else llm.generate_questions(*args)
     # 이미 가진 질문과 문구가 같으면 다시 저장하지 않는다
     existing = set(db.scalars(select(Question.text).where(Question.user_id == user_id)))
     generated = [g for g in generated if g["text"] not in existing]
@@ -291,6 +334,18 @@ def generate(body: GenerateIn, user_id: str = Depends(current_user_id), db: Sess
                  source="generated", application_id=body.application_id)
         for g in generated
     ]
+    for row, generated_question in zip(rows,generated):
+        # Preferences are goals, never evidence that a generated question has those tags.
+        if not {"question_type","competency_keys"} & generated_question.keys():
+            continue
+        try:
+            classification=ClassificationIn.model_validate(generated_question)
+            source=generated_question.get("tagging_source")
+            if source not in ("ai","rule"):
+                source="ai" if llm.available() else "rule"
+            taxonomy.assign(row,classification.question_type,classification.competency_keys,source)
+        except (ValueError,TypeError):
+            pass  # invalid optional metadata never rejects valid core question text
     db.add_all(rows)
     db.commit()
     return rows
@@ -312,7 +367,7 @@ def create_session(body: SessionIn, user_id: str = Depends(current_user_id), db:
         if body.application_id and any(q.application_id and q.application_id != body.application_id for q in picked):
             raise HTTPException(422, "다른 지원 건에서 만든 질문이 포함되어 있어요. 지원 건과 질문을 맞춰 주세요")
     else:
-        stmt = _visible_questions(user_id)
+        stmt = _classification_filters(_visible_questions(user_id),body.question_types,body.competency_keys,body.competency_match)
         if body.categories:
             stmt = stmt.where(Question.category.in_(body.categories))
         if body.application_id:
@@ -339,7 +394,18 @@ def create_session(body: SessionIn, user_id: str = Depends(current_user_id), db:
     )
     s = PracticeSession(user_id=user_id, mode=body.mode, title=title, application_id=body.application_id,
                         prep_sec=body.prep_sec, answer_sec=body.answer_sec)
-    s.answers = [PracticeAnswer(question=q, order_no=i + 1) for i, q in enumerate(picked)]
+    if settings.practice_insights_enabled:
+        # Serialize capture against classification edits. Stable order avoids PG deadlocks.
+        for question in sorted({q.id:q for q in picked}.values(),key=lambda q:q.id):
+            db.execute(update(Question).where(Question.id==question.id).values(text=Question.text),execution_options={"synchronize_session":False})
+            db.refresh(question)
+        if not body.question_ids:
+            ids={q.id for q in picked}
+            current=set(db.scalars(stmt.with_only_columns(Question.id).where(Question.id.in_(ids))))
+            if current!=ids:
+                db.rollback()
+                raise HTTPException(409,"질문 분류가 선택 중 바뀌었어요. 조건을 확인하고 다시 시작해 주세요")
+    s.answers = [PracticeAnswer(question=q, order_no=i + 1, **({"question_classification":taxonomy.capture(q)} if settings.practice_insights_enabled else {})) for i, q in enumerate(picked)]
     s.context = PracticeContext(snapshot=context, followups_enabled=body.followups_enabled)
     db.add(s)
     db.commit()
@@ -347,7 +413,13 @@ def create_session(body: SessionIn, user_id: str = Depends(current_user_id), db:
 
 
 @router.get("/sessions", response_model=list[SessionSummary])
-def list_sessions(user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+def list_sessions(question_type: list[str] = Query(default=[]), competency_key: list[str] = Query(default=[]),
+                  competency_match: Literal["any","all"] = "any",
+                  user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    try:
+        taxonomy.validate_keys(question_type,competency_key)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from None
     sessions = db.scalars(
         select(PracticeSession)
         .where(PracticeSession.user_id == user_id)
@@ -356,11 +428,19 @@ def list_sessions(user_id: str = Depends(current_user_id), db: Session = Depends
     ).all()
     out = []
     for s in sessions:
+        keys={k for a in s.answers for k in (a.question_classification or {}).get("competency_keys",[])}
+        types={(a.question_classification or {}).get("question_type") for a in s.answers}
+        if question_type and not types.intersection(question_type):
+            continue
+        if competency_key and not (set(competency_key)<=keys if competency_match=="all" else keys.intersection(competency_key)):
+            continue
         ratings = [a.self_rating for a in s.answers if a.self_rating]
         out.append(SessionSummary(
             id=s.id, mode=s.mode, title=s.title, created_at=s.created_at, finished_at=s.finished_at,
             answer_count=len(s.answers), recorded_count=sum(1 for a in s.answers if a.recorded_at),
             avg_rating=round(sum(ratings) / len(ratings), 2) if ratings else None,
+            competency_keys=sorted({k for a in s.answers for k in (a.question_classification or {}).get("competency_keys",[])}),
+            classification_missing_count=sum(a.question_classification is None for a in s.answers),
         ))
     return out
 
@@ -706,7 +786,10 @@ def followup(answer_id: str, user_id: str = Depends(current_user_id), db: Sessio
     q = Question(user_id=user_id, category=a.question.category, source="generated",
                  application_id=s.application_id, job_category=a.question.job_category, text=suggestion["text"],
                  private_scope=PracticePrivateQuestion())
+    if settings.practice_insights_enabled and a.question_classification:
+        taxonomy.assign(q,a.question_classification["question_type"],a.question_classification.get("competency_keys",[]),"rule")
     child = PracticeAnswer(question=q, order_no=a.order_no + 1,
+                           **({"question_classification":taxonomy.recapture(a.question_classification,"followup")} if settings.practice_insights_enabled else {}),
                            coaching=AnswerCoaching(parent_answer_id=a.id, followup_reason=suggestion["reason"]))
     for later in s.answers:
         if later.order_no > a.order_no:
@@ -743,7 +826,7 @@ def redrill(session_id: str, user_id: str = Depends(current_user_id), db: Sessio
     s = PracticeSession(user_id=user_id, mode="free", title=f"보완 연습 · {original.title}"[:200],
                         application_id=original.application_id, prep_sec=original.prep_sec, answer_sec=original.answer_sec,
                         context=PracticeContext(snapshot=frozen, followups_enabled=True))
-    s.answers = [PracticeAnswer(question=a.question, order_no=i + 1) for i, a in enumerate(picked)]
+    s.answers = [PracticeAnswer(question=a.question, order_no=i + 1, **({"question_classification":taxonomy.recapture(a.question_classification)} if settings.practice_insights_enabled else {})) for i, a in enumerate(picked)]
     db.add(s)
     db.commit()
     return _session_out(_own_session(db, user_id, s.id))

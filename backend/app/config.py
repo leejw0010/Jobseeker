@@ -42,6 +42,8 @@ class Settings:
 
     def __init__(self, env: Mapping[str, str] | None = None):
         env = os.environ if env is None else env
+        self.practice_insights_enabled = env.get("PRACTICE_INSIGHTS_ENABLED", "false").lower() == "true"
+        self.practice_competency_evidence_enabled = env.get("PRACTICE_COMPETENCY_EVIDENCE_ENABLED", "false").lower() == "true"
         self.database_url: str = env.get("DATABASE_URL") or f"sqlite:///{BASE_DIR / 'jobseeker.db'}"
         # true일 때만 개발 모드(로그인 없이 X-User-Id). 그 밖의 값은 인증을 켠 것으로 본다
         self.auth_disabled: bool = env.get("AUTH_DISABLED", "true").lower() == "true"

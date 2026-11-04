@@ -38,9 +38,39 @@ BANK: list[tuple[str, str | None, str]] = [
 ]
 
 
+# Index-aligned curated mapping, tied to the exact immutable BANK tuples below.
+BANK_TAGS = [
+ ('self_description',[]), ('self_description',[]),
+ ('behavioral',[]), ('self_description',['adaptability']),
+ ('behavioral',['adaptability']), ('self_description',[]),
+ ('situational',['collaboration']), ('situational',['communication','collaboration']),
+ ('situational',['problem_solving','analytical_thinking']), ('situational',['analytical_thinking']),
+ ('motivation',[]), ('motivation',[]), ('motivation',[]), ('self_description',[]),
+ ('project_deep_dive',['technical_expertise','problem_solving']),
+ ('knowledge',['technical_expertise']), ('knowledge',['technical_expertise']),
+ ('knowledge',['technical_expertise','analytical_thinking']),
+ ('behavioral',['problem_solving','technical_expertise']), ('behavioral',['communication','adaptability']),
+ ('knowledge',['analytical_thinking']), ('situational',['analytical_thinking','problem_solving']),
+ ('situational',['communication','collaboration']), ('knowledge',['analytical_thinking','technical_expertise']),
+ ('situational',['problem_solving','technical_expertise']), ('knowledge',['analytical_thinking']),
+ ('knowledge',['analytical_thinking','technical_expertise']), ('knowledge',['communication']),
+ ('knowledge',['analytical_thinking']), ('knowledge',['analytical_thinking']),
+]
+BANK_CLASSIFICATIONS = dict(zip(BANK,BANK_TAGS,strict=True))
+
+
 def seed_question_bank(db: Session) -> None:
+    from .config import settings
+    from .taxonomy import assign
     exists = db.scalar(select(Question.id).where(Question.user_id.is_(None)).limit(1))
-    if exists:
-        return
-    db.add_all(Question(user_id=None, category=c, job_category=j, text=t, source="bank") for c, j, t in BANK)
+    if not exists:
+        db.add_all(Question(user_id=None, category=c, job_category=j, text=t, source="bank") for c,j,t in BANK)
+        db.flush()
+    if settings.practice_insights_enabled:
+        for q in db.scalars(select(Question).where(Question.user_id.is_(None),Question.source=="bank",
+                                                   Question.application_id.is_(None),Question.question_type.is_(None),
+                                                   Question.taxonomy_version.is_(None),Question.tagging_source.is_(None))):
+            value=BANK_CLASSIFICATIONS.get((q.category,q.job_category,q.text))
+            if value and not q.competency_keys:
+                assign(q,*value,source="curated")
     db.commit()
