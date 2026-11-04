@@ -113,7 +113,7 @@ def test_concurrent_atomic_classification(client):
     assert {'question_type': got['question_type'], 'competency_keys': got['competency_keys']} in values
 
 def test_disabled_schema_omits_new_columns():
-    code = 'from app.models import Question, PracticeAnswer; from sqlalchemy import select; from sqlalchemy.dialects import postgresql; sql=str(select(Question,PracticeAnswer).compile(dialect=postgresql.dialect())); assert "question_type" not in sql and "question_classification" not in sql; assert "question_competencies" not in Question.metadata.tables'
+    code = 'from app.models import Question, PracticeAnswer; from sqlalchemy import select; from sqlalchemy.dialects import postgresql; sql=str(select(Question,PracticeAnswer).compile(dialect=postgresql.dialect())); assert "question_type" not in sql and "question_classification" not in sql and "recording_transcript_sha256" not in sql; assert "question_competencies" not in Question.metadata.tables'
     r = subprocess.run([sys.executable, '-c', code], env={**os.environ, 'PRACTICE_INSIGHTS_ENABLED': 'false'}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
 
@@ -266,7 +266,7 @@ def test_optional_evidence_is_validated_on_read_without_hiding_core(client):
         assert r.json()['answers'][0]['coaching_report']['competency_evidence'] is None
 
 def test_feature_off_legacy_insert_select_returning(tmp_path):
-    code = 'from app.models import Question, PracticeAnswer\nfrom app.db import Base, make_engine\nfrom sqlalchemy import select, insert\nfrom sqlalchemy.dialects import postgresql\nfrom sqlalchemy.orm import Session\nengine=make_engine("sqlite:///:memory:")\nBase.metadata.create_all(engine)\nwith Session(engine) as db:\n q=Question(category="인성",text="legacy",source="custom"); db.add(q); db.commit()\n assert db.scalars(select(Question)).one().text=="legacy"\nfor cls in (Question,PracticeAnswer):\n for stmt in (select(cls),insert(cls).returning(cls)):\n  sql=str(stmt.compile(dialect=postgresql.dialect()))\n  assert not any(x in sql for x in ("question_type","taxonomy_version","tagging_source","question_classification","question_competencies")),sql\n'
+    code = 'from app.models import Question, PracticeAnswer\nfrom app.db import Base, make_engine\nfrom sqlalchemy import select, insert\nfrom sqlalchemy.dialects import postgresql\nfrom sqlalchemy.orm import Session\nengine=make_engine("sqlite:///:memory:")\nBase.metadata.create_all(engine)\nwith Session(engine) as db:\n q=Question(category="인성",text="legacy",source="custom"); db.add(q); db.commit()\n assert db.scalars(select(Question)).one().text=="legacy"\nfor cls in (Question,PracticeAnswer):\n for stmt in (select(cls),insert(cls).returning(cls)):\n  sql=str(stmt.compile(dialect=postgresql.dialect()))\n  assert not any(x in sql for x in ("question_type","taxonomy_version","tagging_source","question_classification","question_competencies","recording_transcript_sha256")),sql\n'
     r = subprocess.run([sys.executable, '-c', code], env={**os.environ, 'PRACTICE_INSIGHTS_ENABLED': 'false'}, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
 

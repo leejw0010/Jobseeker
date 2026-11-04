@@ -5,6 +5,7 @@ alter table questions add column if not exists question_type text;
 alter table questions add column if not exists taxonomy_version text;
 alter table questions add column if not exists tagging_source text;
 alter table practice_answers add column if not exists question_classification jsonb;
+alter table practice_answers add column if not exists recording_transcript_sha256 varchar(64);
 
 alter table questions drop constraint if exists questions_question_type_check;
 alter table questions add constraint questions_question_type_check check

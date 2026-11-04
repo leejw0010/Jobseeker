@@ -154,13 +154,21 @@ class PracticeAnswer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     if settings.practice_insights_enabled:
         question_classification: Mapped[dict | None] = mapped_column(JSONType)
+        # Original STT/first user-confirmed transcription; empty string marks explicit text mode.
+        recording_transcript_sha256: Mapped[str | None] = mapped_column(String(64))
     else:
         question_classification = None
+        recording_transcript_sha256 = None
     session: Mapped[PracticeSession] = relationship(back_populates="answers")
     question: Mapped[Question] = relationship()
     coaching: Mapped["AnswerCoaching | None"] = relationship(
         foreign_keys="AnswerCoaching.answer_id", cascade="all, delete-orphan", lazy="selectin"
     )
+
+    @property
+    def recording_transcript_current(self) -> bool:
+        return bool(self.recorded_at and self.recording_transcript_sha256 and (self.transcript or "").strip()
+                    and self.recording_transcript_sha256 == transcript_hash(self.transcript))
 
     @property
     def coaching_report(self) -> dict | None:

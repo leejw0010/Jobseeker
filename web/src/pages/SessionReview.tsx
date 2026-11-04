@@ -99,7 +99,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload, sessionId, onRepor
   const dirty = transcript !== (a.transcript ?? "") || note !== (a.reflection_note ?? "");
   const hasTranscript = !!a.transcript?.trim();
   // 한국어 발화 속도 참고용: 전사 글자 수 / 분
-  const cpm = a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
+  const cpm = a.recording_transcript_current === true && a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
 
   const retranscribe = () => act(async () => {
     if (dirty) onChange(await api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null }));

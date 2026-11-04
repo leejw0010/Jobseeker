@@ -73,7 +73,7 @@ export function answerMetrics(a: PracticeAnswer, s: PracticeSession): AnswerMetr
   const recorded = !!a.recorded_at;
   const durationSec = recorded && a.duration_sec != null && Number.isFinite(a.duration_sec) ? a.duration_sec : null;
   const syllables = syllableCount(text);
-  const spm = durationSec != null && durationSec >= MIN_RATE_SEC && syllables > 0 ? Math.round((syllables / durationSec) * 60) : null;
+  const spm = a.recording_transcript_current === true && durationSec != null && durationSec >= MIN_RATE_SEC && syllables > 0 ? Math.round((syllables / durationSec) * 60) : null;
   const limitSec = s.mode === "mock" && s.answer_sec > 0 ? s.answer_sec : null;
   const statuses = Object.fromEntries(
     CRITERIA.map(({ key }) => [key, a.coaching_report?.criteria.find((c) => c.key === key)?.status ?? "점검 전"]),

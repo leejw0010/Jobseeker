@@ -102,7 +102,7 @@ export default function SessionRunner() {
         }
         pendingAudio.current = null; pendingVideo.current=null;
       } else {
-        saved = await api.reflect(answer.id, { transcript: draftRef.current.trim() || null });
+        saved = await api.reflect(answer.id, { transcript: draftRef.current.trim() || null, input_mode: "text" });
       }
       updateAnswer(saved);
       setDraft(saved.transcript ?? "");
@@ -177,7 +177,7 @@ export default function SessionRunner() {
     // 입력란이 서버 전사문과 같은가(고친 내용은 아래에서 먼저 저장한다). 저장하지 못했으면 다시 맞출 때 입력란을 덮지 않는다
     let saved = draft === (answer.transcript ?? "");
     try {
-      if (!saved) { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null })); saved = true; }
+      if (!saved) { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null, input_mode: inputMode === "text" ? "text" : "transcript" })); saved = true; }
       const recognized = await api.retryTranscribe(answer.id);
       updateAnswer(recognized); setDraft(recognized.transcript ?? draft);
     } catch (e) {
@@ -207,7 +207,7 @@ export default function SessionRunner() {
     setErr(null);
     try {
       if (save && draft !== (answer.transcript ?? "")) {
-        updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null }));
+        updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null, input_mode: inputMode === "text" ? "text" : "transcript" }));
       }
       if (withFollowup) {
         const updated = await api.followup(answer.id);
@@ -276,7 +276,7 @@ export default function SessionRunner() {
         <div className="row">
           <button disabled={busy || uploadFailed || !draft.trim()} onClick={async () => {
             setBusy(true); setErr(null);
-            try { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() })); }
+            try { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim(), input_mode: inputMode === "text" ? "text" : "transcript" })); }
             catch (e) { setErr((e as Error).message); }
             finally { setBusy(false); }
           }}>답변만 저장</button>

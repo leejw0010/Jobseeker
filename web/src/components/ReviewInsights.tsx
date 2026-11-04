@@ -147,7 +147,7 @@ export default function ReviewInsights({ s }: { s: PracticeSession }) {
   const speedMax = Math.max(...rated.map((m) => m.spm as number), ins.avgSpm ?? 0, 1);
   const speedEmpty = recorded.length === 0
     ? "녹음 답변이 없어 말 빠르기를 계산하지 못했어요."
-    : `전사문이 있는 ${MIN_RATE_SEC}초 이상 녹음이 없어 말 빠르기를 계산하지 못했어요.`;
+    : `전사문이 있는 ${MIN_RATE_SEC}초 이상 녹음이 없거나, 전사문이 수정되었거나 녹음과의 연결을 확인하지 못해 말 빠르기를 계산하지 못했어요.`;
 
   const ratingBars: Bar[] = ins.answers.filter((m) => m.rating != null).map((m) => ({
     key: m.id, label: `Q${m.order}`, value: m.rating as number, text: `${m.rating}점`, tip: `Q${m.order} · 자기 평가 ${m.rating}점`,

@@ -150,6 +150,7 @@ class CoachingReport(BaseModel):
 
 
 class AnswerOut(ORM):
+    recording_transcript_current: bool = False
     question_classification: dict | None = None
     id: str
     order_no: int
@@ -217,6 +218,7 @@ class SessionSummary(ORM):
 
 
 class ReflectionIn(BaseModel):
+    input_mode: Literal["text", "transcript"] | None = None
     self_rating: int | None = Field(default=None, ge=1, le=5)
     reflection_note: str | None = None
     transcript: str | None = Field(default=None, description="전사문 수동 수정")

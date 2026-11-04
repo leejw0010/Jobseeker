@@ -125,7 +125,7 @@ export const api = {
     return URL.createObjectURL(await res.blob());
   },
   retryTranscribe: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/transcribe`),
-  reflect: (answerId: string, b: { self_rating?: number | null; reflection_note?: string | null; transcript?: string | null }) =>
+  reflect: (answerId: string, b: { self_rating?: number | null; reflection_note?: string | null; transcript?: string | null; input_mode?: "text" | "transcript" }) =>
     req<PracticeAnswer>("PATCH", `/practice/answers/${answerId}`, b),
   feedback: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/feedback`),
   coach: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/coach`),

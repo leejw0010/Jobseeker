@@ -59,6 +59,7 @@ test('legacy debrief remains readable as history and is excluded from current in
  const q=await (await request.post(`${API}/practice/questions`,{data:{category:'인성',text:`이전 회고 보존 ${Date.now()}`}})).json();
  const s=await (await request.post(`${API}/practice/sessions`,{data:{mode:'free',question_ids:[q.id]}})).json();
  await page.route(`**/practice/sessions/${s.id}`, async route => {
+   if (route.request().isNavigationRequest()) return route.continue();
    const response=await route.fetch();
    const body=await response.json();
    await route.fulfill({response,json:{...body,debrief_status:'done',debrief:{lesson:'보관한 이전 버전의 교훈',next_action:'이전 행동',moments:[],input_status:'legacy_unverified'}}});

@@ -33,6 +33,8 @@ export interface Question {
 }
 
 export interface PracticeAnswer {
+  /** Original automatic/first manual transcription still matches this recording; false for legacy or edited text. */
+  recording_transcript_current?: boolean;
   question_classification?: QuestionClassification | null;
   id: string;
   order_no: number;

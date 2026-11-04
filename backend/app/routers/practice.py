@@ -25,6 +25,7 @@ from ..models import (
     PracticeSession,
     Question,
     UserSettings,
+    transcript_hash,
     valid_id,
 )
 from ..retention import (
@@ -205,6 +206,8 @@ def _apply_transcript(a: PracticeAnswer, transcript: str) -> None:
     if transcript != a.transcript:
         _invalidate_coaching(a)
     a.transcript = transcript
+    if settings.practice_insights_enabled:
+        a.recording_transcript_sha256 = transcript_hash(transcript) if transcript.strip() else None
     a.stt_status = "done"
 
 
@@ -620,6 +623,8 @@ def upload_audio(
     a.recorded_at, a.audio_expires_at, a.audio_deleted_at = started, now + retention(), None
     _invalidate_coaching(a)
     a.transcript = None
+    if settings.practice_insights_enabled:
+        a.recording_transcript_sha256 = None
     if prefs is None:
         # 철회했다: 원본은 지우고 이미 얻은 전사문만 남긴다(철회해도 전사문은 남는 것과 같다)
         _apply_transcript(a, transcript)
@@ -734,9 +739,19 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
 @router.patch("/answers/{answer_id}", response_model=AnswerOut)
 def reflect(answer_id: str, body: ReflectionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     a = _own_answer(db, user_id, answer_id)
+    if settings.practice_insights_enabled and a.recorded_at and "transcript" in body.model_fields_set:
+        if body.input_mode == "text":
+            a.recording_transcript_sha256 = ""  # typed replacement is never a transcription
+        elif a.recording_transcript_sha256 is None:
+            # With STT off, the existing UI asks users to enter their first transcription.
+            # Later changes (including clearing it) never acquire a fresh identity.
+            if not (a.transcript or "").strip() and (body.transcript or "").strip():
+                a.recording_transcript_sha256 = transcript_hash(body.transcript)
+            elif body.transcript != a.transcript:
+                a.recording_transcript_sha256 = ""
     if "transcript" in body.model_fields_set and body.transcript != a.transcript:
         _invalidate_coaching(a)
-    for k, v in body.model_dump(exclude_unset=True).items():
+    for k, v in body.model_dump(exclude_unset=True, exclude={"input_mode"}).items():
         setattr(a, k, v)
     db.commit()
     return a

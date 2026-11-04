@@ -41,7 +41,7 @@ def test_upgrade_old_sqlite_database(tmp_path):
 
     added = upgrade_sqlite(engine)
     assert set(added) == {"questions.question_type","questions.taxonomy_version","questions.tagging_source",
-                          "practice_answers.question_classification","practice_answers.recorded_at", "practice_answers.audio_expires_at",
+                          "practice_answers.question_classification","practice_answers.recording_transcript_sha256","practice_answers.recorded_at", "practice_answers.audio_expires_at",
                           "practice_answers.audio_deleted_at", "practice_sessions.debrief",
                           "practice_sessions.debrief_status", "practice_sessions.debrief_started_at",
                           "practice_sessions.debrief_heartbeat_at", "practice_sessions.debrief_requested_at"}
