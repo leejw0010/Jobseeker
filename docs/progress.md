@@ -4,7 +4,8 @@
 
 ## 현재 브랜치 상태
 
-- **main 반영 준비(2026-11-04, `feature/integration-review-architecture`, `519505b` 이후 수정):** 사용자가 PR #3와 통합 PR의 commit·push·merge를 승인함. 원격 main은 **7db4f5b**, PR #3은 **95ad7c4**, Open·미병합·mergeable=true로 재조회함. 현재 GitHub 앱 권한은 pull:true/push:false이며, 실제 백업 ref 생성 요청은 **403 Resource not accessible by integration**, Git push 인증 확인은 **128 could not read Username, terminal prompts disabled**로 실패함. 보호 정책 상세 조회도403이라 정책을 추정하거나 우회하지 않음. 원격 브랜치 생성·PR 생성·병합은 하지 못한 상태다.
+- **GitHub 반영 재개(2026-11-04):** 사용자 CLI 인증 복구 후 `leejw0010`의 저장소 쓰기 권한·merge commit 허용과 필수 정책 없음(현재 branch rules 빈 목록)을 확인함. 검증한 **e5fad9c**를 정상 push했고, [PR #3](https://github.com/leejw0010/Jobseeker/pull/3)은 **93b0ee9** merge commit으로 병합함. main과 P0 소스트리가 같음을 확인한 뒤 [통합 PR #4](https://github.com/leejw0010/Jobseeker/pull/4)를 생성함. 최종 원격 main 커밋·병합 후 전체 테스트의 기록 위치는 **PR #4 본문**이다. 아래 인증 실패 항목은 복구 전 실행 기록이며 현재 차단 상태가 아님. 사용자 원본 작업은 계속 보존하고 force push·rebase·브랜치 삭제·운영 DB 변경은 하지 않음.
+- **인증 복구 전 main 반영 준비 기록(2026-11-04, `feature/integration-review-architecture`, `519505b` 이후 수정):** 사용자가 PR #3와 통합 PR의 commit·push·merge를 승인함. 원격 main은 **7db4f5b**, PR #3은 **95ad7c4**, Open·미병합·mergeable=true로 재조회함. 현재 GitHub 앱 권한은 pull:true/push:false이며, 실제 백업 ref 생성 요청은 **403 Resource not accessible by integration**, Git push 인증 확인은 **128 could not read Username, terminal prompts disabled**로 실패함. 보호 정책 상세 조회도403이라 정책을 추정하거나 우회하지 않음. 원격 브랜치 생성·PR 생성·병합은 하지 못한 상태다.
   - 코드 수정: 느린 저장소 삭제가 새 녹음 경로·보관 기한·삭제 시각을 덮던 경합을 경로 조건부 UPDATE로 방지. 사용자 전체 삭제는 cutoff 뒤 녹음을 선택하지 않고, 목록 시각이 누락·오래된 경우에도 현재 답변에 연결된 파일을 다시 확인해 보호함. 실패한 동일 파일을 두 번 세지 않음.
   - 카메라: 모델 로딩/권한 응답과 별개로 도착한 자원을 즉시 소유·정리. 화면 이탈·시작 실패 후 늦게 도착한 스트림/검출기도 닫음. 카메라 표본 수집 시작 조건과 Gaze 개발 전용 제한은 유지함.
   - 테스트 보완: extension session/sync 대역을 분리해 토큰이 sync에 저장되면 실패하도록 함. Track 동시 sync 테스트는 실제 첫 조회 누락→고유 제약→재조회 경로와 정확한 버전 이력을 검사함. 의도적 결함을 넣은 /tmp 사본에서 이전 테스트는 통과·개선 테스트는 실패함을 확인함.
