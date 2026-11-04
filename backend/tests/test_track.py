@@ -110,15 +110,31 @@ def test_sync_race_on_the_same_url_updates_the_row_the_other_request_created(cli
 
     body = {"company": "경합사", "position": "백엔드", "url": "https://example.com/jobs/race-1",
             "essays": [{"question_text": "지원 동기", "content": "첫 내용"}]}
-    first = client.post("/track/sync", json=body, headers=U).json()
+    initial = client.post("/track/sync", json=body, headers=U)
+    assert initial.status_code == 200, initial.text
+    first = initial.json()
     real = track._find_by_url
-    misses = iter([None])
-    monkeypatch.setattr(track, "_find_by_url", lambda db, user_id, url: next(misses, None) or real(db, user_id, url))
+    lookup_count = 0
+
+    def miss_first_lookup(db, user_id, url):
+        nonlocal lookup_count
+        lookup_count += 1
+        if lookup_count == 1:
+            return None  # 다른 요청이 이미 저장한 행을 첫 조회에서는 못 본 상황
+        return real(db, user_id, url)
+
+    monkeypatch.setattr(track, "_find_by_url", miss_first_lookup)
     r = client.post("/track/sync", json={**body, "essays": [{"question_text": "지원 동기", "content": "둘째 내용"}]}, headers=U)
     assert r.status_code == 200, r.text
+    assert lookup_count == 2  # 실제 고유 제약 충돌 뒤 rollback하고 다시 조회한다
     assert r.json() == {"application_id": first["application_id"], "created": False, "new_versions": 1}
     rows = client.get("/track/applications", params={"url": body["url"]}, headers=U).json()
     assert len(rows) == 1
+    detail = client.get(f"/track/applications/{first['application_id']}", headers=U).json()
+    assert len(detail["essay_items"]) == 1
+    assert [(v["version_no"], v["content"]) for v in detail["essay_items"][0]["versions"]] == [
+        (1, "첫 내용"), (2, "둘째 내용"),
+    ]
 
 
 def test_version_number_is_read_after_locking_the_item(client):

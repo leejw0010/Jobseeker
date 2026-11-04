@@ -25,6 +25,7 @@ export function useFaceAnalysis() {
   const video = useRef<HTMLVideoElement | null>(null);
   const stream = useRef<MediaStream | null>(null);
   const detector = useRef<FaceDetector | null>(null);
+  const preparingDetector = useRef<FaceDetector | null>(null);
   const timer = useRef(0);
   const lastFace = useRef<FaceState | null>(null);
   const segment = useRef<FaceSample[] | null>(null);
@@ -49,6 +50,8 @@ export function useFaceAnalysis() {
     stream.current = null;
     detector.current?.close();
     detector.current = null;
+    preparingDetector.current?.close();
+    preparingDetector.current = null;
     if (video.current) video.current.srcObject = null;
     lastFace.current = null;
     setFace(null);
@@ -123,23 +126,29 @@ export function useFaceAnalysis() {
     const my = gen.current;
     setStatus("starting");
     setError(null);
-    const [cam, det] = await Promise.allSettled([
+    const [s, d] = await Promise.all([
       // HTTP 주소 등에서는 mediaDevices가 없다. 그때도 거부와 같이 처리한다
-      Promise.resolve().then(() => navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, audio: false })),
-      loadFaceDetector(),
+      Promise.resolve().then(() => navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, audio: false })).then((s) => {
+        // 검출기 준비와 별개로 도착 즉시 소유한다. 준비 중 떠나도 release가 이 스트림을 닫아야 한다.
+        if (my !== gen.current) { s.getTracks().forEach((t) => t.stop()); return null; }
+        stream.current = s;
+        return s;
+      }, () => {
+        if (my === gen.current) fail("카메라를 사용할 수 없어요. 브라우저의 카메라 권한이나 다른 앱의 사용 여부를 확인해 주세요. 카메라 없이도 면접 연습은 그대로 할 수 있어요.");
+        return null;
+      }),
+      loadFaceDetector().then((d) => {
+        if (my !== gen.current) { d.close(); return null; }
+        preparingDetector.current = d;
+        return d;
+      }, () => {
+        // 다른 자원이 아직 권한 응답을 기다려도 실패를 즉시 알리고, 늦게 온 자원은 위 세대 검사로 정리한다.
+        if (my === gen.current) fail("영상 분석 모델을 불러오지 못해 카메라를 껐어요. 카메라 없이도 면접 연습은 그대로 할 수 있어요.");
+        return null;
+      }),
     ]);
-    const s = cam.status === "fulfilled" ? cam.value : null, d = det.status === "fulfilled" ? det.value : null;
-    if (my !== gen.current || !s || !d) {
-      s?.getTracks().forEach((t) => t.stop());
-      d?.close();
-      if (my !== gen.current) return;
-      setStatus("error");
-      setError(!s
-        ? "카메라를 사용할 수 없어요. 브라우저의 카메라 권한이나 다른 앱의 사용 여부를 확인해 주세요. 카메라 없이도 면접 연습은 그대로 할 수 있어요."
-        : "영상 분석 모델을 불러오지 못해 카메라를 껐어요. 카메라 없이도 면접 연습은 그대로 할 수 있어요.");
-      return;
-    }
-    stream.current = s;
+    if (my !== gen.current || !s || !d) return;
+    preparingDetector.current = null;
     detector.current = d;
     stats.current = createRateStats();
     grid.current = createDGrid();

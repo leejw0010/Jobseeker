@@ -14,8 +14,8 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
-from sqlalchemy import and_, exists, or_, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, exists, inspect, or_, select, update
+from sqlalchemy.orm import Session, object_session
 
 from . import storage
 from .config import settings
@@ -71,6 +71,7 @@ def delete_audio(a: PracticeAnswer, now: datetime | None = None) -> bool:
     if not a.audio_path:
         return False
     now = _utc(now)
+    previous = a.audio_path
     path = owned_audio_path(a)
     if path is None:  # 경로 규칙에 맞지 않으면 그 파일은 건드리지 않고 연결만 끊는다
         log.warning("경로 규칙에 맞지 않는 녹음 경로(%s): 연결만 끊습니다", a.id)
@@ -81,6 +82,22 @@ def delete_audio(a: PracticeAnswer, now: datetime | None = None) -> bool:
         except Exception:  # 저장소 오류가 요청·정리 루프를 깨뜨리지 않게
             log.exception("녹음 삭제 중 오류(%s)", path)
             ok = False
+    db = object_session(a)
+    if db is not None and inspect(a).persistent and not inspect(a).attrs.audio_path.history.has_changes():
+        # 저장소를 기다리는 동안 새 업로드가 다른 경로를 커밋했을 수 있다. 삭제한 옛 경로가 아직 연결된 경우에만
+        # 결과를 반영한다. 실패도 새 녹음의 보관 기한을 당기면 안 된다. 새 업로드의 아직 커밋하지 않은 경로는
+        # 이 분기를 타지 않는다: 업로드·다시 전사 라우터가 이미 답변 행을 잠근 채 변경하므로 기존 ORM 갱신을 쓴다.
+        values = {"audio_path": None, "audio_deleted_at": now} if ok else {
+            "audio_expires_at": case(
+                (or_(PracticeAnswer.audio_expires_at.is_(None), PracticeAnswer.audio_expires_at > now), now),
+                else_=PracticeAnswer.audio_expires_at,
+            )}
+        changed = db.execute(update(PracticeAnswer).where(PracticeAnswer.id == a.id, PracticeAnswer.audio_path == previous)
+                             .values(**values), execution_options={"synchronize_session": False})
+        if changed.rowcount != 1 and not ok:
+            _mark_sweep(db, a.session.user_id, _utc())  # 옛 경로는 이제 고아 파일이므로 다음 정리가 다시 지운다
+        db.refresh(a, ["audio_path", "audio_expires_at", "audio_deleted_at", "recorded_at"])
+        return ok
     if not ok:
         if a.audio_expires_at is None or _utc(a.audio_expires_at) > now:
             a.audio_expires_at = now
@@ -145,13 +162,15 @@ def delete_user_audio(db: Session, user_id: str, now: datetime | None = None) ->
     db.commit()
     rows = db.scalars(
         select(PracticeAnswer).join(PracticeSession)
-        .where(PracticeSession.user_id == user_id, PracticeAnswer.audio_path.is_not(None))
+        .where(PracticeSession.user_id == user_id, PracticeAnswer.audio_path.is_not(None),
+               or_(PracticeAnswer.recorded_at.is_(None), PracticeAnswer.recorded_at <= now))
     ).all()
+    kept = {a.audio_path for a in rows if a.audio_path}  # 이미 처리한 경로는 폴더 목록에서 다시 세지 않는다
     deleted, failed = delete_audios(rows, now)
     folder = _user_folder(user_id)
     if folder is None:
         return UserAudioDeleted(deleted, failed, False, False)
-    kept = {a.audio_path for a in rows if a.audio_path}  # 못 지운 녹음은 위에서 이미 셌다
+    kept.update(a.audio_path for a in rows if a.audio_path)  # 삭제 도중 새 업로드가 연결한 경로도 보호한다
     try:
         objects = storage.list(folder)
     except Exception:
@@ -162,6 +181,11 @@ def delete_user_audio(db: Session, user_id: str, now: datetime | None = None) ->
         if obj.path in kept:
             continue
         if obj.modified is not None and obj.modified > now:  # 지운 시각 뒤에 시작한 업로드의 녹음(만료 정리의 표시와 같은 비교)
+            continue
+        # 목록의 저장 시각이 없거나 오래된 값이어도, 지금 이 사용자의 답변에 연결된 새 녹음은 고아 파일이 아니다.
+        if db.scalar(select(exists().where(PracticeAnswer.audio_path == obj.path,
+                                          PracticeAnswer.session_id == PracticeSession.id,
+                                          PracticeSession.user_id == user_id))):
             continue
         if delete_object(obj.path):
             deleted += 1
@@ -194,14 +218,18 @@ def delete_session_files(db: Session, user_id: str, session_id: str, answer_ids:
 
 def request_sweep(db: Session, user_id: str, now: datetime | None = None) -> None:
     """지금까지 저장된 이 사용자의 고아 파일을 다음 만료 정리가 다시 지우게 표시하고 커밋한다."""
-    now = _utc(now)
+    _mark_sweep(db, user_id, _utc(now))
+    db.commit()
+
+
+def _mark_sweep(db: Session, user_id: str, now: datetime) -> None:
+    """고아 파일 정리 표시만 남긴다. 삭제 결과와 함께 호출한 쪽에서 커밋한다."""
     p = db.get(UserSettings, user_id)
     if p is None:
         p = UserSettings(user_id=user_id, keep_audio=False)
         db.add(p)
     if p.sweep_audio_before is None or _utc(p.sweep_audio_before) < now:
         p.sweep_audio_before = now
-    db.commit()
 
 
 def purge_orphans(db: Session, now: datetime | None = None) -> int:

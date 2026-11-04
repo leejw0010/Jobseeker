@@ -1,9 +1,19 @@
 # 진행 상태
 
-최종 갱신: 2026-11-03. 갱신할 때는 날짜와 근거(명령·커밋)를 함께 적고, 오래된 항목은 지우거나 "완료"로 옮깁니다. 아래에서 "구현 사실", "자동 테스트", "외부 서비스 실검증"을 구분해 적습니다.
+최종 갱신: 2026-11-04. 갱신할 때는 날짜와 근거(명령·커밋)를 함께 적고, 오래된 항목은 지우거나 "완료"로 옮깁니다. 아래에서 "구현 사실", "자동 테스트", "외부 서비스 실검증"을 구분해 적습니다.
 
 ## 현재 브랜치 상태
 
+- **main 반영 준비(2026-11-04, `feature/integration-review-architecture`, `519505b` 이후 수정):** 사용자가 PR #3와 통합 PR의 commit·push·merge를 승인함. 원격 main은 **7db4f5b**, PR #3은 **95ad7c4**, Open·미병합·mergeable=true로 재조회함. 현재 GitHub 앱 권한은 pull:true/push:false이며, 실제 백업 ref 생성 요청은 **403 Resource not accessible by integration**, Git push 인증 확인은 **128 could not read Username, terminal prompts disabled**로 실패함. 보호 정책 상세 조회도403이라 정책을 추정하거나 우회하지 않음. 원격 브랜치 생성·PR 생성·병합은 하지 못한 상태다.
+  - 코드 수정: 느린 저장소 삭제가 새 녹음 경로·보관 기한·삭제 시각을 덮던 경합을 경로 조건부 UPDATE로 방지. 사용자 전체 삭제는 cutoff 뒤 녹음을 선택하지 않고, 목록 시각이 누락·오래된 경우에도 현재 답변에 연결된 파일을 다시 확인해 보호함. 실패한 동일 파일을 두 번 세지 않음.
+  - 카메라: 모델 로딩/권한 응답과 별개로 도착한 자원을 즉시 소유·정리. 화면 이탈·시작 실패 후 늦게 도착한 스트림/검출기도 닫음. 카메라 표본 수집 시작 조건과 Gaze 개발 전용 제한은 유지함.
+  - 테스트 보완: extension session/sync 대역을 분리해 토큰이 sync에 저장되면 실패하도록 함. Track 동시 sync 테스트는 실제 첫 조회 누락→고유 제약→재조회 경로와 정확한 버전 이력을 검사함. 의도적 결함을 넣은 /tmp 사본에서 이전 테스트는 통과·개선 테스트는 실패함을 확인함.
+  - PR #3 실제 HEAD 별도 검증: /tmp 임시 checkout에서 pytest **136 passed in 13.00s**, build 통과(Vite **2.25s**), desktop/mobile E2E **10 passed (48.2s)**. 해당 HEAD에는 unit 명령이 없음. pytest는 임시 DB·녹음 설정을 사용했고, E2E의 고정 녹음 경로도 새 /tmp checkout 내부에만 있음.
+  - 최종 통합 검증: pytest **290 passed in 62.91s**, build 통과(Vite **4.38s**), unit **68 passed (12.7s)**. 전체 E2E **47 passed, 15 skipped (3.8m)**, JSON 기준 **229.512초**, unexpected0·flaky0. desktop31개 통과, mobile16개 통과·15개 건너뜀(Gaze5·Recorder3·Track4·새 카메라 수명3). 이는 로컬 통합 브랜치 검증이며, 원격 main 병합 후 검증은 인증 차단으로 아직 하지 못함.
+  - 독립 최종 리뷰의 추가 지적(목록 시각 누락/오래된 경우의 연결 파일 보호)도 회귀 테스트 실패→수정→통과로 해결함. 새 녹음 회귀9개, 카메라 수명 회귀3개를 추가했고 타임아웃 증가·기능/검증 제거는 없음. 프로덕션 JS 산출물3개에서 GazeLab 경로·실험실 화면 문자열이 없음을 확인함.
+  - `npm audit --omit=dev --json` 재조회: **moderate2, high0, critical0**, exit1. react-router/react-router-dom의 기존 GHSA-wrjc-x8rr-h8h6·GHSA-337j-9hxr-rhxg이며 수정 제안은 react-router-dom7.18.5(메이저 업그레이드)다. 의존성은 이번 변경에서 바꾸지 않았고 기존 보안 검토 과제로 유지한다. 아래 보안 검토 절 참고.
+  - 원본 실행기·D-28·문서 미커밋 작업9개는 해시로 보존 확인. 사용자 녹음/비밀 설정/개발 DB를 읽거나 복사하지 않았고, 실제 Supabase/OpenAI 호출·마이그레이션은 없음. 임시 테스트 서버와 임시 저장소만 사용함.
+  - 다음 실행: GitHub 쓰기 인증을 해결한 후 통합 브랜치 push → 검증한 head와 정책 재확인 → PR #3 merge commit → 통합 PR 하나(main 대상으로, Architecture·STT·Video·개발 전용 Gaze·Review 포함) 생성/병합 → 별도 main Worktree에서 전체 검증. 원본 SHA 보존, force push·rebase 없음. [수행 계획](superpowers/plans/2026-11-04-main-integration.md).
 - `feature/integration-review-architecture`(2026-11-03, `/home/user/projects/Jobseeker-integration`): `feature/architecture-fixes` **59d7470**을 기준으로 `feature/review-insights` **1774030**을 병합. 공통 조상 **eaa8477**, Architecture 고유 커밋 5개·Review 고유 커밋 1개를 보존. `docs/progress.md` 두 충돌 구간은 Architecture의 단위 테스트 경로·스크린샷 격리와 Review의 녹음 답변 검증·기존 gaze 이슈를 함께 반영. `web/e2e/review-insights.spec.ts`는 자동 병합(공통 API 주소 import와 Stage 1 기본 대기시간 복원 모두 유지).
   - 원본 `/home/user/projects/Jobseeker`의 `Start-JobSeeker.cmd`, `scripts/`, D-28·로컬 실행기 문서 변경은 별도 세션 작업으로 남김. 통합 Worktree로 가져오거나 수정하지 않음.
   - 통합 전 Architecture 기준: pytest **281 passed in 32.67s**, build 통과, 단위 테스트 **68 passed (18.3s)**. 통합 후: pytest **281 passed in 34.01s**, build 통과(Vite **5.08s**), 단위 테스트 **68 passed (16.2s)**. 전체 브라우저 결과는 아래 통합 검증 절에서 별도로 집계.

@@ -27,31 +27,40 @@ test("job categories follow the rule order", () => {
   expect(guessJobCategory("회계 담당")).toBe("기타");
 });
 
-/** chrome.storage.session 대역(메모리) */
+/** chrome.storage 대역(메모리). session과 sync는 서로 다른 저장소다. */
 function fakeChrome(withSession = true) {
-  const store: Record<string, unknown> = {};
-  const area = {
+  const session: Record<string, unknown> = {};
+  const sync: Record<string, unknown> = {};
+  const area = (store: Record<string, unknown>) => ({
     get: async (k: string) => (k in store ? { [k]: store[k] } : {}),
     set: async (v: Record<string, unknown>) => { Object.assign(store, v); },
     remove: async (k: string) => { delete store[k]; },
+  });
+  (globalThis as { chrome?: unknown }).chrome = {
+    storage: withSession ? { session: area(session), sync: area(sync) } : { sync: area(sync) },
   };
-  (globalThis as { chrome?: unknown }).chrome = { storage: withSession ? { session: area, sync: area } : { sync: area } };
-  return store;
+  return { session, sync };
 }
 
 test("access token lives in session storage and can be cleared", async () => {
-  const store = fakeChrome();
+  const { session, sync } = fakeChrome();
   expect(await getAccessToken()).toBeNull();
   await setAccessToken("token-for-test");
+  expect(session).toEqual({ accessToken: "token-for-test" });
+  expect(sync).toEqual({});
   expect(await getAccessToken()).toBe("token-for-test");
   await setAccessToken(null);
   expect(await getAccessToken()).toBeNull();
-  expect(store).toEqual({});
+  expect(session).toEqual({});
+  expect(sync).toEqual({});
 });
 
 test("no session storage means no token (dev mode)", async () => {
-  fakeChrome(false);
+  const { sync } = fakeChrome(false);
+  sync.accessToken = "synchronized-token-for-test";
   expect(await getAccessToken()).toBeNull();
+  await expect(setAccessToken("token-for-test")).rejects.toThrow("chrome.storage.session");
+  expect(sync).toEqual({ accessToken: "synchronized-token-for-test" });
 });
 
 test("warns when the API address is not covered by host_permissions", () => {
