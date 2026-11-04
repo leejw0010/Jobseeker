@@ -1,6 +1,10 @@
 """Recording/transcript association survives refresh, corrections and replacement."""
 from .test_transcription import provider, session_answer
 from app.config import settings
+import os
+import subprocess
+import sys
+import pytest
 
 
 def upload(client, headers, answer_id):
@@ -45,3 +49,29 @@ def test_explicit_typed_answer_does_not_acquire_historical_recording_identity(cl
     assert typed.get("recording_transcript_current") is False
     client.patch(f"/practice/answers/{aid}", headers=h, json={"transcript": None})
     assert client.patch(f"/practice/answers/{aid}", headers=h, json={"transcript": "새 글 답변"}).json()["recording_transcript_current"] is False
+
+
+@pytest.mark.parametrize("replace_recording", [True, False])
+def test_feature_off_changes_cannot_reuse_a_previous_recording_identity(client, monkeypatch, isolated_db, tmp_path, replace_recording):
+    text = "제가 오류를 고쳤습니다."
+    provider(monkeypatch, {"text": text})
+    h, aid = session_answer(client)
+    assert upload(client, h, aid)["recording_transcript_current"] is True
+    sid = client.get("/practice/sessions", headers=h).json()[0]["id"]
+    body = {"transcript": text} if replace_recording else {"transcript": text, "input_mode": "text"}
+    code = f'''from fastapi.testclient import TestClient
+from app.main import app
+with TestClient(app) as c:
+ if {replace_recording!r}:
+  r=c.post("/practice/answers/{aid}/audio", headers={h!r}, files={{"file":("replacement.webm",b"synthetic-new-audio","audio/webm")}}, data={{"duration_sec":"20"}})
+  assert r.status_code == 200, r.text
+ r=c.patch("/practice/answers/{aid}", headers={h!r}, json={body!r})
+ assert r.status_code == 200, r.text
+'''
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env={
+        **os.environ, "PRACTICE_INSIGHTS_ENABLED":"false", "STT_PROVIDER":"off",
+        "DATABASE_URL":str(isolated_db.kw["bind"].url), "RECORDINGS_DIR":str(tmp_path / "flag-off-recordings"),
+    })
+    assert result.returncode == 0, result.stderr
+    refreshed = client.get(f"/practice/sessions/{sid}", headers=h).json()["answers"][0]
+    assert refreshed["recording_transcript_current"] is False

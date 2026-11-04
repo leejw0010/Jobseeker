@@ -52,6 +52,12 @@ def transcript_hash(text: str | None) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+def recording_transcript_hash(recorded_at: datetime, transcript: str | None) -> str:
+    """Bind text to its recording revision, including across schema-off rollbacks."""
+    stamp = recorded_at.replace(tzinfo=timezone.utc) if recorded_at.tzinfo is None else recorded_at.astimezone(timezone.utc)
+    return transcript_hash(stamp.isoformat() + "\0" + (transcript or ""))
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -167,8 +173,8 @@ class PracticeAnswer(Base):
 
     @property
     def recording_transcript_current(self) -> bool:
-        return bool(self.recorded_at and self.recording_transcript_sha256 and (self.transcript or "").strip()
-                    and self.recording_transcript_sha256 == transcript_hash(self.transcript))
+        return bool(self.recorded_at and self.stt_status != "none" and self.recording_transcript_sha256 and (self.transcript or "").strip()
+                    and self.recording_transcript_sha256 == recording_transcript_hash(self.recorded_at, self.transcript))
 
     @property
     def coaching_report(self) -> dict | None:

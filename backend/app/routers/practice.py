@@ -25,7 +25,7 @@ from ..models import (
     PracticeSession,
     Question,
     UserSettings,
-    transcript_hash,
+    recording_transcript_hash,
     valid_id,
 )
 from ..retention import (
@@ -207,7 +207,7 @@ def _apply_transcript(a: PracticeAnswer, transcript: str) -> None:
         _invalidate_coaching(a)
     a.transcript = transcript
     if settings.practice_insights_enabled:
-        a.recording_transcript_sha256 = transcript_hash(transcript) if transcript.strip() else None
+        a.recording_transcript_sha256 = recording_transcript_hash(a.recorded_at, transcript) if transcript.strip() and a.recorded_at else None
     a.stt_status = "done"
 
 
@@ -739,6 +739,9 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
 @router.patch("/answers/{answer_id}", response_model=AnswerOut)
 def reflect(answer_id: str, body: ReflectionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     a = _own_answer(db, user_id, answer_id)
+    if body.input_mode == "text":
+        # This existing field remains writable even when the optional schema is off.
+        a.stt_status = "none"
     if settings.practice_insights_enabled and a.recorded_at and "transcript" in body.model_fields_set:
         if body.input_mode == "text":
             a.recording_transcript_sha256 = ""  # typed replacement is never a transcription
@@ -746,7 +749,7 @@ def reflect(answer_id: str, body: ReflectionIn, user_id: str = Depends(current_u
             # With STT off, the existing UI asks users to enter their first transcription.
             # Later changes (including clearing it) never acquire a fresh identity.
             if not (a.transcript or "").strip() and (body.transcript or "").strip():
-                a.recording_transcript_sha256 = transcript_hash(body.transcript)
+                a.recording_transcript_sha256 = recording_transcript_hash(a.recorded_at, body.transcript)
             elif body.transcript != a.transcript:
                 a.recording_transcript_sha256 = ""
     if "transcript" in body.model_fields_set and body.transcript != a.transcript:

@@ -28,8 +28,14 @@ test('classification controls, frozen review and accessible competency history',
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1)).toBe(true);
  const reviewLink=page.getByRole('link',{name:'Q1',exact:true}).first();
  await reviewLink.focus(); await expect(reviewLink).toBeFocused();
+ const contrast = () => page.locator('.debrief-card, .competency-review, .voice-report, .video-report').evaluateAll(cards => {
+   const luminance=(value:string)=>{const rgb=(value.match(/[\d.]+/g)??[]).slice(0,3).map(Number).map(n=>n/255).map(n=>n<=0.03928?n/12.92:((n+0.055)/1.055)**2.4);return 0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2];};
+   return Math.min(...cards.flatMap(card=>{const background=luminance(getComputedStyle(card).backgroundColor);return [...card.querySelectorAll('.muted,th')].map(el=>{const foreground=luminance(getComputedStyle(el).color);return (Math.max(foreground,background)+0.05)/(Math.min(foreground,background)+0.05);});}));
+ });
+ expect(await contrast()).toBeGreaterThanOrEqual(4.5);
  await page.screenshot({path:test.info().outputPath('integrated-review-light.png'),fullPage:true});
  await page.emulateMedia({colorScheme:'dark'});
+ expect(await contrast()).toBeGreaterThanOrEqual(4.5);
  await page.screenshot({path:test.info().outputPath('integrated-review-dark.png'),fullPage:true});
  await page.getByText('내 답변으로 개선 틀 만들기' ,{exact:true}).click();
  await expect(page.getByText('내 답변에서 가져온 재료:',{exact:false})).toContainText('제가 역할을 나누고');
