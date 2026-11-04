@@ -129,3 +129,20 @@ def init_db() -> None:
     """로컬 SQLite일 때만 테이블을 만들고 빠진 컬럼을 채운다. Supabase는 supabase/schema.sql·migrations로 만든다."""
     if _is_sqlite:
         upgrade_sqlite(engine)
+    elif settings.practice_insights_enabled:
+        validate_insights_schema(engine)
+
+
+def validate_insights_schema(bind: Engine) -> None:
+    """Read-only schema capability check; PostgreSQL migrations are always manual."""
+    required={"questions":{"question_type","taxonomy_version","tagging_source"},
+              "question_competencies":{"question_id","competency_key","position"},
+              "practice_answers":{"question_classification","recording_transcript_sha256"}}
+    inspector=inspect(bind)
+    tables=set(inspector.get_table_names())
+    missing=[]
+    for table,columns in required.items():
+        actual={c["name"] for c in inspector.get_columns(table)} if table in tables else set()
+        missing.extend(f"{table}.{c}" for c in sorted(columns-actual))
+    if missing:
+        raise RuntimeError("PRACTICE_INSIGHTS_ENABLED requires manual migration supabase/migrations/20261104_practice_insights.sql; missing: "+", ".join(missing))

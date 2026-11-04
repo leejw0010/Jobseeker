@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api } from "../api";
+import IntegratedCoaching, { AnswerGuidance, CompetencyPanel } from "../components/IntegratedCoaching";
+import { FrozenClassification } from "../components/ClassificationControls";
+import VoiceReportCard from "../components/VoiceReportCard";
+import { clearSessionVoice, clearVoiceSegment } from "../delivery/voice";
 import Stars from "../components/Stars";
 import CoachingPanel from "../components/CoachingPanel";
 import ConsentPanel from "../components/ConsentPanel";
@@ -8,7 +12,7 @@ import InterviewContext from "../components/InterviewContext";
 import ReviewInsights from "../components/ReviewInsights";
 import VideoReportCard from "../components/VideoReportCard";
 import type { CoachingRubric, InterviewContext as Context, PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
-import { clearSessionVideo } from "../video/metrics";
+import { clearSessionVideo, clearVideoSegment } from "../video/metrics";
 
 const STT_LABEL = { none: "녹음 없음", done: "음성 인식 완료", failed: "음성 인식 재시도 필요", unavailable: "자동 전사 미연결" } as const;
 const POLL_MS = 2500;
@@ -24,7 +28,9 @@ function sttLabel(a: PracticeAnswer) {
   return a.audio_deleted_at ? `${what} · 원본 녹음 삭제됨` : what;
 }
 
-function AnswerCard({ a, context, rubric, onChange, onReload }: {
+function AnswerCard({ a, context, rubric, onChange, onReload, sessionId, onReportsChanged }: {
+  sessionId:string;
+  onReportsChanged:()=>void;
   a: PracticeAnswer;
   context: Context | null;
   rubric: CoachingRubric | null;
@@ -93,7 +99,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
   const dirty = transcript !== (a.transcript ?? "") || note !== (a.reflection_note ?? "");
   const hasTranscript = !!a.transcript?.trim();
   // 한국어 발화 속도 참고용: 전사 글자 수 / 분
-  const cpm = a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
+  const cpm = a.recording_transcript_current === true && a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
 
   const retranscribe = () => act(async () => {
     if (dirty) onChange(await api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null }));
@@ -102,7 +108,15 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
 
   const removeAudio = () => {
     const ask = hasTranscript ? "원본 녹음을 지울까요? 전사문은 남아요." : "전사문이 없어 지우면 이 답변 내용이 남지 않아요. 원본 녹음을 지울까요?";
-    if (confirm(ask)) act(() => api.deleteAudio(a.id));
+    if (confirm(ask)) act(async () => {
+      const clear = () => {clearVoiceSegment(sessionId,a.id);clearVideoSegment(sessionId,a.id);onReportsChanged();};
+      try { const next=await api.deleteAudio(a.id); if(!next.audio_available) clear(); return next; }
+      catch(error) {
+        const current=await api.session(sessionId).then(s=>s.answers.find(x=>x.id===a.id)).catch(()=>null);
+        if(current&&!current.audio_available) clear();
+        throw error;
+      }
+    });
   };
 
   return (
@@ -112,6 +126,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
         <span className="chip">{a.question.category}</span>
         {a.parent_answer_id && <span className="chip accent">꼬리질문</span>}
       </div>
+      <FrozenClassification snapshot={a.question_classification}/>
       <div className="spacer" />
       {a.audio_available ? (
         <>
@@ -164,6 +179,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
           return api.coach(a.id);
         })}>{busy ? "점검 중…" : "답변 점검"}</button>
       </div>
+      <AnswerGuidance a={a} sessionId={sessionId}/>
       {a.coaching_report && <CoachingPanel report={a.coaching_report} context={context} rubric={rubric} />}
       {a.ai_feedback && !a.coaching_report && (
         <>
@@ -208,6 +224,7 @@ function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
 
   return (
     <section className="card debrief-card">
+      <IntegratedCoaching s={s}/>
       <div className="row">
         <h2 className="grow" style={{ margin: 0 }}>세션 디브리프</h2>
         {status === "done" && d && <span className="chip accent">AI 생성</span>}
@@ -223,7 +240,8 @@ function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
           <p className="muted small" role="status" style={{ margin: 0 }}>답변을 점검하고 세션 디브리프를 만드는 중이에요…</p>
         ))}
       {status === "done" && d && (
-        <>
+        <details><summary>기존 AI 디브리프의 근거와 원문</summary>
+          {d.input_status === "legacy_unverified" && <p className="warn-text">이전 버전 또는 분류 기능을 끈 상태의 보관된 요약이에요. 현재 답변과의 일치를 확인할 수 없어 통합 코칭의 근거로 사용하지 않아요.</p>}
           {d.lesson && (
             <>
               <div className="small muted">핵심 교훈</div>
@@ -260,7 +278,7 @@ function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
               </>
             )}
           </div>
-        </>
+        </details>
       )}
       {status === "failed" &&
         (noKey ? (
@@ -296,6 +314,7 @@ function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
 export default function SessionReview() {
   const { id = "" } = useParams();
   const nav = useNavigate();
+  const [,refreshDelivery]=useState(0);
   const [s, setS] = useState<PracticeSession | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -398,6 +417,7 @@ export default function SessionReview() {
     try {
       await api.deleteSession(id);
       clearSessionVideo(id);
+      clearSessionVoice(id);
       nav("/practice/history");
     } catch (e) {
       setErr((e as Error).message);
@@ -423,7 +443,9 @@ export default function SessionReview() {
       {err && <p className="err">{err}</p>}
       <ReviewInsights s={s} />
       <DebriefCard s={s} ai={ai} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
-      <VideoReportCard sessionId={s.id} answers={s.answers} />
+      <CompetencyPanel s={s}/>
+      <VoiceReportCard s={s} onCleared={()=>refreshDelivery(v=>v+1)}/>
+      <VideoReportCard sessionId={s.id} answers={s.answers} onCleared={()=>refreshDelivery(v=>v+1)} />
       <InterviewContext context={s.context_snapshot} />
       <section className="card review-summary">
         <h2>다음 연습으로 연결하기</h2>
@@ -451,7 +473,7 @@ export default function SessionReview() {
         }}>{allNeedWork ? `보완 항목 ${weak}개 다시 연습` : `답변 ${weak}개 다시 연습`}</button>
       </section>
       {s.answers.map((a) => (
-        <AnswerCard key={a.id} a={a} context={s.context_snapshot} rubric={rubric} onChange={onAnswer} onReload={reload} />
+        <AnswerCard key={a.id} sessionId={s.id} onReportsChanged={()=>refreshDelivery(v=>v+1)} a={a} context={s.context_snapshot} rubric={rubric} onChange={onAnswer} onReload={reload} />
       ))}
     </>
   );

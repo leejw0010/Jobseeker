@@ -4,7 +4,7 @@
  *  - 판정(pass/fail/inconclusive)은 1단계로 갈지 정하는 실험 기준이다. 제품의 정확도 보장이 아니다.
  *  특징점·좌표·표본은 메모리에서만 쓰고, aggregate()는 집계 숫자와 판정만 돌려준다. */
 import {
-  COLLECT_MS, FEASIBILITY, LENS_COLLECT_MS, MIN_VALID, POSE_COLLECT_MS, POSE_SETTLE_MS, POS_TOL, SCALE_TOL, SETTLE_MS,
+  COLLECT_MS, FEASIBILITY, LENS_COLLECT_MS, MIN_VALID, OPEN_MIN_RATIO, POSE_COLLECT_MS, POSE_SETTLE_MS, POS_TOL, SCALE_TOL, SETTLE_MS,
 } from "./constants";
 import { gazeFeatures, isFeatures, type FeatureInvalid, type GazeFeatures } from "./features";
 import { auc, trainLens, type LensModel, type LensSample } from "./lens";
@@ -86,7 +86,7 @@ export type FixationData = {
   target: [number, number] | null;
   frames: number;
   samples: { t: number; f: GazeFeatures }[];
-  invalid: Partial<Record<FeatureInvalid["invalid"], number>>;
+  invalid: Partial<Record<FeatureInvalid["invalid"] | "resolution_changed", number>>;
   rate?: RateSnapshot;
   panelRect?: Rect;
 };
@@ -96,7 +96,13 @@ let groupSeq = 0;
 export function collect(frames: Frame[], fixation: Fixation,
   opts: { target?: [number, number]; rate?: RateSnapshot; panelRect?: Rect } = {}): FixationData {
   const samples: FixationData["samples"] = [], invalid: FixationData["invalid"] = {};
+  const resolution = frames.find((fr) => Number.isFinite(fr.width) && Number.isFinite(fr.height) && fr.width > 0 && fr.height > 0);
   for (const fr of frames) {
+    if (!Number.isFinite(fr.t)) { invalid.nonfinite_geometry = (invalid.nonfinite_geometry ?? 0) + 1; continue; }
+    if (resolution && Number.isFinite(fr.width) && Number.isFinite(fr.height) && fr.width > 0 && fr.height > 0 && (fr.width !== resolution.width || fr.height !== resolution.height)) {
+      invalid.resolution_changed = (invalid.resolution_changed ?? 0) + 1;
+      continue;
+    }
     const f = gazeFeatures(fr.points, fr.width, fr.height);
     if (isFeatures(f)) samples.push({ t: fr.t, f });
     else invalid[f.invalid] = (invalid[f.invalid] ?? 0) + 1;
@@ -153,6 +159,10 @@ export type FeasibilityReport = {
   /** 진단(판정에는 쓰지 않음): 검증 응시별 렌즈 확률·분포 밖 비율, 시험 앞(렌즈 학습)→끝(렌즈 검증) 자세·눈 변화,
    *  처음 보는 위치의 응시별 오차(errors)와 학습 격자의 맞춤 잔차(fit, 같은 데이터로 학습했으므로 정확도 아님) */
   diag: {
+    quality: {
+      total: number; accepted: number; poseFlags: number;
+      rejected: Partial<Record<FeatureInvalid["invalid"] | "resolution_changed" | "blink", number>>;
+    };
     lens: { id: string; n: number; medianP: number | null; oodRate: number | null; toward: number | null; away: number | null;
             unknown: number | null }[];
     drift: Record<"open" | "scale" | "faceX" | "faceY" | "hx" | "hy" | "ex" | "ey", number | null>;
@@ -169,15 +179,19 @@ const RATIO_FLOOR = 0.02;
 export function evaluateRun(data: FixationData[], view: { w: number; h: number }, panelRects: Record<number, Rect> = {}): FeasibilityReport {
   const F = FEASIBILITY;
   const of = (pred: (f: Fixation) => boolean) => data.filter((d) => pred(d.fixation));
-  const enough = (d: FixationData) => d.samples.length >= MIN_VALID;
+  const enough = (d: FixationData) => usable(d).length >= MIN_VALID;
   const isScreen = (f: Fixation) => typeof f.target === "object";
   // 기준값: 정면 렌즈 응시(학습)
   const baseF = of((f) => f.role === "train" && f.target === "lens" && f.pose === "forward").flatMap((d) => d.samples.map((s) => s.f));
-  const base = baseF.length >= MIN_VALID ? { open: median(baseF.map((f) => f.open)), scale: median(baseF.map((f) => f.scale)),
+  const base = baseF.length >= MIN_VALID && median(baseF.map((f) => f.open)) > 0 ? { open: median(baseF.map((f) => f.open)), scale: median(baseF.map((f) => f.scale)),
     x: median(baseF.map((f) => f.faceX)), y: median(baseF.map((f) => f.faceY)) } : null;
+  const blink = (f: GazeFeatures) => f.open <= 0 || (!!base && f.open / base.open < OPEN_MIN_RATIO);
+  const usable = (d: FixationData) => d.samples.filter((s) => !blink(s.f));
+  const poseFlag = (f: GazeFeatures) => !!base && (Math.abs(f.scale / base.scale - 1) > SCALE_TOL
+    || Math.abs(f.faceX - base.x) > POS_TOL || Math.abs(f.faceY - base.y) > POS_TOL);
   const calib = of((f) => ["train", "validate", "panel", "distance"].includes(f.role));
   const totalFrames = calib.reduce((a, d) => a + d.frames, 0);
-  const validRatio = totalFrames ? calib.reduce((a, d) => a + d.samples.length, 0) / totalFrames : 0;
+  const validRatio = totalFrames ? calib.reduce((a, d) => a + usable(d).length, 0) / totalFrames : 0;
 
   // ── G2 ──
   const trainScreen = of((f) => f.role === "train" && isScreen(f)).filter(enough);
@@ -186,20 +200,26 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
   if (gridValid < F.grade.minGridPoints) g2Reason = "insufficient_grid";
   else {
     try {
-      g2 = selectG2(trainScreen.flatMap((d) => d.samples.map((s) => ({ f: s.f, target: d.target!, group: d.group }))));
+      g2 = selectG2(trainScreen.flatMap((d) => usable(d).map((s) => ({ f: s.f, target: d.target!, group: d.group }))));
     } catch (e) {
       g2Reason = e instanceof CalibrationError ? e.code : "fit_failed";
     }
   }
-  const preds = (d: FixationData) => (g2 ? smoothPoints(d.samples.map((s) => s.t), d.samples.map((s) => g2!.predict(s.f))) : []);
+  const preds = (d: FixationData): ([number, number] | null)[] => {
+    if (!g2) return [];
+    const valid = usable(d), smoothed = smoothPoints(valid.map((s) => s.t), valid.map((s) => g2!.predict(s.f)));
+    let i = 0;
+    return d.samples.map((s) => blink(s.f) ? null : smoothed[i++]);
+  };
   const fixError = (d: FixationData) => {
-    const p = g2 && d.target && d.samples.length ? d.samples.map((s) => g2!.predict(s.f)) : null;
+    const p = g2 && d.target && enough(d) ? usable(d).map((s) => g2!.predict(s.f)) : null;
     return p ? Math.hypot(median(p.map((q) => q[0])) - d.target![0], median(p.map((q) => q[1])) - d.target![1]) : null;
   };
   const val4 = of((f) => f.role === "validate" && isScreen(f) && f.pose === "forward" && !f.topBand);
   const valTurned = of((f) => f.role === "validate" && isScreen(f) && (f.pose === "left" || f.pose === "right"));
   const errs = val4.map(fixError).filter((e): e is number => e !== null);
-  const e50 = errs.length ? median(errs) : null, e80 = errs.length ? nearestRank(errs, 0.8) : null;
+  const sufficientValidation = val4.length >= 4 && errs.length === val4.length;
+  const e50 = sufficientValidation ? median(errs) : null, e80 = sufficientValidation ? nearestRank(errs, 0.8) : null;
   const turnedErrs = valTurned.map(fixError).filter((e): e is number => e !== null);
   const turned = turnedErrs.length ? median(turnedErrs) : null;
   const floor = RATIO_FLOOR * view.w;
@@ -214,7 +234,7 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
   // ── G1: 학습(train)으로 만들고, 처음 보는 검증 응시로만 판정 ──
   const openRatio = (f: GazeFeatures) => (base ? f.open / base.open : 1);
   const lensSamples: LensSample[] = of((f) => f.role === "train" && (f.target === "lens" || isScreen(f))).flatMap((d) =>
-    d.samples.map((s) => ({ f: s.f, openRatio: openRatio(s.f), lens: d.fixation.target === "lens", topBand: !!d.fixation.topBand,
+    usable(d).map((s) => ({ f: s.f, openRatio: openRatio(s.f), lens: d.fixation.target === "lens", topBand: !!d.fixation.topBand,
       group: d.group })));
   let lens: LensModel | null = null, g1Reason: string | null = null;
   if (!base) g1Reason = "no_lens_baseline";
@@ -223,16 +243,23 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
   }
   const lensRun = (d: FixationData) => {
     if (!lens) return [];
-    const ts = d.samples.map((s) => s.t), out = d.samples.map((s) => lens!.predict(s.f, openRatio(s.f)));
+    const valid = usable(d), ts = valid.map((s) => s.t), out = valid.map((s) => lens!.predict(s.f, openRatio(s.f)));
     const p = smoothMean(ts, out.map((o) => o.p));
-    return out.map((o, i) => ({ p: p[i], ood: o.ood, decision: o.ood ? "unknown" : p[i] >= lens!.thresholds.hi ? "toward"
-      : p[i] <= lens!.thresholds.lo ? "away" : "unknown" }));
+    let i = 0;
+    // Blink observations stay in held-out decision denominators as unknown. They never enter fitting or AUC scores.
+    return d.samples.map((s): { p: number | null; ood: boolean; decision: "unknown" | "toward" | "away" } => {
+      if (blink(s.f)) return { p: null, ood: false, decision: "unknown" };
+      const j = i++, o = out[j];
+      return { p: p[j], ood: o.ood, decision: o.ood ? "unknown" : p[j] >= lens!.thresholds.hi ? "toward"
+        : p[j] <= lens!.thresholds.lo ? "away" : "unknown" };
+    });
   };
   const lensVal = (pose: Pose) => of((f) => f.role === "validate" && f.target === "lens" && f.pose === pose).flatMap(lensRun);
   const lensFwd = lensVal("forward"), lensTurn = [...lensVal("left"), ...lensVal("right")];
   const topVal = of((f) => f.role === "validate" && !!f.topBand).flatMap(lensRun);
   const screenVal = val4.flatMap(lensRun);
-  const valAuc = auc([...lensFwd, ...lensTurn].map((o) => o.p), topVal.map((o) => o.p));
+  const probabilities = (xs: { p: number | null }[]) => xs.flatMap((o) => o.p === null ? [] : [o.p]);
+  const valAuc = auc(probabilities([...lensFwd, ...lensTurn]), probabilities(topVal));
   const lensForward = frac(lensFwd, (o) => o.decision === "toward"), lensTurned = frac(lensTurn, (o) => o.decision === "toward");
   const topFalse = frac(topVal, (o) => o.decision === "toward"), screenFalse = frac(screenVal, (o) => o.decision === "toward");
   const g1Verdict: Verdict = !lens || valAuc === null || lensForward === null || topFalse === null
@@ -249,7 +276,7 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
     const resolvable = e80 !== null && Math.min(rect.width, rect.height) >= 2 * e80;
     if (!g2 || e50 === null || e80 === null) return { heightPx: h, resolvable, hit: null, unknown: null, wrong: null,
       falseQuestion: null, correctUi: null, outsideUnknown: null };
-    const cls = (dd: FixationData) => preds(dd).map((p) => classifyRegion(p, rect, view, e50, e80));
+    const cls = (dd: FixationData) => preds(dd).map((p) => p ? classifyRegion(p, rect, view, e50, e80) : "unknown");
     const inside = d ? cls(d) : [];
     const outside = outsideVal.filter((v) => v.target && !(v.target[0] >= rect.left && v.target[0] <= rect.left + rect.width
       && v.target[1] >= rect.top && v.target[1] <= rect.top + rect.height)).flatMap(cls);
@@ -257,8 +284,8 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
       wrong: frac(inside, (c) => c === "ui" || c === "offscreen"), falseQuestion: frac(outside, (c) => c === "question"),
       correctUi: frac(outside, (c) => c === "ui"), outsideUnknown: frac(outside, (c) => c === "unknown") };
   });
-  const usable = panels.filter((p) => (p.hit ?? 0) >= F.panel.hitPass && (p.falseQuestion ?? 1) <= F.panel.falseQuestionMax);
-  const minPanelPx = usable.length ? Math.min(...usable.map((p) => p.heightPx)) : null;
+  const usablePanels = panels.filter((p) => (p.hit ?? 0) >= F.panel.hitPass && (p.falseQuestion ?? 1) <= F.panel.falseQuestionMax);
+  const minPanelPx = usablePanels.length ? Math.min(...usablePanels.map((p) => p.heightPx)) : null;
   const panelVerdict: Verdict = minPanelPx !== null ? "pass" : Math.max(...panels.map((p) => p.hit ?? 0)) < F.panel.hitFail ? "fail"
     : "inconclusive";
 
@@ -269,7 +296,7 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
       || Math.abs(f.faceX - base.x) > POS_TOL || Math.abs(f.faceY - base.y) > POS_TOL);
     const all = block.flatMap((d) => d.samples);
     const gated = frac(all, (s) => gatedOf(s.f));
-    const screenErrs = block.filter((d) => d.target).map((d) => fixError({ ...d, samples: d.samples.filter((s) => !gatedOf(s.f)) }))
+    const screenErrs = block.filter((d) => d.target).map((d) => fixError({ ...d, samples: usable(d).filter((s) => !gatedOf(s.f)) }))
       .filter((e): e is number => e !== null);
     const e = screenErrs.length ? median(screenErrs) : null;
     const ratio = e !== null && e50 !== null ? e / Math.max(e50, floor) : null;
@@ -296,18 +323,36 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
   const LENS_DIAG = ["val-lens-forward", "val-lens-left", "val-lens-right", "val-top-40", "val-top-50", "val-top-60"];
   const diagLens = LENS_DIAG.map((id) => {
     const runs = of((f) => f.id === id).flatMap(lensRun);
-    return { id, n: runs.length, medianP: runs.length ? median(runs.map((o) => o.p)) : null, oodRate: frac(runs, (o) => o.ood),
+    return { id, n: runs.length, medianP: probabilities(runs).length ? median(probabilities(runs)) : null, oodRate: frac(runs, (o) => o.ood),
       toward: frac(runs, (o) => o.decision === "toward"), away: frac(runs, (o) => o.decision === "away"),
       unknown: frac(runs, (o) => o.decision === "unknown") };
   });
-  const endF = of((f) => f.id === "val-lens-forward").flatMap((d) => d.samples.map((s) => s.f));
+  const endF = of((f) => f.id === "val-lens-forward").flatMap((d) => usable(d).map((s) => s.f));
   const mid = (fs: GazeFeatures[], k: keyof GazeFeatures) => median(fs.map((f) => f[k]));
   const delta = (k: keyof GazeFeatures) => (baseF.length && endF.length ? mid(endF, k) - mid(baseF, k) : null);
-  const ratio = (k: keyof GazeFeatures) => (baseF.length && endF.length ? mid(endF, k) / mid(baseF, k) - 1 : null);
+  const ratio = (k: keyof GazeFeatures) => {
+    if (!baseF.length || !endF.length) return null;
+    const baseline = mid(baseF, k);
+    const value = baseline > 0 ? mid(endF, k) / baseline - 1 : NaN;
+    return Number.isFinite(value) ? value : null;
+  };
   const drift = { open: ratio("open"), scale: ratio("scale"), faceX: delta("faceX"), faceY: delta("faceY"), hx: delta("hx"),
     hy: delta("hy"), ex: delta("ex"), ey: delta("ey") };
   const errors = Object.fromEntries(of((f) => f.role === "validate" && isScreen(f)).map((d) => [d.fixation.id, fixError(d)]));
   const fit = Object.fromEntries(of((f) => f.role === "train" && f.id.startsWith("grid-")).map((d) => [d.fixation.id, fixError(d)]));
+
+  const quality: FeasibilityReport["diag"]["quality"] = { total: 0, accepted: 0, poseFlags: 0, rejected: {} };
+  for (const d of data) {
+    quality.total += d.frames;
+    quality.accepted += usable(d).length;
+    quality.poseFlags += d.samples.filter((s) => poseFlag(s.f)).length;
+    for (const [reason, count] of Object.entries(d.invalid)) {
+      const k = reason as keyof typeof quality.rejected;
+      quality.rejected[k] = (quality.rejected[k] ?? 0) + (count ?? 0);
+    }
+    const n = d.samples.filter((s) => blink(s.f)).length;
+    if (n) quality.rejected.blink = (quality.rejected.blink ?? 0) + n;
+  }
 
   const r10 = rates.find((r) => r.hz === 10)!, r15 = rates.find((r) => r.hz === 15)!;
   const rateVerdict: Verdict = r10.achievedHz === null ? "inconclusive" : r10.pass ? "pass" : "fail";
@@ -320,7 +365,7 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
     g1: { verdict: g1Verdict, reason: g1Reason, cvAuc: lens?.cv.auc ?? null, valAuc, lensForward, lensTurned, topFalse, screenFalse,
       hi: lens?.thresholds.hi ?? null, lo: lens?.thresholds.lo ?? null },
     panels, minPanelPx, panelVerdict, distance, rates, typing, rateVerdict, recommendedHz,
-    diag: { lens: diagLens, drift, errors, fit },
+    diag: { lens: diagLens, drift, errors, fit, quality },
   };
 }
 
@@ -350,5 +395,7 @@ export function aggregate(r: FeasibilityReport): Record<string, number | string 
   put("diag.drift.", r.diag.drift);
   put("diag.err.", r.diag.errors);
   put("diag.fit.", r.diag.fit);
+  put("diag.quality.", r.diag.quality);
+  put("diag.quality.rejected.", r.diag.quality.rejected);
   return out;
 }

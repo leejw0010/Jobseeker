@@ -59,12 +59,18 @@ _GEN_SYSTEM = (
 )
 
 
-def generate_questions(company: str, position: str, essay: str, count: int) -> list[dict]:
+def generate_questions(company: str, position: str, essay: str, count: int, classification_preferences: dict | None = None) -> list[dict]:
     if not available():
         return _template_questions(company, position, essay, count)
     user = f"회사: {company}\n직무: {position}\n질문 수: {count}\n\n[자기소개서]\n{essay or '(없음)'}"
     try:
-        data = json.loads(_chat(_GEN_SYSTEM, user, json_mode=True))
+        system=_GEN_SYSTEM
+        if settings.practice_insights_enabled:
+            from .taxonomy import QUESTION_TYPES, COMPETENCIES
+            system += " 각 질문에 question_type과 competency_keys(최대 3개)를 선택적으로 추가하라. 분류: " + json.dumps({"question_types":QUESTION_TYPES,"competencies":COMPETENCIES},ensure_ascii=False)
+            if classification_preferences:
+                user += "\n분류 선호: " + json.dumps(classification_preferences,ensure_ascii=False)
+        data = json.loads(_chat(system, user, json_mode=True))
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
         return _template_questions(company, position, essay, count)
     return _parse_questions(data)[:count] or _template_questions(company, position, essay, count)
@@ -81,7 +87,17 @@ def _parse_questions(data) -> list[dict]:
         if not isinstance(text, str) or not text.strip():
             continue
         category = q.get("category")
-        out.append({"category": category if category in ("인성", "직무", "기업", "상황") else "인성", "text": text.strip()})
+        parsed={"category": category if category in ("인성", "직무", "기업", "상황") else "인성", "text": text.strip()}
+        if settings.practice_insights_enabled:
+            from .taxonomy import validate_keys
+            from .schemas import ClassificationIn
+            try:
+                if not {"question_type","competency_keys"} & q.keys(): raise ValueError()
+                classification=ClassificationIn.model_validate(q)
+                parsed.update(question_type=classification.question_type,competency_keys=classification.competency_keys,tagging_source="ai")
+            except (ValueError,TypeError):
+                pass
+        out.append(parsed)
     return out
 
 
@@ -93,20 +109,25 @@ def _template_questions(company: str, position: str, essay: str, count: int) -> 
     company = company or "저희 회사"
     position = position or "해당 직무"
     qs: list[dict] = []
+    def template(category, text, question_type, keys):
+        item={"category":category,"text":text}
+        if settings.practice_insights_enabled:
+            item.update(question_type=question_type,competency_keys=keys,tagging_source="rule")
+        return item
     sentences = [s.strip() for s in re.split(r"(?<=[.!?。])\s+|\n+", essay or "") if len(s.strip()) >= 15]
     for s in sentences:
         if _EXPERIENCE_HINT.search(s):
             quote = s if len(s) <= 60 else s[:57] + "…"
-            qs.append({"category": "직무", "text": f"자기소개서에 \"{quote}\"라고 쓰셨는데, 그때 본인의 역할과 결과를 구체적으로 설명해 주세요."})
+            qs.append(template("직무", f"자기소개서에 \"{quote}\"라고 쓰셨는데, 그때 본인의 역할과 결과를 구체적으로 설명해 주세요.", "behavioral", []))
         if len(qs) >= max(1, count // 2):
             break
     base = [
-        {"category": "기업", "text": f"{company}에 지원한 이유와, 입사 후 {position}로서 이루고 싶은 목표를 말씀해 주세요."},
-        {"category": "직무", "text": f"{position} 직무에 필요한 역량은 무엇이라고 생각하며, 본인은 그 역량을 어떻게 갖췄나요?"},
-        {"category": "상황", "text": "팀원과 의견이 크게 엇갈렸던 상황에서 어떻게 조율했는지 말씀해 주세요."},
-        {"category": "인성", "text": "가장 크게 실패했던 경험과 그 경험에서 배운 점을 말씀해 주세요."},
-        {"category": "기업", "text": f"{company}의 최근 사업이나 서비스 중 관심 있게 본 것과, 개선하고 싶은 점이 있다면 말씀해 주세요."},
-        {"category": "직무", "text": f"입사 후 3년 안에 {position}로서 어떤 전문성을 쌓고 싶은지 말씀해 주세요."},
+        template("기업", f"{company}에 지원한 이유와, 입사 후 {position}로서 이루고 싶은 목표를 말씀해 주세요.","motivation",[]),
+        template("직무", f"{position} 직무에 필요한 역량은 무엇이라고 생각하며, 본인은 그 역량을 어떻게 갖췄나요?","self_description",["technical_expertise"]),
+        template("상황", "팀원과 의견이 크게 엇갈렸던 상황에서 어떻게 조율했는지 말씀해 주세요.","behavioral",["communication","collaboration"]),
+        template("인성", "가장 크게 실패했던 경험과 그 경험에서 배운 점을 말씀해 주세요.","behavioral",["adaptability"]),
+        template("기업", f"{company}의 최근 사업이나 서비스 중 관심 있게 본 것과, 개선하고 싶은 점이 있다면 말씀해 주세요.","knowledge",["analytical_thinking"]),
+        template("직무", f"입사 후 3년 안에 {position}로서 어떤 전문성을 쌓고 싶은지 말씀해 주세요.","motivation",[]),
     ]
     for q in base:
         if len(qs) >= count:

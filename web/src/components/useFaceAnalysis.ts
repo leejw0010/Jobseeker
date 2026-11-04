@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CAMERA_DEBUG, emptyCounts, type CameraDiag } from "../video/debug";
 import { loadFaceDetector, type FaceDetector } from "../video/detector";
 import { createDGrid, createRateStats, type Frame, type RateSnapshot } from "../video/gaze/sampler";
-import { SAMPLE_MS, edgeLabel, faceFeatures, summarizeSegment, type FaceSample, type FaceState, type Overshoot } from "../video/metrics";
+import { SAMPLE_MS, createFaceSampler, edgeLabel, faceFeatures, summarizeSegment, type FaceSample, type FaceState, type Overshoot } from "../video/metrics";
 
 export type CameraStatus = "off" | "starting" | "on" | "error";
 
@@ -28,7 +28,7 @@ export function useFaceAnalysis() {
   const preparingDetector = useRef<FaceDetector | null>(null);
   const timer = useRef(0);
   const lastFace = useRef<FaceState | null>(null);
-  const segment = useRef<FaceSample[] | null>(null);
+  const segment = useRef<ReturnType<typeof createFaceSampler> | null>(null);
   const segStart = useRef(0);
   // 켜는 중에 끄거나 화면을 떠나면 늦게 도착한 카메라·검출기를 바로 정리한다
   const gen = useRef(0);
@@ -91,7 +91,7 @@ export function useFaceAnalysis() {
     });
     // D 요약은 지금처럼 초당 약 4회만 받는다. 기본 주기에서는 모든 표본을 넣는다(격자를 쓰면 타이머 오차로 표본을 놓칠 수 있다)
     const forD = hz.current <= DEFAULT_HZ || grid.current.accept(t);
-    if (forD) segment.current?.push(sample);
+    if (forD) segment.current?.add(sample);
     if (sample.state !== lastFace.current) { lastFace.current = sample.state; setFace(sample.state); }
     const edgeKey = sample.overshoot ? edgeLabel(sample.overshoot) : "";
     if (edgeKey !== lastEdge.current) { lastEdge.current = edgeKey; setEdge(sample.overshoot ?? null); }
@@ -180,7 +180,7 @@ export function useFaceAnalysis() {
 
   /** 답변을 시작할 때 부른다. 카메라가 꺼져 있으면 아무것도 재지 않는다 */
   const beginSegment = useCallback(() => {
-    segment.current = detector.current ? [] : null;
+    segment.current = detector.current ? createFaceSampler() : null;
     segStart.current = performance.now();
     counts.current = emptyCounts();
   }, []);
@@ -189,7 +189,7 @@ export function useFaceAnalysis() {
   const endSegment = useCallback(() => {
     const samples = segment.current;
     segment.current = null;
-    return samples ? summarizeSegment(samples, { start: segStart.current, end: performance.now() }) : null;
+    return samples ? summarizeSegment(samples.snapshot(), { start: segStart.current, end: performance.now() }) : null;
   }, []);
 
   /** 검출 결과를 프레임마다 받는다(시선 분석용). 돌려준 함수를 부르면 그만 받는다. 특징점은 메모리에서만 쓴다 */

@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+from .config import settings
 
 STAGES = ["서류", "인적성", "1차면접", "2차면접", "최종"]
 STATUSES = ["진행중", "합격", "불합격", "보류"]
@@ -51,6 +52,12 @@ def transcript_hash(text: str | None) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
+def recording_transcript_hash(recorded_at: datetime, transcript: str | None) -> str:
+    """Bind text to its recording revision, including across schema-off rollbacks."""
+    stamp = recorded_at.replace(tzinfo=timezone.utc) if recorded_at.tzinfo is None else recorded_at.astimezone(timezone.utc)
+    return transcript_hash(stamp.isoformat() + "\0" + (transcript or ""))
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -67,7 +74,29 @@ class Question(Base):
     source: Mapped[str] = mapped_column(String(10), default="bank")
     application_id: Mapped[str | None] = mapped_column(ID)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    if settings.practice_insights_enabled:
+        question_type: Mapped[str | None] = mapped_column(String(30))
+        taxonomy_version: Mapped[str | None] = mapped_column(String(30))
+        tagging_source: Mapped[str | None] = mapped_column(String(10))
+        competency_tags: Mapped[list["QuestionCompetency"]] = relationship(cascade="all, delete-orphan", lazy="selectin", order_by="QuestionCompetency.position")
+    else:
+        question_type = None
+        taxonomy_version = None
+        tagging_source = None
+
+    @property
+    def competency_keys(self) -> list[str]:
+        return [t.competency_key for t in self.competency_tags] if settings.practice_insights_enabled else []
+
     private_scope: Mapped["PracticePrivateQuestion | None"] = relationship(cascade="all, delete-orphan")
+
+
+if settings.practice_insights_enabled:
+    class QuestionCompetency(Base):
+        __tablename__ = "question_competencies"
+        question_id: Mapped[str] = mapped_column(ID, ForeignKey("questions.id", ondelete="CASCADE"), primary_key=True)
+        competency_key: Mapped[str] = mapped_column(String(40), primary_key=True)
+        position: Mapped[int] = mapped_column(Integer)
 
 
 class PracticePrivateQuestion(Base):
@@ -129,11 +158,23 @@ class PracticeAnswer(Base):
     audio_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     audio_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    if settings.practice_insights_enabled:
+        question_classification: Mapped[dict | None] = mapped_column(JSONType)
+        # Original STT/first user-confirmed transcription; empty string marks explicit text mode.
+        recording_transcript_sha256: Mapped[str | None] = mapped_column(String(64))
+    else:
+        question_classification = None
+        recording_transcript_sha256 = None
     session: Mapped[PracticeSession] = relationship(back_populates="answers")
     question: Mapped[Question] = relationship()
     coaching: Mapped["AnswerCoaching | None"] = relationship(
         foreign_keys="AnswerCoaching.answer_id", cascade="all, delete-orphan", lazy="selectin"
     )
+
+    @property
+    def recording_transcript_current(self) -> bool:
+        return bool(self.recorded_at and self.recording_transcript_sha256 and (self.transcript or "").strip()
+                    and self.recording_transcript_sha256 == recording_transcript_hash(self.recorded_at, self.transcript))
 
     @property
     def coaching_report(self) -> dict | None:
@@ -142,6 +183,11 @@ class PracticeAnswer(Base):
         report = self.coaching.report if self.coaching else None
         if report and report.get("transcript_sha256") not in (None, transcript_hash(self.transcript)):
             return None
+        if report and report.get("competency_evidence") is not None:
+            from .taxonomy import current_evidence
+            # Optional classification must not hide transcript-valid core coaching on rollback.
+            evidence = current_evidence(report["competency_evidence"],self.transcript,self.question_classification) if settings.practice_insights_enabled else None
+            return {**report,"competency_evidence":evidence}
         return report
 
     @property

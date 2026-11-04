@@ -21,7 +21,7 @@ export type GazeFeatures = {
   /** 두 눈 홍채 위치의 차이(눈 폭 단위). 크면 한쪽 눈 추적이 불안정하다 */
   eyeGap: number;
 };
-export type FeatureInvalid = { invalid: "no_face" | "eyes_outside" | "eyes_unreliable" };
+export type FeatureInvalid = { invalid: "no_face" | "eyes_outside" | "eyes_unreliable" | "invalid_resolution" | "nonfinite_geometry" };
 
 // MediaPipe Face Mesh 번호(좌우는 피사체 기준). 각 눈은 원본 프레임 왼쪽 끝 → 오른쪽 끝 순서
 const RIGHT_EYE = { a: 33, b: 133, up: 159, low: 145, iris: 468, ring: [469, 470, 471, 472] };
@@ -46,7 +46,9 @@ function eye(px: (i: number) => Pt, e: typeof RIGHT_EYE) {
 
 /** 한 프레임의 특징점 → 시선 특징. 얼굴이 없거나, 눈이 프레임 밖이거나, 두 눈이 서로 맞지 않으면 이유를 돌려준다 */
 export function gazeFeatures(points: Pt[] | null | undefined, width: number, height: number): GazeFeatures | FeatureInvalid {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return { invalid: "invalid_resolution" };
   if (!points?.length) return { invalid: "no_face" };
+  if (points.some((p) => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y))) return { invalid: "nonfinite_geometry" };
   if (points.length < 478) return { invalid: "eyes_unreliable" };
   const inside = (p: Pt) => p.x >= EYE_MARGIN && p.x <= 1 - EYE_MARGIN && p.y >= EYE_MARGIN && p.y <= 1 - EYE_MARGIN;
   if (!EYE_POINTS.every((i) => inside(points[i]))) return { invalid: "eyes_outside" };
@@ -63,7 +65,7 @@ export function gazeFeatures(points: Pt[] | null | undefined, width: number, hei
   const faceH = dot(sub(chin, top), fy);
   if (!(faceW > 0 && faceH > 0)) return { invalid: "eyes_unreliable" };
   const center = mid(r.center, l.center);
-  return {
+  const result: GazeFeatures = {
     ex: (r.ex + l.ex) / 2,
     ey: (r.ey + l.ey) / 2,
     open: (r.open + l.open) / 2,
@@ -74,6 +76,7 @@ export function gazeFeatures(points: Pt[] | null | undefined, width: number, hei
     scale: len(sub(l.center, r.center)) / width,
     eyeGap,
   };
+  return Object.values(result).every(Number.isFinite) ? result : { invalid: "nonfinite_geometry" };
 }
 
 export const isFeatures = (f: GazeFeatures | FeatureInvalid): f is GazeFeatures => !("invalid" in f);

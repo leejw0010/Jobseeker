@@ -24,7 +24,7 @@ def coach(answer: PracticeAnswer, db: Session) -> dict:
     history = [{"question": a.question.text, "answer": a.transcript}
                for a in answer.session.answers if a.order_no < answer.order_no and a.transcript]
     transcript = answer.transcript
-    report = coaching.build_report(answer.question.text, transcript, answer.session.context_snapshot or {}, history)
+    report = coaching.build_report(answer.question.text, transcript, answer.session.context_snapshot or {}, history, classification=answer.question_classification)
     unchanged = db.execute(update(PracticeAnswer).where(PracticeAnswer.id == answer.id,
                            PracticeAnswer.transcript == transcript).values(transcript=PracticeAnswer.transcript),
                            execution_options={"synchronize_session": False})

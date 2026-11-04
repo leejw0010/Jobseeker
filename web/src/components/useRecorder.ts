@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createVoiceSampler, summarizeVoice, type DeliverySummary } from "../delivery/voice";
 
 /** 브라우저 마이크 녹음(MediaRecorder). 입력 레벨도 함께 계산해 마이크가 잡히는지 보여준다.
  *  권한 요청은 한 번에 하나만 보낸다. 권한 응답이 화면을 떠난 뒤에 오면 그 스트림을 바로 닫는다. */
@@ -14,6 +15,7 @@ export function useRecorder() {
   const startedAt = useRef(0);
   const raf = useRef(0);
   const ctxRef = useRef<AudioContext | null>(null);
+  const voice = useRef<ReturnType<typeof createVoiceSampler> | null>(null);
 
   const open = useCallback(async (): Promise<MediaStream> => {
     let s: MediaStream;
@@ -29,20 +31,33 @@ export function useRecorder() {
       throw new Error("unmounted");
     }
     streamRef.current = s;
-    const ctx = new AudioContext();
-    ctxRef.current = ctx;
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 512;
-    ctx.createMediaStreamSource(s).connect(analyser);
-    const buf = new Uint8Array(analyser.fftSize);
-    const tick = () => {
-      analyser.getByteTimeDomainData(buf);
-      let sum = 0;
-      for (const v of buf) sum += ((v - 128) / 128) ** 2;
-      setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 4));
-      raf.current = requestAnimationFrame(tick);
-    };
-    tick();
+    // AudioContext is an optional meter. Unsupported/blocked analysis must never block MediaRecorder.
+    try {
+      const ctx = new AudioContext();
+      ctxRef.current = ctx;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      ctx.createMediaStreamSource(s).connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+      const tick = () => {
+        try {
+          analyser.getByteTimeDomainData(buf);
+          let sum = 0, clipped = 0;
+          for (const v of buf) { sum += ((v - 128) / 128) ** 2; if (v <= 1 || v >= 254) clipped++; }
+          const rms = Math.sqrt(sum / buf.length);
+          setLevel(Math.min(1, rms * 4));
+          voice.current?.add({ t: (performance.now() - startedAt.current) / 1000, rms, clipped: clipped / buf.length > 0.05 });
+          raf.current = requestAnimationFrame(tick);
+        } catch {
+          setLevel(0); // Analyser failure leaves a visible coverage gap; recording continues.
+        }
+      };
+      tick();
+    } catch {
+      void ctxRef.current?.close().catch(() => {});
+      ctxRef.current = null;
+      setLevel(0);
+    }
     return s;
   }, []);
 
@@ -62,19 +77,24 @@ export function useRecorder() {
     rec.start(250);
     recRef.current = rec;
     startedAt.current = performance.now();
+    voice.current = createVoiceSampler();
     setRecording(true);
   }, [ensureStream]);
 
   /** 녹음을 끝내고 결과(Blob, 길이 초)를 돌려준다. */
   const stop = useCallback(
     () =>
-      new Promise<{ blob: Blob; durationSec: number } | null>((resolve) => {
+      new Promise<{ blob: Blob; durationSec: number; delivery?: DeliverySummary } | null>((resolve) => {
         const rec = recRef.current;
         if (!rec || rec.state === "inactive") return resolve(null);
         rec.onstop = () => {
           const blob = new Blob(chunks.current, { type: rec.mimeType || "audio/webm" });
           setRecording(false);
-          resolve({ blob, durationSec: (performance.now() - startedAt.current) / 1000 });
+          const durationSec = (performance.now() - startedAt.current) / 1000;
+          let delivery: DeliverySummary | undefined;
+          try { delivery = summarizeVoice(voice.current?.snapshot() ?? [], durationSec); } catch { /* optional */ }
+          voice.current = null;
+          resolve({ blob, durationSec, delivery });
         };
         rec.stop();
       }),
@@ -88,7 +108,8 @@ export function useRecorder() {
       cancelAnimationFrame(raf.current);
       if (recRef.current?.state === "recording") recRef.current.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
-      ctxRef.current?.close();
+      void ctxRef.current?.close().catch(() => {});
+      voice.current = null;
       recRef.current = streamRef.current = ctxRef.current = null;
     };
   }, []);

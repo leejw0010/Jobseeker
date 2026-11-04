@@ -217,3 +217,7 @@ summary { cursor: pointer; }
 .point-answers a { font-weight: 600; }
 /* 카드 안의 보조 문장(근거·기준선 이름·안내)은 내용이므로 --muted(밝게 3.4:1) 대신 --text-2(7.7:1)로 4.5:1을 넘긴다 */
 .insights .muted { color: var(--text-2); }
+
+/* Integrated coaching explanations and table headings are readable content. */
+.debrief-card .muted, .competency-review .muted, .voice-report .muted,
+.video-report .muted, .video-report th, .voice-report th { color: var(--text-2); }

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api } from "../api";
+import { FrozenClassification } from "../components/ClassificationControls";
+import { saveVoiceSegment, clearVoiceSegment, type DeliverySummary } from "../delivery/voice";
 import CameraPanel from "../components/CameraPanel";
 import ConsentPanel from "../components/ConsentPanel";
 import InterviewContext from "../components/InterviewContext";
 import { useFaceAnalysis } from "../components/useFaceAnalysis";
 import { useRecorder } from "../components/useRecorder";
 import type { PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
-import { saveVideoSegment } from "../video/metrics";
+import { saveVideoSegment, clearVideoSegment, type SegmentSummary } from "../video/metrics";
 
 type Phase = "ready" | "prep" | "answer" | "uploading" | "reviewing";
 const fmt = (s: number) => `${Math.floor(Math.max(0, Math.ceil(s)) / 60)}:${String(Math.max(0, Math.ceil(s)) % 60).padStart(2, "0")}`;
@@ -20,6 +22,7 @@ export default function SessionRunner() {
   const [phase, setPhase] = useState<Phase>("ready");
   const [left, setLeft] = useState(0);
   const [err, setErr] = useState<string | null>(null);
+  const [liveHints,setLiveHints]=useState(true);
   const [inputMode, setInputMode] = useState<"audio" | "text">("audio");
   const [draft, setDraft] = useState("");
   const draftRef = useRef(draft);
@@ -38,7 +41,8 @@ export default function SessionRunner() {
   const { beginSegment, endSegment } = cam;
   const deadline = useRef(0);
   const processing = useRef(false);
-  const pendingAudio = useRef<{ blob: Blob; durationSec: number } | null>(null);
+  const pendingAudio = useRef<{ blob: Blob; durationSec: number; delivery?: DeliverySummary } | null>(null);
+  const pendingVideo=useRef<SegmentSummary|null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -81,8 +85,8 @@ export default function SessionRunner() {
     setPhase("uploading");
     setErr(null);
     // 카메라 구간 요약은 첫 호출에서만 나온다(녹음 저장을 다시 시도할 때는 null이라 저장한 값을 덮지 않음)
-    const video = endSegment();
-    if (video) saveVideoSegment(id, answer.id, video);
+    if (inputMode === "audio") pendingVideo.current ??= endSegment();
+    else { endSegment(); pendingVideo.current=null; clearVideoSegment(id,answer.id); clearVoiceSegment(id,answer.id); }
     try {
       let saved: PracticeAnswer;
       if (inputMode === "audio") {
@@ -90,9 +94,15 @@ export default function SessionRunner() {
         const recording = pendingAudio.current;
         if (!recording?.blob.size) throw new Error("녹음된 소리가 없어요. 글로 답변하거나 다시 녹음해 주세요.");
         saved = await api.uploadAudio(answer.id, recording.blob, recording.durationSec);
-        pendingAudio.current = null;
+        // Only a successful saved recording revision may own browser-only reports.
+        clearVideoSegment(id,answer.id); clearVoiceSegment(id,answer.id);
+        if(saved.recorded_at) {
+          if(pendingVideo.current) saveVideoSegment(id,answer.id,pendingVideo.current,saved.recorded_at);
+          if(recording.delivery) saveVoiceSegment(id,answer.id,recording.delivery,saved.recorded_at,saved.transcript);
+        }
+        pendingAudio.current = null; pendingVideo.current=null;
       } else {
-        saved = await api.reflect(answer.id, { transcript: draftRef.current.trim() || null });
+        saved = await api.reflect(answer.id, { transcript: draftRef.current.trim() || null, input_mode: "text" });
       }
       updateAnswer(saved);
       setDraft(saved.transcript ?? "");
@@ -109,9 +119,8 @@ export default function SessionRunner() {
 
   const beginAnswer = useCallback(async () => {
     try {
-      if (inputMode === "audio") await start();
+      if (inputMode === "audio") { await start(); beginSegment(); }
       setPhase("answer");
-      beginSegment();
       if (session) {
         deadline.current = performance.now() + session.answer_sec * 1000;
         setLeft(session.answer_sec);
@@ -128,6 +137,8 @@ export default function SessionRunner() {
     setStartingUi(true);
     try {
       setErr(null);
+      pendingAudio.current=null; pendingVideo.current=null;
+      if(answer) {clearVideoSegment(id,answer.id);clearVoiceSegment(id,answer.id);}
       setDraft("");
       setUploadFailed(false);
       setConsentFor(null); // 앞 질문에서 띄운 동의 패널(다시 전사 등)은 이 질문과 상관없다
@@ -166,7 +177,7 @@ export default function SessionRunner() {
     // 입력란이 서버 전사문과 같은가(고친 내용은 아래에서 먼저 저장한다). 저장하지 못했으면 다시 맞출 때 입력란을 덮지 않는다
     let saved = draft === (answer.transcript ?? "");
     try {
-      if (!saved) { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null })); saved = true; }
+      if (!saved) { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null, input_mode: inputMode === "text" ? "text" : "transcript" })); saved = true; }
       const recognized = await api.retryTranscribe(answer.id);
       updateAnswer(recognized); setDraft(recognized.transcript ?? draft);
     } catch (e) {
@@ -196,7 +207,7 @@ export default function SessionRunner() {
     setErr(null);
     try {
       if (save && draft !== (answer.transcript ?? "")) {
-        updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null }));
+        updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() || null, input_mode: inputMode === "text" ? "text" : "transcript" }));
       }
       if (withFollowup) {
         const updated = await api.followup(answer.id);
@@ -221,9 +232,10 @@ export default function SessionRunner() {
   return <>
     <div className="row"><h1 className="grow">{session.title}</h1><span className="muted">{idx + 1} / {session.answers.length}</span></div>
     <InterviewContext context={session.context_snapshot} />
-    <CameraPanel status={cam.status} error={cam.error} face={cam.face} edge={cam.edge} diag={cam.diag} onEnable={() => void cam.enable()} onDisable={cam.disable} attachVideo={cam.attachVideo} />
+    <CameraPanel liveHints={liveHints} onLiveHintsChange={setLiveHints} status={cam.status} error={cam.error} face={cam.face} edge={cam.edge} diag={cam.diag} onEnable={() => void cam.enable()} onDisable={cam.disable} attachVideo={cam.attachVideo} />
     <section className="card">
       <div className="row small"><span className="chip">{answer.question.category}</span>{mock && <span className="chip accent">모의시험</span>}{answer.parent_answer_id && <span className="chip accent">꼬리질문</span>}</div>
+      <FrozenClassification snapshot={answer.question_classification}/>
       {answer.followup_reason && <p className="followup-reason">{answer.followup_reason}</p>}
       <div className="runner-q">{answer.question.text}</div>
       {phase === "ready" && <>
@@ -259,12 +271,12 @@ export default function SessionRunner() {
         <p className="small muted">확인한 답변을 저장하고 다음 단계로 진행해요.</p>
         {uploadFailed && consentFor !== "upload" && <button onClick={finishAnswer}>녹음 저장 다시 시도</button>}
         {inputMode === "audio" && (uploadFailed || !answer.recorded_at) && <button onClick={() => {
-          pendingAudio.current = null; setUploadFailed(false); setInputMode("text"); setErr(null); setConsentFor(null);
+          pendingAudio.current = null; pendingVideo.current=null; clearVideoSegment(id,answer.id);clearVoiceSegment(id,answer.id); setUploadFailed(false); setInputMode("text"); setErr(null); setConsentFor(null);
         }}>녹음 대신 글로 답변</button>}
         <div className="row">
           <button disabled={busy || uploadFailed || !draft.trim()} onClick={async () => {
             setBusy(true); setErr(null);
-            try { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim() })); }
+            try { updateAnswer(await api.reflect(answer.id, { transcript: draft.trim(), input_mode: inputMode === "text" ? "text" : "transcript" })); }
             catch (e) { setErr((e as Error).message); }
             finally { setBusy(false); }
           }}>답변만 저장</button>

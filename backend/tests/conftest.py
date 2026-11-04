@@ -16,6 +16,9 @@ os.environ["OPENAI_FEEDBACK_MODEL"] = ""
 # 기존 전사 테스트는 OpenAI 경로(모의 응답)를 검사한다. 로컬 전사는 test_local_stt.py가 제공자를 바꿔 끼워 검사한다
 os.environ["STT_PROVIDER"] = "openai"
 
+os.environ["PRACTICE_INSIGHTS_ENABLED"] = "true"
+os.environ["PRACTICE_COMPETENCY_EVIDENCE_ENABLED"] = "false"
+
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 

@@ -7,16 +7,35 @@ export type Stage = (typeof STAGES)[number];
 export type Status = (typeof STATUSES)[number];
 export type Category = (typeof CATEGORIES)[number];
 
+export interface TaxonomyEntry { key: string; label: string; definition: string }
+export interface PracticeTaxonomy { enabled: boolean; taxonomy_version: string; question_types: TaxonomyEntry[]; competencies: TaxonomyEntry[]; max_competencies: number }
+export interface QuestionClassification {
+ schema_version: number; taxonomy_version: string; question_type: string | null; question_type_label: string | null; question_type_definition: string | null;
+ competencies: TaxonomyEntry[]; tagging_source: string | null; question_role: "primary" | "followup"; captured_at: string;
+}
+export interface CompetencyEvidence {
+ status: "analyzed" | "unavailable"; method: "ai"; taxonomy_version?: string; assessment_version?: string; generated_at?: string; model?: string;
+ transcript_sha256?: string; question_classification_sha256?: string;
+ observations: { competency_key: string; basis: "past_action" | "proposed_action" | "explanation"; quote: string; reason: string }[];
+}
+export interface ClassificationInput { question_type?: string | null; competency_keys?: string[] }
 export interface Question {
   id: string;
   category: Category;
   job_category: string | null;
   text: string;
   source: "bank" | "generated" | "custom";
+  question_type?: string | null;
+  competency_keys?: string[];
+  taxonomy_version?: string | null;
+  tagging_source?: string | null;
   application_id: string | null;
 }
 
 export interface PracticeAnswer {
+  /** Original automatic/first manual transcription still matches this recording; false for legacy or edited text. */
+  recording_transcript_current?: boolean;
+  question_classification?: QuestionClassification | null;
   id: string;
   order_no: number;
   question: Question;
@@ -109,6 +128,7 @@ export interface DebriefMoment {
 
 /** 서버는 교훈·다음 행동 중 하나만 있어도 저장한다(빈 값은 null). */
 export interface Debrief {
+  input_status?: "legacy_unverified";
   lesson: string | null;
   next_action: string | null;
   moments: DebriefMoment[];
@@ -119,6 +139,7 @@ export interface Debrief {
 export type DebriefStatus = "none" | "pending" | "done" | "failed" | "unavailable";
 
 export interface CoachingReport {
+  competency_evidence?: CompetencyEvidence | null;
   method: "basic" | "ai";
   rubric_version: string;
   summary: string;
@@ -165,6 +186,8 @@ export interface PracticeSession {
 }
 
 export interface SessionSummary {
+  competency_keys?: string[];
+  classification_missing_count?: number;
   id: string;
   mode: "free" | "mock";
   title: string;

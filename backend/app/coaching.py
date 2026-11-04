@@ -7,6 +7,9 @@ from pydantic import ValidationError
 
 from . import llm
 from .models import Application, transcript_hash
+from .config import settings
+from .taxonomy import classification_hash
+from datetime import datetime, timezone
 from .schemas import CoachingReport
 
 # 채점 기준 버전. PR #2의 첫 기준(2026-10-15)에 구체성의 STAR 앵커와 판단 규칙(엄격하게, 지어내지 않기 등)을 더했다.
@@ -139,17 +142,26 @@ criteria는 specificity(구체성), relevance(질문 적합성), consistency(제
 6. 말한 내용이 맞는지(정답 여부)는 판단하지 않는다."""
 
 
-def build_report(question: str, transcript: str, context: dict, history: list[dict]) -> dict:
+def build_report(question: str, transcript: str, context: dict, history: list[dict], classification: dict | None = None) -> dict:
     """답변 코칭 보고서. 채점한 전사문의 지문(transcript_sha256)을 함께 남긴다: 그사이 전사문이 바뀌면 이 보고서는
     없는 것으로 본다(PracticeAnswer.coaching_report). 키가 있는데 AI 점검이 실패해 기본 점검으로 대신하면
     fallback_reason(ai_error: 호출 실패, ai_invalid: 응답이 형식·인용 검증을 통과하지 못함)을 남겨 디브리프가 다시 점검한다."""
-    stamp = {"transcript_sha256": transcript_hash(transcript)}
+    stamp = {"transcript_sha256": transcript_hash(transcript),"question_classification_sha256":classification_hash(classification)}
     fallback_reason = None
     if llm.available():
         try:
-            raw = llm._chat(SYSTEM, json.dumps({"question": question, "answer": transcript,
-                                              "context": context, "history": history}, ensure_ascii=False), json_mode=True)
-            report = CoachingReport.model_validate(json.loads(raw))
+            system=SYSTEM
+            payload={"question":question,"answer":transcript,"context":context,"history":history}
+            include_evidence=settings.practice_competency_evidence_enabled and settings.practice_insights_enabled and classification is not None
+            if include_evidence:
+                system += '\n선택 항목 competency_evidence: {"observations":[{"competency_key":"역량 사전에 있는 key","basis":"past_action|proposed_action|explanation","quote":"답변의 정확한 4~500자 연속 인용","reason":"관찰 근거"}]}. 전체 최대 세 개, 역량별 최대 한 개. 요구 역량 밖의 관찰은 요구 태그와 구분한다. 실제 근거가 없으면 observations는 빈 배열. 역량 점수나 성격을 추정하지 마라.'
+                payload["question_classification"]=classification
+                from .taxonomy import COMPETENCIES
+                payload["competency_taxonomy"]=COMPETENCIES
+            raw = llm._chat(system,json.dumps(payload,ensure_ascii=False),json_mode=True)
+            decoded=json.loads(raw)
+            extension=decoded.pop("competency_evidence",None) if isinstance(decoded,dict) else None
+            report = CoachingReport.model_validate(decoded)
             if {c.key for c in report.criteria} != set(LABELS):
                 raise ValueError("incomplete rubric")
             sources = {e["version_id"]: e["content"] for e in context.get("essays", [])}
@@ -170,10 +182,33 @@ def build_report(question: str, transcript: str, context: dict, history: list[di
                     criterion.reason = "비교할 자소서 인용이 없어 판단을 보류했어요."
             report.method = "ai"
             report.rubric_version = RUBRIC_VERSION
-            return {**report.model_dump(), **stamp}
+            result={**report.model_dump(),**stamp}
+            if include_evidence:
+                result["competency_evidence"]=_evidence(extension,transcript,classification)
+            return result
         except httpx.HTTPError:  # 네트워크·시간 초과·429·5xx
             fallback_reason = "ai_error"
         except (json.JSONDecodeError, ValidationError, ValueError, KeyError, TypeError):
             fallback_reason = "ai_invalid"
     basic = CoachingReport.model_validate(_basic(transcript, context)).model_dump()
     return {**basic, **stamp, **({"fallback_reason": fallback_reason} if fallback_reason else {})}
+
+
+def _evidence(raw, transcript: str, classification: dict) -> dict | None:
+    """Optional metadata is validated independently; it never invalidates core coaching."""
+    from .schemas import CompetencyObservation
+    try:
+        if not isinstance(raw,dict) or not isinstance(raw.get("observations"),list): return None
+        observations=[CompetencyObservation.model_validate(x).model_dump() for x in raw["observations"]]
+        from .taxonomy import COMPETENCY_BY_KEY
+        allowed=set(COMPETENCY_BY_KEY)
+        keys=[x["competency_key"] for x in observations]
+        if len(observations)>3 or len(keys)!=len(set(keys)) or not set(keys)<=allowed: return None
+        if any(len(x["quote"].strip())<4 or x["quote"] not in transcript for x in observations): return None
+        return {"status":"analyzed" if observations else "unavailable","method":"ai",
+                "taxonomy_version":classification["taxonomy_version"],"assessment_version":"competency-evidence-v1",
+                "generated_at":datetime.now(timezone.utc).isoformat(),"model":settings.openai_chat_model,
+                "transcript_sha256":transcript_hash(transcript),"question_classification_sha256":classification_hash(classification),
+                "observations":observations}
+    except (ValidationError,TypeError,ValueError,KeyError):
+        return None

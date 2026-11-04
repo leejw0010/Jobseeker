@@ -20,6 +20,7 @@ from . import coaching, llm
 from .config import settings
 from .db import SessionLocal
 from .models import PracticeAnswer, PracticeSession
+from .taxonomy import classification_hash
 from .schemas import WeakAnswerOut
 from .services import answer_coaching
 
@@ -179,6 +180,16 @@ def _coach_all(db: Session, s: PracticeSession, mine: datetime | None, tried: se
             break
 
 
+def debrief_fingerprint(s: PracticeSession) -> str:
+    """All interpretation inputs, including recording revisions and complete current coaching."""
+    return classification_hash({"context":s.context_snapshot,"answers":[
+        {"id":a.id,"question_id":a.question_id,"question":a.question.text,"order_no":a.order_no,
+         "transcript":a.transcript,"self_rating":a.self_rating,"reflection_note":a.reflection_note,
+         "classification":a.question_classification,"coaching":a.coaching_report,
+         "recorded_at":_utc(a.recorded_at).isoformat() if a.recorded_at else None,"duration_sec":a.duration_sec}
+        for a in sorted(s.answers,key=lambda a:(a.order_no,a.id))]})
+
+
 def _summary_items(s: PracticeSession) -> list[dict]:
     items = []
     for a in s.answers:
@@ -200,7 +211,7 @@ def _summarize(s: PracticeSession, items: list[dict]) -> tuple[str, dict | None]
 
 
 def _settle(db: Session, s: PracticeSession, mine: datetime | None, pass_started: datetime,
-            status: str, summary: dict | None, last: bool) -> bool:
+            status: str, summary: dict | None, last: bool, input_hash: str | None = None) -> bool:
     """결과를 쓰고 작업을 끝낸다. 이 바퀴를 시작한 뒤 종료·재생성 요청이 들어왔으면 쓰지 않고 False(한 바퀴 더).
 
     세션 행을 잠그고 확인하므로, 결과를 쓰는 사이에 들어온 요청은 이 작업이 끝난 뒤 새 작업을 시작한다.
@@ -215,12 +226,18 @@ def _settle(db: Session, s: PracticeSession, mine: datetime | None, pass_started
         db.commit()
         return False
     if summary is not None:
-        # 요약을 만드는 동안 전사문이 바뀌었으면 지금 전사문에 없는 '주목할 순간'은 뺀다
-        now_text = dict(db.execute(select(PracticeAnswer.id, PracticeAnswer.transcript)
-                                   .where(PracticeAnswer.session_id == s.id)).all())
-        moments = [m for m in summary["moments"] if llm.verify_quote(m["quote"], now_text.get(m["answer_id"]) or "")[1]]
-        s.debrief = {**summary, "moments": moments, "generated_at": _now().isoformat(),
-                     "model": settings.openai_feedback_model}
+        # Reload after taking the session lock. A changed reflection, report or recording
+        # invalidates the whole narrative, even when every quote still occurs verbatim.
+        db.expire_all()
+        s=_load(db,s.id)
+        if s is None: raise _Superseded
+        if input_hash != debrief_fingerprint(s):
+            summary=None
+            s.debrief=None
+            status="none"
+        else:
+            s.debrief={**summary,"generated_at":_now().isoformat(),"model":settings.openai_feedback_model,
+                       "input_sha256":input_hash}
     s.debrief_status = status
     s.debrief_started_at = s.debrief_heartbeat_at = s.debrief_requested_at = None  # 다음 요청은 새로 시작한다
     db.commit()
@@ -232,23 +249,27 @@ def _run(db: Session, s: PracticeSession) -> None:
     tried: set[tuple[str, str]] = set()
     last_items: list[dict] | None = None
     result: tuple[str, dict | None] = ("failed", None)
+    result_hash: str | None = None
     try:
         for n in range(MAX_PASSES):
             pass_started = _now()
             db.refresh(s)  # 작업 중에 생긴 답변(꼬리질문)도 담는다
             _coach_all(db, s, mine, tried)
+            input_hash=None
             if not llm.available():
                 status, summary = "unavailable", None
             elif not any(_has_transcript(a) for a in s.answers):
                 status, summary = "none", None
             else:
+                input_hash=debrief_fingerprint(s)
                 items = _summary_items(s)
                 # 다시 도는 바퀴에서 요약 재료가 그대로면 만든 요약을 다시 쓴다(같은 요청을 또 보내지 않는다)
-                if items != last_items or result[0] != "done":
+                if items != last_items or input_hash != result_hash or result[0] != "done":
                     _beat(db, s, mine)
                     last_items, result = items, _summarize(s, items)
+                    result_hash=input_hash
                 status, summary = result
-            if _settle(db, s, mine, pass_started, status, summary, last=n == MAX_PASSES - 1):
+            if _settle(db, s, mine, pass_started, status, summary, last=n == MAX_PASSES - 1,input_hash=input_hash):
                 return
     except _Superseded:
         log.info("다른 디브리프 작업이 이어받아 이 작업을 멈춥니다(%s)", s.id)

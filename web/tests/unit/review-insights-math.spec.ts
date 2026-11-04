@@ -16,7 +16,7 @@ function ans(over: Partial<PracticeAnswer> = {}): PracticeAnswer {
 }
 /** 녹음으로 답한 답변 */
 const rec = (sec: number, transcript: string | null, over: Partial<PracticeAnswer> = {}) =>
-  ans({ duration_sec: sec, transcript, recorded_at: "2026-11-03T00:00:00Z", stt_status: transcript ? "done" : "failed", ...over });
+  ans({ duration_sec: sec, transcript, recorded_at: "2026-11-03T00:00:00Z", stt_status: transcript ? "done" : "failed", recording_transcript_current: true, ...over });
 function sess(answers: PracticeAnswer[], over: Partial<PracticeSession> = {}): PracticeSession {
   return {
     id: "s1", mode: "free", title: "연습", application_id: null, prep_sec: 30, answer_sec: 60, created_at: "2026-11-03T00:00:00Z",
@@ -56,6 +56,16 @@ test("speech rate needs a recording, a transcript and at least 5 seconds, and is
   expect(answerMetrics(rec(30, null), S).spm).toBeNull();
   expect(answerMetrics(rec(30, "   "), S).spm).toBeNull();
   expect(answerMetrics(rec(20, said(100)), S).spm).toBe(300);
+});
+
+test("edited and legacy-unbound transcripts never produce speed charts or speed coaching", () => {
+  const edited = rec(20, said(300), {recording_transcript_current:false});
+  const unknown = rec(20, said(600), {recording_transcript_current:undefined});
+  const result = sessionInsights(sess([edited, unknown, rec(20, said(100))]));
+  expect(answerMetrics(edited,sess([])).spm).toBeNull();
+  expect(answerMetrics(unknown,sess([])).spm).toBeNull();
+  expect(result.avgSpm).toBeNull();
+  expect(result.points.filter(p=>p.key.startsWith('speed'))).toEqual([]);
 });
 
 test("session average and fast/slow points need at least 3 measured answers", () => {

@@ -57,7 +57,7 @@ export const CORE_LANDMARKS = [33, 133, 362, 263, 1, 61, 291, 13, 14];
 
 /** 한 프레임의 특징점에서 상태와 고개 방향 지표를 뽑는다. 지표는 각도가 아니라 얼굴 크기에 대한 비율이다 */
 export function faceFeatures(points: Point[] | null | undefined): Omit<FaceSample, "t"> {
-  if (!points?.length) return { state: "none" };
+  if (!points?.length || points.some((p) => !p || !Number.isFinite(p.x) || !Number.isFinite(p.y))) return { state: "none" };
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const p of points) {
     minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
@@ -91,13 +91,16 @@ export function edgeLabel(o: Overshoot): string {
  *  보되 MAX_GAP_MS를 넘지 않는다. 고개 방향은 이 답변의 중앙값을 기준으로 한 상대 변화다(처음부터 숙이고 있었으면 숙임으로
  *  잡히지 않는다). */
 export function summarizeSegment(samples: FaceSample[], span?: Span): SegmentSummary {
+  // Reject unknown timestamps; sort without mutating input and clip every interval to the answer.
+  span = span && Number.isFinite(span.start) && Number.isFinite(span.end) && span.end >= span.start ? span : undefined;
+  samples = samples.filter((s) => Number.isFinite(s.t)).slice().sort((a, b) => a.t - b.t);
   const out: SegmentSummary = {
     samples: samples.length, answerMs: 0, analyzedMs: 0, detectedMs: 0, inMs: 0, edgeMs: 0, noneMs: 0,
     noneEpisodes: 0, longestNoneMs: 0, headMs: 0, turnedMs: 0, downMs: 0,
   };
   const last = (t: number) => (span ? span.end - t : SAMPLE_MS);
   const gap = samples.map((s, i) => (samples[i + 1]?.t ?? s.t + last(s.t)) - s.t);
-  const dur = gap.map((g) => Math.max(0, Math.min(MAX_GAP_MS, g)));
+  const dur = gap.map((g, i) => Math.max(0, Math.min(samples[i].t + Math.min(MAX_GAP_MS, g), span?.end ?? Infinity) - Math.max(samples[i].t, span?.start ?? -Infinity)));
   let run = 0;
   const closeRun = () => {
     if (run >= EPISODE_MS) out.noneEpisodes++;
@@ -120,7 +123,7 @@ export function summarizeSegment(samples: FaceSample[], span?: Span): SegmentSum
   closeRun();
   out.detectedMs = out.inMs + out.edgeMs;
   out.answerMs = span ? Math.max(0, span.end - span.start) : out.analyzedMs;
-  const head = samples.map((s, i) => ({ ...s, d: dur[i] })).filter((s) => s.state === "in" && s.yaw !== undefined && s.pitch !== undefined);
+  const head = samples.map((s, i) => ({ ...s, d: dur[i] })).filter((s) => s.state === "in" && s.d > 0 && Number.isFinite(s.yaw) && Number.isFinite(s.pitch));
   if (head.length >= MIN_HEAD_SAMPLES) {
     const yaw0 = median(head.map((s) => s.yaw!)), pitch0 = median(head.map((s) => s.pitch!));
     for (const s of head) {
@@ -132,12 +135,22 @@ export function summarizeSegment(samples: FaceSample[], span?: Span): SegmentSum
   return out;
 }
 
+/** Retain at most one hour at 4Hz. The rest remains unanalysed in the answer span. */
+export function createFaceSampler(maxSamples = 14_400) {
+  const samples: FaceSample[] = [];
+  const cap = Number.isFinite(maxSamples) ? Math.max(0, Math.floor(maxSamples)) : 14_400;
+  return {
+    add(sample: FaceSample) { if (samples.length < cap) samples.push({ ...sample }); },
+    snapshot: () => samples.slice(),
+  };
+}
+
 /** 여러 답변의 요약을 합친다(시간은 더하고 가장 길게 찾지 못한 시간은 최댓값) */
 export function combineSummaries(list: SegmentSummary[]): SegmentSummary {
   const out = summarizeSegment([]);
   for (const s of list) {
-    for (const k of Object.keys(out) as (keyof SegmentSummary)[]) if (k !== "longestNoneMs") out[k] += s[k];
-    out.longestNoneMs = Math.max(out.longestNoneMs, s.longestNoneMs);
+    for (const k of Object.keys(out) as (keyof SegmentSummary)[]) if (k !== "longestNoneMs") out[k] += Number.isFinite(s[k]) ? s[k] : 0;
+    out.longestNoneMs = Math.max(out.longestNoneMs, Number.isFinite(s.longestNoneMs) ? s.longestNoneMs : 0);
   }
   return out;
 }
@@ -145,9 +158,40 @@ export function combineSummaries(list: SegmentSummary[]): SegmentSummary {
 // 이 탭의 메모리에만 보관한다(서버·브라우저 저장소에 쓰지 않음). 새로고침하거나 탭을 닫으면 사라진다
 const reports = new Map<string, Map<string, SegmentSummary>>();
 
-export function saveVideoSegment(sessionId: string, answerId: string, summary: SegmentSummary) {
+const revisions = new Map<string, Map<string, string>>();
+
+/** Optional revision preserves existing callers; revision-aware reads never accept legacy unkeyed values. */
+export function saveVideoSegment(sessionId: string, answerId: string, summary: SegmentSummary, recordedAt?: string) {
   if (!reports.has(sessionId)) reports.set(sessionId, new Map());
   reports.get(sessionId)!.set(answerId, summary);
+  if (!revisions.has(sessionId)) revisions.set(sessionId, new Map());
+  if (recordedAt) revisions.get(sessionId)!.set(answerId, recordedAt);
+  else revisions.get(sessionId)!.delete(answerId);
+}
+export function getVideoSegments(sessionId: string, answerId: string, recordedAt?: string | null): SegmentSummary | undefined {
+  if (recordedAt !== undefined && (!recordedAt || revisions.get(sessionId)?.get(answerId) !== recordedAt)) return undefined;
+  return reports.get(sessionId)?.get(answerId);
 }
 export const sessionVideo = (sessionId: string) => reports.get(sessionId);
-export const clearSessionVideo = (sessionId: string) => { reports.delete(sessionId); };
+export function clearVideoSegment(sessionId: string, answerId: string) {
+  reports.get(sessionId)?.delete(answerId); revisions.get(sessionId)?.delete(answerId);
+}
+export function clearSessionVideo(sessionId: string) { reports.delete(sessionId); revisions.delete(sessionId); }
+
+/** Derived comments describe detector coverage and positioning, never gaze, attention or confidence. */
+export function videoDiagnostics(summary: SegmentSummary): {
+  quality: "insufficient" | "partial" | "measured"; coverage: number; unanalysedMs: number; comments: string[];
+} {
+  const finite = (v: number) => Number.isFinite(v) ? Math.max(0, v) : 0;
+  const answer = finite(summary.answerMs), analyzed = Math.min(answer, finite(summary.analyzedMs));
+  const coverage = answer > 0 ? analyzed / answer : 0;
+  const unanalysedMs = Math.max(0, answer - analyzed);
+  const comments: string[] = [];
+  if (unanalysedMs > 0) comments.push(`답변 중 ${(unanalysedMs / 1000).toFixed(1)}초는 분석하지 못한 구간입니다. 이 시간을 얼굴 이탈로 세지 않습니다.`);
+  if (summary.noneMs > 0) comments.push("얼굴을 찾지 못한 구간이 있습니다. 조명·가림·각도·검출 오류도 원인일 수 있습니다.");
+  if (summary.edgeMs > 0) comments.push("얼굴 일부가 프레임 밖에 있었습니다. 카메라 위치·거리를 확인해 보세요.");
+  if (summary.headMs > 0) comments.push("고개 방향은 이 답변의 중앙 자세에 대한 상대 변화이며 시선·집중도·자신감을 뜻하지 않습니다.");
+  if (!analyzed) comments.push("분석한 영상이 없어 자세를 판단할 수 없습니다.");
+  return { quality: !analyzed ? "insufficient" : coverage < 0.8 ? "partial" : "measured", coverage, unanalysedMs, comments };
+}
+export function clearAllVideo() { reports.clear(); revisions.clear(); }

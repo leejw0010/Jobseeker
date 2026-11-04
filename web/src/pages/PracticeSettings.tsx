@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { clearAllVoice } from "../delivery/voice";
+import { clearAllVideo } from "../video/metrics";
 import ConsentPanel from "../components/ConsentPanel";
 import { sttDestination } from "../sttText";
 import type { DeleteResult, PracticeSettings as Settings, SttStatus } from "../types";
@@ -55,7 +57,11 @@ export default function PracticeSettings() {
 
   const deleteAll = () => {
     if (!confirm("원본 녹음을 모두 지울까요? 전사문과 연습 기록은 남아요. 전사문이 없는 답변은 내용이 남지 않아요. 되돌릴 수 없어요.")) return;
-    run(async () => setMsg(deleteMessage(await api.deleteAllRecordings(), "지울 원본 녹음이 없어요.")));
+    run(async () => {
+      const result=await api.deleteAllRecordings();
+      clearAllVoice();clearAllVideo();
+      setMsg(deleteMessage(result, "지울 원본 녹음이 없어요."));
+    });
   };
 
   const withdraw = () => {
@@ -63,6 +69,7 @@ export default function PracticeSettings() {
     run(async () => {
       const r = await api.updateSettings({ consent: false });
       setSt(r);
+      clearAllVoice();clearAllVideo();
       const m = deleteMessage(r, "지울 원본 녹음은 없었어요.");
       setMsg({ ...m, text: `동의를 철회했어요. ${m.text}` });
     });
@@ -145,12 +152,13 @@ export default function PracticeSettings() {
           <li>
             <b>질문·답변 전사문·자기평가·회고 메모·코칭 결과</b> → OpenAI 세션 디브리프(키가 설정된 경우). 디브리프는 세션을 마치면 자동으로 만들어요.
           </li>
+          <li>서버에서 역량 근거 기능을 켠 경우에만 기존 답변 코칭 요청에 시작 시점 질문 유형·필요 역량도 보내요. 전달 관찰 수치는 보내지 않아요.</li>
           <li><b>지원 회사·직무·자소서</b> → OpenAI 맞춤 질문 만들기(키가 설정된 경우, 질문 생성을 누를 때).</li>
           <li>
             <b>전사문·자기평가·회고 메모·코칭 결과·디브리프·면접 기준 자료(자소서·공고 사본)</b> → JobSeeker 데이터베이스. 연습 기록을 지우면 그
             기록의 것은 함께 지워져요. 꼬리질문 문구, 그리고 다시 연습 세션에 복사된 기준 자료와 보완 안내는 따로 남아요.
           </li>
-          <li>목소리·감정은 분석하지 않고 영상은 찍지 않아요. 녹음은 음성 전사에만 쓰고, 답변 코칭과 디브리프에는 전사문 같은 글만 보내요.</li>
+          <li>녹음 중 브라우저에서 소리의 에너지 변화로 발화·휴지 후보를 계산해요. 말소리나 감정·자신감을 판별하지 않아요. 음성·선택한 카메라의 관찰 요약은 이 탭 메모리에만 두며 서버·OpenAI로 보내지 않고 새로고침하면 사라져요. 영상·이미지는 저장하지 않아요.</li>
         </ul>
       </section>
     </>

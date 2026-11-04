@@ -30,13 +30,28 @@ OptionalURL = Annotated[str | None, BeforeValidator(_blank_as_none)]
 
 # ───────────── ② Practice ─────────────
 
-class QuestionIn(BaseModel):
+class ClassificationIn(BaseModel):
+    question_type: str | None = None
+    competency_keys: list[str] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode="after")
+    def classification_valid(self):
+        from .taxonomy import validate_keys
+        validate_keys([self.question_type] if self.question_type else [], self.competency_keys)
+        return self
+
+
+class QuestionIn(ClassificationIn):
     category: Category
     job_category: str | None = None
     text: str = Field(min_length=2)
 
 
 class QuestionOut(ORM):
+    question_type: str | None = None
+    competency_keys: list[str] = Field(default_factory=list)
+    taxonomy_version: str | None = None
+    tagging_source: str | None = None
     id: str
     category: str
     job_category: str | None
@@ -45,7 +60,7 @@ class QuestionOut(ORM):
     application_id: str | None
 
 
-class GenerateIn(BaseModel):
+class GenerateIn(ClassificationIn):
     application_id: str | None = None
     company: str | None = None
     position: str | None = None
@@ -56,6 +71,16 @@ class GenerateIn(BaseModel):
 
 
 class SessionIn(BaseModel):
+    question_types: list[str] = Field(default_factory=list)
+    competency_keys: list[str] = Field(default_factory=list)
+    competency_match: Literal["any", "all"] = "any"
+
+    @model_validator(mode="after")
+    def filters_valid(self):
+        from .taxonomy import validate_keys
+        validate_keys(self.question_types,self.competency_keys)
+        return self
+
     mode: Literal["free", "mock"]
     title: str | None = None
     application_id: str | None = None
@@ -92,7 +117,29 @@ class FollowupSuggestion(BaseModel):
     source_version_id: str | None = None
 
 
+class CompetencyObservation(BaseModel):
+    competency_key: str
+    basis: Literal["past_action","proposed_action","explanation"]
+    quote: str = Field(min_length=4,max_length=500)
+    reason: str = Field(min_length=1,max_length=1000)
+
+
+class CompetencyEvidence(BaseModel):
+    status: Literal["analyzed","unavailable"]
+    method: Literal["ai"] = "ai"
+    taxonomy_version: str
+    assessment_version: str
+    generated_at: str
+    model: str
+    transcript_sha256: str
+    question_classification_sha256: str
+    observations: list[CompetencyObservation] = Field(default_factory=list,max_length=3)
+
+
 class CoachingReport(BaseModel):
+    competency_evidence: CompetencyEvidence | None = None
+    transcript_sha256: str | None = None
+    question_classification_sha256: str | None = None
     method: Literal["basic", "ai"] = "basic"
     # 새 보고서는 coaching.RUBRIC_VERSION을 찍는다. 버전이 없는 보고서는 첫 기준(2026-10-15)으로 본다
     rubric_version: str = "2026-10-15"
@@ -103,6 +150,8 @@ class CoachingReport(BaseModel):
 
 
 class AnswerOut(ORM):
+    recording_transcript_current: bool = False
+    question_classification: dict | None = None
     id: str
     order_no: int
     question: QuestionOut
@@ -156,6 +205,8 @@ class SessionOut(ORM):
 
 
 class SessionSummary(ORM):
+    competency_keys: list[str] = Field(default_factory=list)
+    classification_missing_count: int = 0
     id: str
     mode: str
     title: str
@@ -167,6 +218,7 @@ class SessionSummary(ORM):
 
 
 class ReflectionIn(BaseModel):
+    input_mode: Literal["text", "transcript"] | None = None
     self_rating: int | None = Field(default=None, ge=1, le=5)
     reflection_note: str | None = None
     transcript: str | None = Field(default=None, description="전사문 수동 수정")
