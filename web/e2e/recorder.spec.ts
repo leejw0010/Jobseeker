@@ -65,23 +65,6 @@ test("clicking start twice while asking asks once and records once", async ({ pa
 
 test("optional audio analysis failure does not prevent recording or saving an answer", async ({ page, request }) => {
   await page.addInitScript(() => {
-    // Use a deterministic synthetic microphone with the real MediaRecorder/encoder,
-    // isolating analyser failure from the default fake device's capture timing.
-    const SourceContext = window.AudioContext;
-    const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-    navigator.mediaDevices.getUserMedia = async constraints => {
-      if (!constraints?.audio) return original(constraints);
-      const context = new SourceContext();
-      const source = context.createOscillator();
-      const destination = context.createMediaStreamDestination();
-      source.connect(destination);
-      source.start();
-      await context.resume();
-      const track = destination.stream.getAudioTracks()[0];
-      const stop = track.stop.bind(track);
-      track.stop = () => { stop(); source.stop(); void context.close(); };
-      return destination.stream;
-    };
     Object.defineProperty(window, "AudioContext", {
       configurable: true,
       value: class { constructor() { throw new Error("test: audio analysis unavailable"); } },
@@ -91,11 +74,13 @@ test("optional audio analysis failure does not prevent recording or saving an an
   await page.goto(`/practice/sessions/${session.id}/run`);
   await page.getByRole("button", { name: "답변 시작", exact: true }).click();
   await expect(page.getByText("녹음 중 · 경과 시간")).toBeVisible();
-  // Wait for actual recording progress: an immediate stop can legitimately produce an empty browser blob.
+  // Free mode briefly starts with the configured answer limit before its elapsed
+  // timer ticks. That limit is not proof that audio has actually been captured.
   await expect.poll(async () => {
     const [minutes, seconds] = (await page.locator(".timer").innerText()).split(":").map(Number);
-    return minutes * 60 + seconds;
-  }).toBeGreaterThanOrEqual(2);
+    const elapsed = minutes * 60 + seconds;
+    return elapsed >= 2 && elapsed < session.answer_sec;
+  }).toBe(true);
   const saved = page.waitForResponse((r) => r.url().endsWith(`/practice/answers/${session.answers[0].id}/audio`) && r.request().method() === "POST");
   await page.getByRole("button", { name: "답변 끝내기", exact: true }).click();
   const response = await saved;

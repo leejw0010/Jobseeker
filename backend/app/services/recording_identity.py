@@ -13,7 +13,7 @@ def clear_optional_recording_identity(db: Session, answer_id: str) -> bool:
     Migrated schemas retain it even during rollback, so clear that old signature.
     No schema is created or changed here. Caller has already checked ownership.
     """
-    names = {entry["name"] for entry in inspect(db.get_bind()).get_columns("practice_answers")}
+    names = {entry["name"] for entry in inspect(db.connection()).get_columns("practice_answers")}
     if "recording_transcript_sha256" not in names:
         return False
     answers = table("practice_answers", column("id", ID), column("recording_transcript_sha256", String(64)))
