@@ -4,6 +4,8 @@ import { MIN_RATE_SEC, syllableCount } from "../review/insights";
 
 export type VoiceSample = { t: number; rms: number; clipped?: boolean };
 export type DeliverySummary = {
+  /** Set on revision-aware reads; edited text cannot be aligned to the old recording. */
+  transcriptRevisionMatches?: boolean;
   method: "browser-energy-candidates-v1";
   quality: "usable" | "insufficient" | "unreliable" | "unavailable";
   reasons: string[];
@@ -50,6 +52,10 @@ export function createVoiceSampler(maxSamples = 18_000) {
 
 /** Recalculate textual candidates after STT. It never invents acoustic timestamps. */
 export function withVoiceTranscript(summary: DeliverySummary, transcript: string): DeliverySummary {
+  if (summary.transcriptRevisionMatches === false) return {
+    ...summary, transcriptUnits: 0, syllables: 0, totalPacePerMin: null, activeCandidatePacePerMin: null, fillers: [],
+    limitations: [...new Set([...summary.limitations, "전사문이 바뀌어 녹음과 연결한 속도·추임새 해석을 표시하지 않습니다. 수치 관찰은 원래 녹음의 값입니다."])],
+  };
   const tokens = transcript.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   const candidates = new Set(["어", "음", "그", "저", "그러니까", "이제", "사실", "약간", "아무튼", "뭐", "um", "uh"]);
   const counts = new Map<string, number>();
@@ -119,15 +125,16 @@ export function summarizeVoice(samples: readonly VoiceSample[], durationSec: num
   return withVoiceTranscript(out, transcript);
 }
 
-const reports = new Map<string, Map<string, { revision: string; summary: DeliverySummary }>>();
-export function saveVoiceSegment(sessionId: string, answerId: string, summary: DeliverySummary, recordedAt: string) {
+const reports = new Map<string, Map<string, { revision: string; summary: DeliverySummary; sourceTranscript?: string }>>();
+export function saveVoiceSegment(sessionId: string, answerId: string, summary: DeliverySummary, recordedAt: string, transcript?: string | null) {
   if (!recordedAt) return;
   if (!reports.has(sessionId)) reports.set(sessionId, new Map());
-  reports.get(sessionId)!.set(answerId, { revision: recordedAt, summary });
+  reports.get(sessionId)!.set(answerId, { revision: recordedAt, summary, sourceTranscript: transcript === undefined ? undefined : (transcript ?? "").trim() });
 }
-export function getVoiceSegment(sessionId: string, answerId: string, recordedAt: string | null | undefined): DeliverySummary | undefined {
+export function getVoiceSegment(sessionId: string, answerId: string, recordedAt: string | null | undefined, transcript?: string | null): DeliverySummary | undefined {
   const item = reports.get(sessionId)?.get(answerId);
-  return recordedAt && item?.revision === recordedAt ? item.summary : undefined;
+  if (!recordedAt || item?.revision !== recordedAt) return undefined;
+  return transcript === undefined ? item.summary : { ...item.summary, transcriptRevisionMatches: item.sourceTranscript === (transcript ?? "").trim() };
 }
 export function clearVoiceSegment(sessionId: string, answerId: string) { reports.get(sessionId)?.delete(answerId); }
 export function clearSessionVoice(sessionId: string) { reports.delete(sessionId); }

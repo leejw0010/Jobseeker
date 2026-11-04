@@ -7,7 +7,7 @@ export function localDeliveryFacts(s:PracticeSession):DeliveryFact[] {
  return s.answers.flatMap(a=>{
   if(!a.recorded_at) return [];
   const facts:DeliveryFact[]=[];
-  const voice=getVoiceSegment(s.id,a.id,a.recorded_at);
+  const voice=getVoiceSegment(s.id,a.id,a.recorded_at,a.transcript??'');
   if(voice) {
    const v=withVoiceTranscript(voice,a.transcript??'');
    if(v.quality==='usable'&&v.activeCandidateSec!=null) facts.push({answerId:a.id,order:a.order_no,source:'브라우저 음성 에너지 표본',text:`전체 ${v.totalSec.toFixed(1)}초 중 발화 후보 ${v.activeCandidateSec.toFixed(1)}초, 분석 범위 ${Math.round(v.coverage*100)}%예요. ${v.longestPauseSec!=null?`가장 긴 에너지 휴지 후보는 ${v.longestPauseSec.toFixed(1)}초예요.`:''}`,action:v.longPauseCount&&v.longPauseCount>0?'긴 쉼이 있던 답변의 전사문에서 문단을 나누고 한 번 더 녹음하기':undefined});

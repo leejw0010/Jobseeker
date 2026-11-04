@@ -117,9 +117,15 @@ def _now() -> datetime:
 def _session_out(s: PracticeSession) -> SessionOut:
     """세션 응답. 다시 연습할 답변과 디브리프 작업이 도는 중인지는 저장하지 않고 응답마다 다시 계산한다."""
     out = SessionOut.model_validate(s)
-    if s.debrief and s.debrief.get("input_sha256") != debrief_fingerprint(s):
-        out.debrief=None
-        if out.debrief_status=="done": out.debrief_status="none"
+    if s.debrief:
+        previous = s.debrief.get("input_sha256")
+        if previous is None or (not settings.practice_insights_enabled and previous != debrief_fingerprint(s)):
+            # Keep history whose identity cannot be checked, explicitly separate
+            # from the current assessment. No migration or extra AI call.
+            out.debrief = {**s.debrief, "input_status": "legacy_unverified"}
+        elif previous != debrief_fingerprint(s):
+            out.debrief=None
+            if out.debrief_status=="done": out.debrief_status="none"
     out.redrill = weak_answers(s)
     out.debrief_running = debrief_running(s)
     return out

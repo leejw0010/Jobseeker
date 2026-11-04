@@ -98,7 +98,7 @@ export default function SessionRunner() {
         clearVideoSegment(id,answer.id); clearVoiceSegment(id,answer.id);
         if(saved.recorded_at) {
           if(pendingVideo.current) saveVideoSegment(id,answer.id,pendingVideo.current,saved.recorded_at);
-          if(recording.delivery) saveVoiceSegment(id,answer.id,recording.delivery,saved.recorded_at);
+          if(recording.delivery) saveVoiceSegment(id,answer.id,recording.delivery,saved.recorded_at,saved.transcript);
         }
         pendingAudio.current = null; pendingVideo.current=null;
       } else {

@@ -54,3 +54,18 @@ test('disabled taxonomy hides editing and selection controls',async({page})=>{
  await expect(page.getByRole('button',{name:'분류 편집'})).toHaveCount(0);
  await expect(page.getByRole('group',{name:'직접 추가할 질문 분류'})).toHaveCount(0);
 });
+
+test('legacy debrief remains readable as history and is excluded from current integrated findings', async ({page,request}) => {
+ const q=await (await request.post(`${API}/practice/questions`,{data:{category:'인성',text:`이전 회고 보존 ${Date.now()}`}})).json();
+ const s=await (await request.post(`${API}/practice/sessions`,{data:{mode:'free',question_ids:[q.id]}})).json();
+ await page.route(`**/practice/sessions/${s.id}`, async route => {
+   const response=await route.fetch();
+   const body=await response.json();
+   await route.fulfill({response,json:{...body,debrief_status:'done',debrief:{lesson:'보관한 이전 버전의 교훈',next_action:'이전 행동',moments:[],input_status:'legacy_unverified'}}});
+ });
+ await page.goto(`/practice/sessions/${s.id}`);
+ await expect(page.locator('.integrated-coaching')).not.toContainText('보관한 이전 버전의 교훈');
+ await page.getByText('기존 AI 디브리프의 근거와 원문',{exact:true}).click();
+ await expect(page.getByText('보관한 이전 버전의 교훈',{exact:true})).toBeVisible();
+ await expect(page.getByText('현재 답변과의 일치를 확인할 수 없어',{exact:false})).toBeVisible();
+});

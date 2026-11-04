@@ -26,6 +26,35 @@ def test_taxonomy(client):
     assert len(b['question_types']) == 6 and len(b['competencies']) == 7
     assert all((x['label'] and x['definition'] for k in ('question_types', 'competencies') for x in b[k]))
 
+def test_legacy_debrief_is_preserved_as_unverified_history(client):
+    from app.db import SessionLocal
+    from app.models import PracticeSession
+    h = owner()
+    s = session(client, h, question(client, h))
+    with SessionLocal() as db:
+        stored = db.get(PracticeSession, s['id'])
+        stored.debrief = {'lesson': '이전 버전에서 만든 교훈', 'next_action': '이전 행동', 'moments': []}
+        stored.debrief_status = 'done'
+        db.commit()
+    response = client.get(f'/practice/sessions/{s["id"]}', headers=h).json()
+    assert response['debrief']['lesson'] == '이전 버전에서 만든 교훈'
+    assert response['debrief']['input_status'] == 'legacy_unverified'
+    assert response['debrief_status'] == 'done'
+
+def test_schema_rollback_preserves_core_coaching_without_optional_evidence():
+    code = '''from app import coaching
+from app.models import PracticeAnswer, AnswerCoaching, transcript_hash
+from app.taxonomy import classification_hash
+text = "제가 오류를 분석하고 수정했습니다."
+a = PracticeAnswer(transcript=text)
+a.coaching = AnswerCoaching(report={**coaching._basic(text, {}), "transcript_sha256": transcript_hash(text), "question_classification_sha256": classification_hash({"competencies": ["problem_solving"]}), "competency_evidence": {"observations": []}})
+assert a.coaching_report is not None
+assert len(a.coaching_report["criteria"]) == 3
+assert a.coaching_report.get("competency_evidence") is None
+'''
+    r = subprocess.run([sys.executable, '-c', code], env={**os.environ, 'PRACTICE_INSIGHTS_ENABLED': 'false'}, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
 @pytest.mark.parametrize('extra', [{'question_type': 'bad'}, {'competency_keys': ['bad']}, {'competency_keys': ['communication', 'communication']}, {'competency_keys': ['communication', 'problem_solving', 'leadership', 'collaboration']}])
 def test_invalid_classification(client, extra):
     assert client.post('/practice/questions', headers=owner(), json={'category': '인성', 'text': '질문입니다', **extra}).status_code == 422

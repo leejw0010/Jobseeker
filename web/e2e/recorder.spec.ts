@@ -63,6 +63,29 @@ test("clicking start twice while asking asks once and records once", async ({ pa
   expect(m.live).toBe(1);
 });
 
+test("optional audio analysis failure does not prevent recording or saving an answer", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "AudioContext", {
+      configurable: true,
+      value: class { constructor() { throw new Error("test: audio analysis unavailable"); } },
+    });
+  });
+  const session = await seed(request);
+  await page.goto(`/practice/sessions/${session.id}/run`);
+  await page.getByRole("button", { name: "답변 시작", exact: true }).click();
+  await expect(page.getByText("녹음 중 · 경과 시간")).toBeVisible();
+  // Wait for actual recording progress: an immediate stop can legitimately produce an empty browser blob.
+  await expect.poll(async () => {
+    const [minutes, seconds] = (await page.locator(".timer").innerText()).split(":").map(Number);
+    return minutes * 60 + seconds;
+  }).toBeGreaterThanOrEqual(2);
+  const saved = page.waitForResponse((r) => r.url().endsWith(`/practice/answers/${session.answers[0].id}/audio`) && r.request().method() === "POST");
+  await page.getByRole("button", { name: "답변 끝내기", exact: true }).click();
+  const response = await saved;
+  expect(response.status()).toBe(200);
+  expect((await response.json()).recorded_at).toBeTruthy();
+});
+
 test("a star rating cannot be sent again while the first one is saving", async ({ page, request }) => {
   const q = await (await request.post(`${API}/practice/questions`, { data: { category: "인성", text: `별점 ${Date.now()}` } })).json();
   const session = await (await request.post(`${API}/practice/sessions`, { data: { mode: "free", question_ids: [q.id] } })).json();

@@ -330,7 +330,12 @@ export function evaluateRun(data: FixationData[], view: { w: number; h: number }
   const endF = of((f) => f.id === "val-lens-forward").flatMap((d) => usable(d).map((s) => s.f));
   const mid = (fs: GazeFeatures[], k: keyof GazeFeatures) => median(fs.map((f) => f[k]));
   const delta = (k: keyof GazeFeatures) => (baseF.length && endF.length ? mid(endF, k) - mid(baseF, k) : null);
-  const ratio = (k: keyof GazeFeatures) => (baseF.length && endF.length ? mid(endF, k) / mid(baseF, k) - 1 : null);
+  const ratio = (k: keyof GazeFeatures) => {
+    if (!baseF.length || !endF.length) return null;
+    const baseline = mid(baseF, k);
+    const value = baseline > 0 ? mid(endF, k) / baseline - 1 : NaN;
+    return Number.isFinite(value) ? value : null;
+  };
   const drift = { open: ratio("open"), scale: ratio("scale"), faceX: delta("faceX"), faceY: delta("faceY"), hx: delta("hx"),
     hy: delta("hy"), ex: delta("ex"), ey: delta("ey") };
   const errors = Object.fromEntries(of((f) => f.role === "validate" && isScreen(f)).map((d) => [d.fixation.id, fixError(d)]));

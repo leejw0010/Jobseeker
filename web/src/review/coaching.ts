@@ -56,7 +56,7 @@ export function integratedCoaching(s: PracticeSession, delivery: DeliveryFact[] 
     if(actions.length===2) break;
   }
   const parts=[`이번 연습은 답변 ${s.answers.length}개 중 전사문 ${answered.length}개를 바탕으로 돌아볼게요.`];
-  if(s.debrief_status==='done' && s.debrief?.lesson) parts.push(`기존 세션 디브리프에서 짚은 핵심은 “${excerpt(s.debrief.lesson,160)}”예요.`);
+  if(s.debrief_status==='done' && s.debrief?.lesson && s.debrief.input_status!=='legacy_unverified') parts.push(`기존 세션 디브리프에서 짚은 핵심은 “${excerpt(s.debrief.lesson,160)}”예요.`);
   const primary=points.find(p=>p.source==='coaching');
   if(primary) parts.push(`내용에서는 ${primary.title}이 ${primary.answers.length}개 답변에서 보여 이번 연습의 우선 과제로 잡았어요.`);
   const positive=comments.find(c=>c.text.startsWith('충분:'));

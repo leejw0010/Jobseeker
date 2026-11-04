@@ -126,6 +126,7 @@ export interface DebriefMoment {
 
 /** 서버는 교훈·다음 행동 중 하나만 있어도 저장한다(빈 값은 null). */
 export interface Debrief {
+  input_status?: "legacy_unverified";
   lesson: string | null;
   next_action: string | null;
   moments: DebriefMoment[];

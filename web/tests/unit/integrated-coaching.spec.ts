@@ -4,6 +4,10 @@ import type { PracticeAnswer, PracticeSession } from '../../src/types';
 const answer = (over: Partial<PracticeAnswer> = {}) => ({ id:'a', order_no:1, transcript:'제가 일정 관리를 맡고 매일 진행 상황을 확인했습니다.', recorded_at:null, question:{text:'협업 경험',category:'인성',competency_keys:['teamwork']}, coaching_report:null, question_classification:null, ...over } as PracticeAnswer);
 const session = (answers: PracticeAnswer[]) => ({ id:'s',answers,mode:'free',answer_sec:90,debrief:null,redrill:[] } as unknown as PracticeSession);
 const snapshot = {schema_version:1 as const,taxonomy_version:'v1',question_type:'experience',question_type_label:'경험',question_type_definition:'실제 경험',competencies:[{key:'teamwork',label:'협업',definition:'함께 일하기'}],tagging_source:'manual',question_role:'primary' as const,captured_at:'now'};
+test('historical debrief without a verified input identity is preserved separately, not narrated as a current finding', () => {
+ const s={...session([answer()]),debrief_status:'done',debrief:{lesson:'과거 전용 교훈입니다',input_status:'legacy_unverified'}} as PracticeSession;
+ expect(integratedCoaching(s).script).not.toContain('과거 전용 교훈입니다');
+});
 test('coverage counts frozen question scope separately from quoted observations and preserves legacy null', () => {
  const a=answer({question_classification:snapshot});
  expect(competencyCoverage([a,answer()])).toMatchObject({missing:1,untagged:0,extraObservations:[],rows:[{key:'teamwork',label:'협업',questionCount:1,answeredCount:1,transcribedCount:1,analyzedCount:0,primaryCount:1,followupCount:0,observedCount:0}]});

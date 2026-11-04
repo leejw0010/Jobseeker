@@ -69,6 +69,13 @@ test("nonfinite timing and overflowed geometric arithmetic do not reach calibrat
 });
 
 import * as quality from "../../src/video/gaze/quality";
+test("closed-eye baseline drift is unavailable instead of an infinite percentage", () => {
+  const run = syntheticRun({ noise: 0.0001, seed: 31 });
+  run.filter(d => d.fixation.role === "train" && d.fixation.target === "lens" && d.fixation.pose === "forward")
+    .forEach(d => d.samples.forEach(s => { s.f.open = 0; }));
+  const result = evaluateRun(run, VIEW);
+  expect(result.diag.drift.open).toBeNull();
+});
 test("calibration invalidation distinguishes viewport from camera resolution changes and stays invalid", () => {
   expect(typeof quality.createCalibrationGuard).toBe("function");
   const camera = quality.createCalibrationGuard("view1", { width: 640, height: 480 });

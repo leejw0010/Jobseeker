@@ -169,14 +169,11 @@ class PracticeAnswer(Base):
         report = self.coaching.report if self.coaching else None
         if report and report.get("transcript_sha256") not in (None, transcript_hash(self.transcript)):
             return None
-        if report and report.get("question_classification_sha256") is not None:
-            from .taxonomy import classification_hash
-            if report["question_classification_sha256"] != classification_hash(self.question_classification):
-                return None
         if report and report.get("competency_evidence") is not None:
             from .taxonomy import current_evidence
-            return {**report,"competency_evidence":current_evidence(
-                report["competency_evidence"],self.transcript,self.question_classification)}
+            # Optional classification must not hide transcript-valid core coaching on rollback.
+            evidence = current_evidence(report["competency_evidence"],self.transcript,self.question_classification) if settings.practice_insights_enabled else None
+            return {**report,"competency_evidence":evidence}
         return report
 
     @property

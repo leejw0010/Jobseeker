@@ -241,6 +241,7 @@ function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
         ))}
       {status === "done" && d && (
         <details><summary>기존 AI 디브리프의 근거와 원문</summary>
+          {d.input_status === "legacy_unverified" && <p className="warn-text">이전 버전 또는 분류 기능을 끈 상태의 보관된 요약이에요. 현재 답변과의 일치를 확인할 수 없어 통합 코칭의 근거로 사용하지 않아요.</p>}
           {d.lesson && (
             <>
               <div className="small muted">핵심 교훈</div>

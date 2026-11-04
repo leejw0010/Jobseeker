@@ -108,3 +108,17 @@ test("nonfinite timestamps cannot hide invalid observations inside otherwise goo
   expect(s.reasons).toContain("invalid_timestamp");
   expect(s.activeCandidateSec).toBeNull();
 });
+
+test("edited transcript cannot be paired with the previous recording for text-derived delivery feedback", () => {
+  const summary = voice.summarizeVoice(fixture(), 10);
+  voice.saveVoiceSegment("edited", "a", summary, "r1", "제가 오류를 고쳤습니다");
+  const original = voice.withVoiceTranscript(voice.getVoiceSegment("edited", "a", "r1", "제가 오류를 고쳤습니다")!, "제가 오류를 고쳤습니다");
+  expect(original.activeCandidatePacePerMin).not.toBeNull();
+  const edited = voice.withVoiceTranscript(voice.getVoiceSegment("edited", "a", "r1", "완전히 다른 답변 음")!, "완전히 다른 답변 음");
+  expect(edited.activeCandidateSec).toBe(summary.activeCandidateSec);
+  expect(edited.totalPacePerMin).toBeNull();
+  expect(edited.activeCandidatePacePerMin).toBeNull();
+  expect(edited.fillers).toEqual([]);
+  expect(edited.limitations.join(" ")).toContain("전사문이 바뀌어");
+  voice.clearSessionVoice("edited");
+});
