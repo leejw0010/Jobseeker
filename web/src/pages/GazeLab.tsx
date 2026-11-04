@@ -7,6 +7,7 @@ import {
 } from "../video/gaze/calibration";
 import { FEASIBILITY, MAX_RETRY, MIN_VALID } from "../video/gaze/constants";
 import type { Frame } from "../video/gaze/sampler";
+import { createCalibrationGuard, type CalibrationInvalid } from "../video/gaze/quality";
 import "./GazeLab.css";
 
 /** 시선 분석 0단계 실험실(개발 전용, /dev/gaze-lab). 기존 카메라 스트림·검출기를 그대로 쓰고,
@@ -19,6 +20,13 @@ const timeScale = () => (E2E ? Number(localStorage.getItem("e2e-gaze-scale")) ||
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** 보정은 시작할 때의 뷰포트 기준이다. 크기·창 위치·배율이 바뀌면 그 실행은 무효 */
 const geometry = () => [innerWidth, innerHeight, screenX, screenY, devicePixelRatio, window.visualViewport?.scale ?? 1].join(",");
+const INVALID: Record<CalibrationInvalid, string> = {
+  viewport_changed: "창 크기·위치·배율이 바뀌어 이번 시험은 무효예요.",
+  resolution_changed: "카메라 해상도가 바뀌어 이번 시험은 무효예요.",
+  invalid_resolution: "유효한 카메라 해상도를 확인할 수 없어 이번 시험은 무효예요.",
+};
+const REJECTED: Record<string, string> = { no_face: "얼굴 없음", eyes_outside: "눈이 프레임 밖", eyes_unreliable: "눈 추적 불안정",
+  invalid_resolution: "해상도 무효", resolution_changed: "해상도 변경", nonfinite_geometry: "좌표·시각 비정상", blink: "눈 감김 후보" };
 const VERDICT: Record<Verdict, string> = { pass: "통과", fail: "실패", inconclusive: "결론 없음" };
 const pct = (v: number | null | undefined) => (v == null ? "–" : `${Math.round(v * 100)}%`);
 const num = (v: number | null | undefined, d = 0) => (v == null ? "–" : v.toFixed(d));
@@ -32,6 +40,7 @@ export default function GazeLab() {
   const cam = useFaceAnalysis();
   const { subscribeFrames, setTargetHz, rateSnapshot } = cam;
   const [phase, setPhase] = useState<Phase>("intro");
+  const [invalidReason, setInvalidReason] = useState<CalibrationInvalid>("viewport_changed");
   const [current, setCurrent] = useState<Current | null>(null);
   const [skipRate, setSkipRate] = useState(false);
   const [report, setReport] = useState<FeasibilityReport | null>(null);
@@ -52,7 +61,8 @@ export default function GazeLab() {
   const run = useCallback(async () => {
     const k = timeScale(), collectHz = k < 1 ? 60 : 15;
     // 채점 좌표는 스크롤바를 뺀 화면 기준(시험 화면을 덮는 고정 레이어와 같은 크기)
-    const view = { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight }, geo = geometry();
+    const view = { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight };
+    const guard = createCalibrationGuard(geometry(), size.current ? { width: size.current.w, height: size.current.h } : undefined);
     const queue = PROTOCOL.filter((f) => !(skipRate && (f.role === "rate" || f.role === "typing"))).map((fx) => ({ fx, attempt: 0 }));
     const data: FixationData[] = [];
     setReport(null);
@@ -67,11 +77,18 @@ export default function GazeLab() {
       setTargetHz(fx.hz ?? collectHz);
       await sleep(fx.settleMs * k);
       const frames: Frame[] = [];
-      const stop = subscribeFrames((f) => { frames.push(f); });
+      if (!alive.current) return;
+      const stop = subscribeFrames((f) => {
+        guard.check(geometry(), { width: f.width, height: f.height });
+        // A fixation lasts at most 20sec. Guard against a stalled timer retaining raw frames indefinitely.
+        if (frames.length < 2400) frames.push(f);
+      });
       await sleep(fx.collectMs * k);
       stop();
       if (!alive.current) return;
-      if (geometry() !== geo) {
+      const invalid = guard.check(geometry());
+      if (invalid) {
+        setInvalidReason(invalid);
         setTargetHz(4);
         setCurrent(null);
         setPhase("invalid");
@@ -122,7 +139,7 @@ export default function GazeLab() {
         <button className="primary" disabled={cam.status !== "on" || phase === "running"} onClick={() => void run()}>시험 시작</button>
       </div>
       {phase === "invalid" && <div role="alert" className="warn-text">
-        <p>창 크기·위치·배율이 바뀌어 이번 시험은 무효예요. 보정은 시험을 시작할 때의 화면 기준이라 처음부터 다시 해야 해요.</p>
+        <p>{INVALID[invalidReason]} 보정은 시험을 시작할 때의 화면과 카메라 해상도 기준이라 처음부터 다시 해야 해요.</p>
         <button onClick={() => void run()}>처음부터 다시</button>
       </div>}
     </section>
@@ -199,7 +216,13 @@ const DRIFT_LABEL: [keyof FeasibilityReport["diag"]["drift"], string, boolean][]
 function Diagnostics({ r }: { r: FeasibilityReport }) {
   const signed = (v: number | null, asPct: boolean) => (v == null ? "–" : asPct ? `${v > 0 ? "+" : ""}${Math.round(v * 100)}%` : `${v > 0 ? "+" : ""}${v.toFixed(3)}`);
   return <div data-testid="lab-diag">
-    <h3>진단(판정에는 쓰지 않음)</h3>
+    <h3>진단(정확도 개선을 뜻하지 않음)</h3>
+    <p className="small">관측 {r.diag.quality.total} · 유효 {r.diag.quality.accepted} · 자세·거리 변화 표시 {r.diag.quality.poseFlags}.
+      자세 표시는 진단용이며 기존 거리 변화 판정 외에 모델의 거절 기준을 늘리지 않아요.</p>
+    <table data-testid="lab-rejected"><thead><tr><th>거절 사유</th><th>횟수</th></tr></thead>
+      <tbody>{Object.entries(r.diag.quality.rejected).map(([reason, count]) => <tr key={reason}><td>{REJECTED[reason] ?? reason}</td><td>{count}</td></tr>)}</tbody></table>
+    <p className="small muted">눈 감김 후보는 기존 기준(기준 눈 뜬 정도의 절반 미만)으로 학습에서 제외하고, 검증의 unknown 분모에는 남겨요.
+      화면 검증점마다 유효 표본 8개 이상이 없으면 전체 좌표 오차는 판단 보류예요. G1·G2는 실험실 전용이며 면접 평가는 하지 않아요.</p>
     <p className="small muted">렌즈 응시: 처음 보는 응시별 렌즈 확률 중앙값과 분포 밖으로 막힌 비율. 확률이 낮으면 분류기가 렌즈 응시로 보지 않은 것이고,
       분포 밖 비율이 높으면 보정 때와 자세·눈이 달라 판정을 거절한 것이에요.</p>
     <table><thead><tr><th>응시</th><th>표본</th><th>확률 중앙</th><th>분포 밖</th><th>toward</th><th>away</th><th>unknown</th></tr></thead>
