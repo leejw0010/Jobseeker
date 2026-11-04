@@ -27,4 +27,8 @@ def current_user_id(
         payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], audience="authenticated")
     except jwt.PyJWTError as e:
         raise HTTPException(401, f"유효하지 않은 토큰: {e}") from e
-    return payload["sub"]
+    # Supabase 사용자 id(uuid)만 받는다. 없거나 형식이 다르면 user_id 컬럼(uuid)에 쓸 수 없다
+    sub = payload.get("sub")
+    if not isinstance(sub, str) or not valid_id(sub):
+        raise HTTPException(401, "유효하지 않은 토큰: 사용자 id(sub)가 없어요")
+    return sub

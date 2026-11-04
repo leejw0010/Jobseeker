@@ -8,11 +8,11 @@ JobSeeker(캡스톤 26-2) 중 **② Practice(AI 면접 연습)** 와 **③ Track
 
 | 경로 | 책임 | 건드릴 때 주의 |
 |---|---|---|
-| `backend/` | FastAPI API(`app/routers/practice.py`, `track.py`), 모델, 코칭·디브리프·녹음 보관 로직, pytest | 실제 사용자 격리는 라우터의 `user_id` 필터가 담당 |
-| `web/` | React 화면, API 클라이언트(`src/api.ts`), 타입(`src/types.ts`), Playwright e2e | 백엔드 응답 형식과 `types.ts`를 함께 맞출 것 |
+| `backend/` | FastAPI API(`app/routers/practice.py`, `track.py`), 라우터와 백그라운드 작업이 함께 쓰는 업무 처리(`app/services/`, HTTP 예외·라우터 import 금지), 모델, 코칭·디브리프·녹음 보관 로직, pytest | 실제 사용자 격리는 라우터의 `user_id` 필터가 담당 |
+| `web/` | React 화면, API 클라이언트(`src/api.ts`), 타입(`src/types.ts`), Playwright e2e(`e2e/`)와 서버 없는 단위 테스트(`tests/unit/`) | 백엔드 응답 형식과 `types.ts`를 함께 맞출 것. 열거값은 `backend/tests/test_enums.py`가 네 곳(모델·스키마·SQL·types.ts)을 대조 |
 | `supabase/` | 새 프로젝트용 `schema.sql`, 기존 프로젝트용 `migrations/*.sql`(SQL Editor에서 수동 실행) | 아래 "보호 대상" 참고 |
-| `extension-track/` | 공고 저장 팝업. `POST /track/sync`, `GET /track/applications`, `GET /track/stats`만 사용 | 빌드 단계 없음. 배포 주소는 `manifest.json`의 `host_permissions`에도 추가 |
-| `docs/` | 아래 "참고 문서" | `docs/screenshots/coaching-review-*.png`는 e2e가 덮어씀 |
+| `extension-track/` | 공고 저장 팝업. `POST /track/sync`, `GET /track/applications`, `GET /track/stats`만 사용 | 빌드 단계 없음. 배포 주소는 `manifest.json`의 `host_permissions`에도 추가(옵션 화면이 빠지면 경고). 순수 함수는 `web/tests/unit/extension.spec.ts`가 검사 |
+| `docs/` | 아래 "참고 문서" | `docs/screenshots/coaching-review-*.png`는 `UPDATE_DOC_SCREENSHOTS=1`로 e2e를 돌릴 때만 덮어씀 |
 
 ## 보호 대상 (변경 전 사용자 확인)
 
@@ -30,41 +30,43 @@ JobSeeker(캡스톤 26-2) 중 **② Practice(AI 면접 연습)** 와 **③ Track
 ## 작업 방식
 
 1. 수정 전에 요청 범위와 영향받는 파일(API·스키마·화면)을 확인합니다. 범위 밖 리팩터링, 의존성 추가·업그레이드는 먼저 묻습니다.
-2. 동작을 바꾸면 테스트를 추가하거나 고칩니다(백엔드 `backend/tests/`, 화면 흐름 `web/e2e/`).
+2. 동작을 바꾸면 테스트를 추가하거나 고칩니다(백엔드 `backend/tests/`, 화면 흐름 `web/e2e/`, 서버 없는 계산·확장 함수 `web/tests/unit/`).
 3. 완료 전에 아래 검증 중 해당하는 것을 실행하고 결과(통과 수·실패 출력)를 그대로 보고합니다. 실행하지 못한 검증은 못 했다고 적습니다.
 4. 진행 상태가 바뀌면 `docs/progress.md`, 설계 결정을 내리면 `docs/decisions.md`에 짧게 남깁니다.
 
 ## 검증 명령
 
 ```bash
-# 백엔드 (backend/.venv가 있으면 사용)
+# 백엔드 (backend/.venv가 있으면 사용. 새 venv는 pip install -r requirements-dev.txt)
 cd backend && .venv/bin/python -m pytest -q
 
 # 웹 타입 검사 + 프로덕션 빌드
 cd web && npm run build
 
-# 브라우저 e2e: 임시 SQLite·포트 8011/5179로 서버를 직접 띄움. PATH의 python에 백엔드 의존성이 있어야 함
+# 서버 없는 계산·확장 함수 테스트(web/tests/unit)
+cd web && npm run test:unit
+
+# 브라우저 e2e: 임시 SQLite·임시 녹음 폴더·포트 8011/5179로 서버를 직접 띄움. PATH의 python에 백엔드 의존성이 있어야 함
 cd web && PATH=../backend/.venv/bin:$PATH npm run test:e2e
 #  - Playwright 브라우저 버전이 안 맞으면 CHROMIUM_EXECUTABLE_PATH=<chrome 경로> 지정
-#  - 실행하면 추적 중인 docs/screenshots/coaching-review-{desktop,mobile}.png를 덮어씀. 아래 "e2e 스크린샷 보호" 절차를 따를 것
+#  - 브라우저가 libnspr4 등 시스템 라이브러리를 못 찾으면 docs/progress.md "미해결 문제"의 LD_LIBRARY_PATH 참고
+#  - 문서 스크린샷은 UPDATE_DOC_SCREENSHOTS=1일 때만 덮어씀(기본은 test-results/). 아래 "e2e 스크린샷 보호" 참고
 ```
 
 pytest와 e2e는 OpenAI·Supabase를 호출하지 않습니다(`conftest.py`와 `playwright.config.ts`가 키를 비움). 실제 외부 서비스 검증은 별도이며 결과를 `docs/progress.md`에 기록합니다. 보고할 때는 "구현돼 있음(코드 확인)", "자동 테스트 통과", "실제 외부 서비스에서 확인"을 구분해서 적습니다.
 
 ### e2e 스크린샷 보호
 
-e2e(`web/e2e/coaching.spec.ts`)는 `docs/screenshots/coaching-review-*.png`에 직접 씁니다. 실행 전부터 그 파일에 사용자의 수정이 있을 수 있으므로 `git checkout`/`git restore`를 무조건 실행하지 않습니다. 그러면 실행 전부터 있던 변경까지 지워집니다. 대신 실행 전 상태를 백업하고, 이번 실행이 만든 변경만 백업으로 되돌립니다.
+`web/e2e/coaching.spec.ts`는 기본으로 스크린샷을 `web/test-results/`(추적 안 함)에 쓰고, `UPDATE_DOC_SCREENSHOTS=1`일 때만 추적 중인 `docs/screenshots/coaching-review-*.png`를 덮어씁니다. 그래서 보통 실행은 문서 이미지를 건드리지 않습니다. 문서 이미지를 갱신할 때는 실행 전 상태를 확인하고(사용자 변경이 있으면 보존), 바뀐 이미지를 사용자에게 알린 뒤 커밋 여부를 묻습니다.
 
 ```bash
 cd web
 git status --short -- ../docs/screenshots/          # 실행 전 상태 확인(수정 표시가 있으면 사용자 변경이므로 보존)
-shots=$(mktemp -d) && cp ../docs/screenshots/coaching-review-*.png "$shots"/
-PATH=../backend/.venv/bin:$PATH npm run test:e2e
-# 스크린샷 갱신이 목적이 아니면 실행 전 상태(사용자 변경 포함)로 되돌림
-cp "$shots"/coaching-review-*.png ../docs/screenshots/ && git status --short -- ../docs/screenshots/
+UPDATE_DOC_SCREENSHOTS=1 PATH=../backend/.venv/bin:$PATH npx playwright test e2e/coaching.spec.ts
+git status --short -- ../docs/screenshots/
 ```
 
-스크린샷 갱신이 목적이면 되돌리지 않고, 바뀐 이미지를 사용자에게 알린 뒤 커밋 여부를 묻습니다. 스크린샷 경로를 설정으로 빼는 테스트 수정은 아직 하지 않았습니다(`docs/progress.md` 미해결 문제).
+e2e는 녹음도 실행마다 새 임시 폴더(`E2E_RECORDINGS_DIR` → 백엔드 `RECORDINGS_DIR`)에 둡니다. 테스트가 동의를 철회해 개발 사용자의 녹음을 모두 지우므로, 이 값을 `backend/recordings/` 같은 실제 폴더로 바꾸지 않습니다(임시 폴더 밖이면 `playwright.config.ts`가 시작을 거부).
 
 ## Git · Worktree
 

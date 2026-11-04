@@ -106,3 +106,65 @@ def test_every_id_column_binds_as_uuid_on_postgres():
     for table, c in ids:
         assert c.type.compile(dialect=postgresql.dialect()) == "UUID", f"{table}.{c.name}"
         assert c.type.compile(dialect=sqlite.dialect()) == "VARCHAR(36)", f"{table}.{c.name}"
+
+
+APPS_WITHOUT_URL_INDEX = """CREATE TABLE applications (
+    id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL, company VARCHAR(100) NOT NULL, position VARCHAR(100) NOT NULL,
+    job_category VARCHAR(30) NOT NULL, url TEXT, applied_at DATE, stage VARCHAR(10) NOT NULL, status VARCHAR(10) NOT NULL,
+    notes TEXT, source VARCHAR(10) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, PRIMARY KEY (id))"""
+
+
+def _app_row(i: str, url: str | None) -> str:
+    u = "NULL" if url is None else f"'{url}'"
+    return (f"INSERT INTO applications VALUES ('{i}', 'u1', '회사', '직무', '기타', {u}, NULL, '서류', '진행중', NULL, 'web',"
+            " '2026-01-01 00:00:00.000000', '2026-01-01 00:00:00.000000')")
+
+
+def test_upgrade_adds_the_url_unique_index_like_supabase(tmp_path):
+    """예전 로컬 DB의 applications에도 schema.sql과 같은 (user_id, url) 부분 고유 인덱스를 만든다."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'apps.db'}")
+    with engine.begin() as conn:
+        conn.execute(text(APPS_WITHOUT_URL_INDEX))
+        conn.execute(text(_app_row("a1", "https://x/1")))
+        conn.execute(text(_app_row("a2", None)))
+    upgrade_sqlite(engine)
+    idx = {i["name"]: i for i in inspect(engine).get_indexes("applications")}
+    assert idx["applications_user_url_uq"]["unique"] and idx["applications_user_url_uq"]["column_names"] == ["user_id", "url"]
+    with engine.begin() as conn:
+        conn.execute(text(_app_row("a3", None)))  # URL 없는 건은 여러 개여도 된다
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(text(_app_row("a4", "https://x/1")))
+    upgrade_sqlite(engine)  # 두 번 실행해도 안전
+    engine.dispose()
+
+
+def test_upgrade_skips_the_url_index_when_old_rows_already_repeat_a_url(tmp_path, caplog):
+    """이미 같은 URL이 두 건 있으면 인덱스를 만들 수 없다: 데이터는 건드리지 않고 경고만 남긴 뒤 계속 뜬다."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'dup.db'}")
+    with engine.begin() as conn:
+        conn.execute(text(APPS_WITHOUT_URL_INDEX))
+        conn.execute(text(_app_row("a1", "https://x/dup")))
+        conn.execute(text(_app_row("a2", "https://x/dup")))
+    upgrade_sqlite(engine)
+    assert "applications_user_url_uq" not in {i["name"] for i in inspect(engine).get_indexes("applications")}
+    assert "applications_user_url_uq" in caplog.text
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM applications")).scalar() == 2
+    engine.dispose()
+
+
+def test_sqlite_enforces_foreign_keys_like_postgres(tmp_path):
+    """로컬 SQLite도 외래 키를 강제한다(Supabase와 같게). 없는 세션을 가리키는 답변은 저장되지 않는다."""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db import make_engine
+
+    engine = make_engine(f"sqlite:///{tmp_path / 'fk.db'}")
+    upgrade_sqlite(engine)
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.execute(text("INSERT INTO practice_answers (id, session_id, question_id, order_no, stt_status, created_at)"
+                          " VALUES ('a1', 'no-session', 'no-question', 1, 'none', '2026-01-01 00:00:00')"))
+    engine.dispose()

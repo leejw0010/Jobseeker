@@ -18,6 +18,10 @@ class StoredObject:
     modified: datetime | None  # 마지막으로 저장한 시각(UTC). 모르면 None
 
 
+class StorageError(RuntimeError):
+    """저장소가 요청을 처리하지 못했다(권한·장애·연결 실패). '파일 없음'과 구분한다."""
+
+
 def _use_supabase() -> bool:
     return bool(settings.supabase_url and settings.supabase_service_key)
 
@@ -47,11 +51,22 @@ def save(path: str, data: bytes, content_type: str) -> None:
 
 
 def load(path: str) -> bytes | None:
+    """녹음 파일 내용. 없으면 None, 저장소 권한·장애·연결 실패는 StorageError."""
     if _use_supabase():
-        r = httpx.get(_sb_object_url(path), headers=_sb_headers(), timeout=60)
-        return r.content if r.status_code == 200 else None
+        try:
+            r = httpx.get(_sb_object_url(path), headers=_sb_headers(), timeout=60)
+        except httpx.HTTPError as e:
+            raise StorageError(f"녹음 저장소 요청 실패: {e}") from e
+        if r.status_code == 200:
+            return r.content
+        if _sb_not_found(r):
+            return None
+        raise StorageError(f"녹음 저장소 응답 HTTP {r.status_code}")
     f = settings.local_recordings_dir / path
-    return f.read_bytes() if f.exists() else None
+    try:
+        return f.read_bytes() if f.exists() else None
+    except OSError as e:
+        raise StorageError(f"로컬 녹음을 읽지 못했어요: {e}") from e
 
 
 def _sb_not_found(r: httpx.Response) -> bool:

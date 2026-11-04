@@ -1,10 +1,13 @@
 import type {
   Application,
+  ApplicationCreate,
   ApplicationDetail,
+  ApplicationPatch,
   Category,
   CoachingRubric,
   DeleteResult,
   EssayItem,
+  Health,
   PracticeAnswer,
   PracticeSession,
   PracticeSettings,
@@ -60,7 +63,7 @@ const qs = (p: Record<string, string | undefined>) => {
 };
 
 export const api = {
-  health: () => req<{ ok: boolean; openai: boolean; auth_disabled: boolean }>("GET", "/health"),
+  health: () => req<Health>("GET", "/health"),
 
   // ② Practice
   questions: (f: { category?: string; job_category?: string; source?: string; q?: string } = {}) =>
@@ -133,9 +136,9 @@ export const api = {
   applications: (f: { status?: string; stage?: string; job_category?: string; q?: string } = {}) =>
     req<Application[]>("GET", `/track/applications${qs(f)}`),
   application: (id: string) => req<ApplicationDetail>("GET", `/track/applications/${id}`),
-  createApplication: (b: Partial<Application> & { company: string; position: string }) =>
+  createApplication: (b: ApplicationCreate) =>
     req<ApplicationDetail>("POST", "/track/applications", b),
-  updateApplication: (id: string, b: Partial<Application>) =>
+  updateApplication: (id: string, b: ApplicationPatch) =>
     req<ApplicationDetail>("PATCH", `/track/applications/${id}`, b),
   deleteApplication: (id: string) => req<void>("DELETE", `/track/applications/${id}`),
   addEvent: (id: string, b: { stage: string; result: string; event_date?: string; memo?: string }) =>

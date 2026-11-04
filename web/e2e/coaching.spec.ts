@@ -1,6 +1,8 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { API, DEV_USER_ID, docScreenshotPath, recordingsDir } from "./env";
 
-const API = "http://127.0.0.1:8011";
 async function seed(request: APIRequestContext, mode: "free" | "mock" = "free") {
   // 녹음 동의가 없는 상태에서 시작한다(글 답변은 동의 없이, 녹음은 동의 패널을 거쳐야 한다)
   await request.put(`${API}/practice/settings`, { data: { consent: false } });
@@ -67,7 +69,8 @@ test("submitted source → text answer → follow-up → evidence review → foc
   await expect(last.locator(".coaching-panel .criterion").first()).toContainText(revised);
   await expect(page.getByRole("button", { name: "보완 항목 1개 다시 연습" })).toBeEnabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
-  await page.screenshot({ path: `../docs/screenshots/coaching-review-${testInfo.project.name}.png`, fullPage: true });
+  // 문서 이미지(docs/screenshots/)는 UPDATE_DOC_SCREENSHOTS=1일 때만 덮어쓴다. 기본은 test-results/
+  await page.screenshot({ path: docScreenshotPath(`coaching-review-${testInfo.project.name}`, (f) => testInfo.outputPath(f)), fullPage: true });
   await page.getByRole("button", { name: "보완 항목 1개 다시 연습" }).click();
   await expect(page.getByRole("heading", { name: /보완 연습/ })).toBeVisible();
   await expect(page.getByRole("link", { name: "이전 답변과 회고 보기" })).toBeVisible();
@@ -97,6 +100,8 @@ test("recording upload failure retains audio for retry and blocks advancing", as
   await page.getByRole("button", { name: "면접 마치고 회고 보기" }).click();
   await expect(page.locator("audio")).toHaveCount(1);
   await expect(page.getByLabel("전사문 (직접 고칠 수 있어요)")).toHaveValue("직접 입력한 녹음 답변입니다.");
+  // 서버는 이번 실행의 임시 녹음 폴더에 저장했다(개발용 backend/recordings/가 아니라)
+  expect(readdirSync(join(recordingsDir(), DEV_USER_ID, session.id))).toHaveLength(1);
 });
 
 test("mock timer saves the current text once at the deadline", async ({ page, request }) => {

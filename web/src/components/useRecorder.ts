@@ -1,42 +1,57 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** 브라우저 마이크 녹음(MediaRecorder). 입력 레벨도 함께 계산해 마이크가 잡히는지 보여준다. */
+/** 브라우저 마이크 녹음(MediaRecorder). 입력 레벨도 함께 계산해 마이크가 잡히는지 보여준다.
+ *  권한 요청은 한 번에 하나만 보낸다. 권한 응답이 화면을 떠난 뒤에 오면 그 스트림을 바로 닫는다. */
 export function useRecorder() {
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const pending = useRef<Promise<MediaStream> | null>(null);
+  const mounted = useRef(true);
   const recRef = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const startedAt = useRef(0);
   const raf = useRef(0);
   const ctxRef = useRef<AudioContext | null>(null);
 
-  const ensureStream = useCallback(async () => {
-    if (streamRef.current) return streamRef.current;
+  const open = useCallback(async (): Promise<MediaStream> => {
+    let s: MediaStream;
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = s;
-      const ctx = new AudioContext();
-      ctxRef.current = ctx;
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      ctx.createMediaStreamSource(s).connect(analyser);
-      const buf = new Uint8Array(analyser.fftSize);
-      const tick = () => {
-        analyser.getByteTimeDomainData(buf);
-        let sum = 0;
-        for (const v of buf) sum += ((v - 128) / 128) ** 2;
-        setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 4));
-        raf.current = requestAnimationFrame(tick);
-      };
-      tick();
-      return s;
+      s = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      setError("마이크 권한이 필요합니다. 브라우저 주소창의 권한 설정을 확인하세요.");
+      if (mounted.current) setError("마이크 권한이 필요합니다. 브라우저 주소창의 권한 설정을 확인하세요.");
       throw new Error("mic");
     }
+    if (!mounted.current) {
+      // 권한을 묻는 동안 화면을 떠났다: 정리는 이미 끝났으므로 늦게 온 스트림을 여기서 닫는다
+      s.getTracks().forEach((t) => t.stop());
+      throw new Error("unmounted");
+    }
+    streamRef.current = s;
+    const ctx = new AudioContext();
+    ctxRef.current = ctx;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    ctx.createMediaStreamSource(s).connect(analyser);
+    const buf = new Uint8Array(analyser.fftSize);
+    const tick = () => {
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (const v of buf) sum += ((v - 128) / 128) ** 2;
+      setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 4));
+      raf.current = requestAnimationFrame(tick);
+    };
+    tick();
+    return s;
   }, []);
+
+  const ensureStream = useCallback((): Promise<MediaStream> => {
+    if (streamRef.current) return Promise.resolve(streamRef.current);
+    // 권한을 묻는 중에 또 부르면(버튼을 두 번 누름 등) 같은 요청을 기다린다
+    pending.current ??= open().finally(() => { pending.current = null; });
+    return pending.current;
+  }, [open]);
 
   const start = useCallback(async () => {
     const s = await ensureStream();
@@ -66,15 +81,17 @@ export function useRecorder() {
     [],
   );
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       cancelAnimationFrame(raf.current);
-      recRef.current?.state === "recording" && recRef.current.stop();
+      if (recRef.current?.state === "recording") recRef.current.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       ctxRef.current?.close();
-    },
-    [],
-  );
+      recRef.current = streamRef.current = ctxRef.current = null;
+    };
+  }, []);
 
   return { recording, level, error, start, stop, ensureStream };
 }

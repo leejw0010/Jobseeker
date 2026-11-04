@@ -132,7 +132,8 @@ def test_failed_transcription_keeps_audio_then_retry_deletes(client, monkeypatch
     assert r.status_code == 404 and r.json()["detail"] == "원본 녹음은 삭제됐어요"
 
 
-def test_purge_with_future_now_deletes_expired_audio_and_file(client, consent):
+def test_purge_with_future_now_deletes_expired_audio_and_file(client, consent, isolated_db):
+    """만료 정리는 DB 전체를 훑는다: 이 테스트만의 DB에서 돌려 다른 테스트의 녹음에 닿지 않고, 지운 수도 정확히 센다."""
     h = {"X-User-Id": "user-purge"}
     consent(h, keep_audio=True)
     s = _session(client, h)
@@ -141,13 +142,13 @@ def test_purge_with_future_now_deletes_expired_audio_and_file(client, consent):
     f = _file(a)
     assert f.exists()
 
-    with SessionLocal() as db:
-        purge_expired_audio(db)  # 아직 기한 전
+    with isolated_db() as db:
+        assert purge_expired_audio(db) == 0  # 아직 기한 전
     assert f.exists()
 
-    with SessionLocal() as db:
+    with isolated_db() as db:
         n = purge_expired_audio(db, now=datetime.now(timezone.utc) + timedelta(days=31))
-    assert n >= 1 and not f.exists()
+    assert n == 1 and not f.exists()
     a = client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"][0]
     assert a["audio_available"] is False and a["audio_deleted_at"] and a["recorded_at"]
     assert client.get(f"/practice/answers/{aid}/audio", headers=h).status_code == 404
@@ -168,31 +169,31 @@ def _legacy_answer(db, user_id: str, days_old: int) -> PracticeAnswer:
     return a
 
 
-def test_purge_legacy_rows_without_expiry(client):
-    with SessionLocal() as db:
+def test_purge_legacy_rows_without_expiry(client, isolated_db):
+    with isolated_db() as db:
         old = _legacy_answer(db, "user-legacy", 40)
         recent = _legacy_answer(db, "user-legacy", 5)
         assert old.audio_expires_at is None
         old_file = settings.local_recordings_dir / old.audio_path
         recent_file = settings.local_recordings_dir / recent.audio_path
-    with SessionLocal() as db:
-        assert purge_expired_audio(db) >= 1
+    with isolated_db() as db:
+        assert purge_expired_audio(db) == 1
         assert db.get(PracticeAnswer, old.id).audio_path is None
         assert db.get(PracticeAnswer, old.id).audio_deleted_at is not None
         assert db.get(PracticeAnswer, recent.id).audio_path == recent.audio_path
     assert not old_file.exists() and recent_file.exists()
 
 
-def test_purge_keeps_row_when_storage_delete_fails(client, monkeypatch):
-    with SessionLocal() as db:
+def test_purge_keeps_row_when_storage_delete_fails(client, monkeypatch, isolated_db):
+    with isolated_db() as db:
         a = _legacy_answer(db, "user-storage-down", 60)
-    monkeypatch.setattr(storage, "delete", lambda path: False)
-    with SessionLocal() as db:
-        purge_expired_audio(db)
-        assert db.get(PracticeAnswer, a.id).audio_path == a.audio_path  # 다음 정리 때 다시 시도
-    monkeypatch.undo()
-    with SessionLocal() as db:
-        purge_expired_audio(db)
+    with monkeypatch.context() as m:
+        m.setattr(storage, "delete", lambda path: False)
+        with isolated_db() as db:
+            assert purge_expired_audio(db) == 0
+            assert db.get(PracticeAnswer, a.id).audio_path == a.audio_path  # 다음 정리 때 다시 시도
+    with isolated_db() as db:
+        assert purge_expired_audio(db) == 1
         assert db.get(PracticeAnswer, a.id).audio_path is None
 
 
@@ -367,7 +368,9 @@ def test_row_deletes_remove_audio_first_or_keep_rows(client, monkeypatch, consen
     assert not f2.exists()
 
 
-def test_rerecord_with_other_extension_keeps_old_path_when_delete_fails(client, monkeypatch, consent):
+def test_rerecord_keeps_the_new_recording_and_retries_the_old_file(client, monkeypatch, consent):
+    """다시 녹음하면 새 녹음을 먼저 저장·연결한 뒤 이전 파일을 지운다. 이전 파일을 못 지워도 새 녹음은 받고,
+    이전 파일은 다음 만료 정리가 지운다(업로드마다 경로가 달라 덮어쓰지 않는다)."""
     h = {"X-User-Id": "user-rerecord-ext"}
     consent(h, keep_audio=True)
     aid = _session(client, h)["answers"][0]["id"]
@@ -376,11 +379,14 @@ def test_rerecord_with_other_extension_keeps_old_path_when_delete_fails(client, 
     with monkeypatch.context() as m:
         _storage_down(m)
         r = client.post(f"/practice/answers/{aid}/audio", files=m4a, headers=h)
-    assert r.status_code == 502
-    a = client.get(f"/practice/sessions/{_session_of(aid)}", headers=h).json()["answers"][0]
-    assert a["audio_path"] == old["audio_path"] and _file(old).exists()  # 경로를 잃지 않는다
-    new = client.post(f"/practice/answers/{aid}/audio", files=m4a, headers=h).json()
-    assert new["audio_path"].endswith(".m4a") and not _file(old).exists() and _file(new).exists()
+    assert r.status_code == 200, r.text
+    new = r.json()
+    assert new["audio_path"] != old["audio_path"] and new["audio_path"].endswith(".m4a")
+    assert _file(new).read_bytes() == b"fake-m4a" and _file(old).exists()  # 못 지운 이전 파일은 아직 남았다
+    _purge_now()
+    assert not _file(old).exists() and _file(new).exists()
+    again = client.post(f"/practice/answers/{aid}/audio", files=AUDIO, headers=h).json()
+    assert not _file(new).exists() and _user_files(h["X-User-Id"]) == [_file(again)]
 
 
 def _session_of(answer_id: str) -> str:
@@ -584,6 +590,52 @@ def test_supabase_list_walks_folders_and_pages(monkeypatch):
         ("u1/", 0), ("u1/", 2), ("u1/s1/", 0), ("u1/s1/", 2), ("u1/s2/", 0)]
 
 
+def test_supabase_load_tells_missing_from_storage_errors(monkeypatch):
+    """없는 객체(404, 400+statusCode 404)만 '녹음 없음'이다. 권한·장애(401·403·500, 연결 실패)는 저장소 오류로 알린다."""
+    monkeypatch.setattr(settings, "supabase_url", "https://sb.invalid")
+    monkeypatch.setattr(settings, "supabase_service_key", "service")
+
+    def respond(status, body=None, content=b""):
+        return lambda url, headers=None, timeout=None: (
+            httpx.Response(status, json=body) if body is not None else httpx.Response(status, content=content))
+
+    monkeypatch.setattr(storage.httpx, "get", respond(200, content=b"audio"))
+    assert storage.load("u/s/a.webm") == b"audio"
+    monkeypatch.setattr(storage.httpx, "get", respond(404, {}))
+    assert storage.load("u/s/a.webm") is None
+    monkeypatch.setattr(storage.httpx, "get", respond(400, {"statusCode": "404"}))
+    assert storage.load("u/s/a.webm") is None
+    for status in (401, 403, 500):
+        monkeypatch.setattr(storage.httpx, "get", respond(status, {}))
+        with pytest.raises(storage.StorageError):
+            storage.load("u/s/a.webm")
+
+    def down(url, headers=None, timeout=None):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(storage.httpx, "get", down)
+    with pytest.raises(storage.StorageError):
+        storage.load("u/s/a.webm")
+
+
+def test_storage_errors_are_502_not_missing_recordings(client, monkeypatch, consent):
+    """녹음 듣기·다시 전사는 저장소 오류를 '녹음이 없습니다'(404)로 바꾸지 않고 502로 알린다."""
+    h = {"X-User-Id": "user-storage-error"}
+    consent(h, keep_audio=True)
+    aid = _session(client, h)["answers"][0]["id"]
+    _upload(client, h, aid)
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+
+    def broken(path):
+        raise storage.StorageError("HTTP 500")
+
+    monkeypatch.setattr(storage, "load", broken)
+    r = client.get(f"/practice/answers/{aid}/audio", headers=h)
+    assert r.status_code == 502 and "저장소" in r.json()["detail"]
+    r = client.post(f"/practice/answers/{aid}/transcribe", headers=h)
+    assert r.status_code == 502 and "저장소" in r.json()["detail"]
+
+
 # ───────── 업로드·다시 전사 중의 동의 철회와 삭제 ─────────
 
 def _blocking_stt(monkeypatch, result):
@@ -742,21 +794,57 @@ def test_upload_started_after_delete_all_keeps_its_recording(client, monkeypatch
     assert client.get(f"/practice/answers/{aid}/audio", headers=h).status_code == 200
 
 
-def test_deleting_the_overwritten_recording_during_upload_deletes_the_new_one(client, monkeypatch, consent):
-    """다시 녹음하면 같은 경로에 덮어쓴다. 전사하는 동안 다른 탭에서 이전 녹음을 지우면 그 삭제가 새 파일을 지웠으므로
-    업로드도 녹음을 지운 것으로 저장한다(없는 파일을 가리키지 않는다)."""
+def test_deleting_the_previous_recording_during_upload_keeps_the_new_one(client, monkeypatch, consent):
+    """업로드마다 다른 경로에 저장한다. 전사하는 동안 다른 탭에서 이전 녹음을 지우면 이전 파일만 지워지고,
+    새 녹음은 그대로 연결된다(없는 파일을 가리키지 않는다)."""
     h = {"X-User-Id": "user-overwrite-delete"}
     consent(h, keep_audio=True)
     s = _session(client, h)
     aid = s["answers"][0]["id"]
-    _upload(client, h, aid)  # 키가 없어 원본이 남는다
+    old = _upload(client, h, aid).json()  # 키가 없어 원본이 남는다
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     r, deleted = _while_transcribing(monkeypatch, "다시 녹음한 답변", lambda: _upload(client, h, aid),
                                      lambda: client.delete(f"/practice/answers/{aid}/audio", headers=h).status_code)
     assert deleted == 200 and r.status_code == 200, r.text
     a = r.json()
-    assert (a["transcript"], a["stt_status"], a["audio_available"]) == ("다시 녹음한 답변", "done", False)
-    assert a["audio_deleted_at"] and _user_files(h["X-User-Id"]) == []
+    assert (a["transcript"], a["stt_status"], a["audio_available"]) == ("다시 녹음한 답변", "done", True)
+    assert a["audio_deleted_at"] is None and not _file(old).exists()
+    assert _user_files(h["X-User-Id"]) == [_file(a)]
+
+
+def test_concurrent_uploads_never_pair_one_recording_with_another_transcript(client, monkeypatch, consent):
+    """같은 답변에 두 업로드가 겹치면(다른 탭·재시도) 나중에 시작한 녹음이 이긴다. 먼저 시작해 늦게 끝난 업로드는
+    409로 버리고 자기 파일만 지운다: 남은 파일과 전사문은 같은 녹음의 것이다."""
+    h = {"X-User-Id": "user-concurrent-upload"}
+    consent(h, keep_audio=True)
+    aid = _session(client, h)["answers"][0]["id"]
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    entered, resume = Event(), Event()
+
+    def stt(audio, filename, ctype):
+        if audio == b"first-recording":
+            entered.set()
+            assert resume.wait(5)
+            return "먼저 시작한 녹음"
+        return "나중에 시작한 녹음"
+
+    monkeypatch.setattr(llm, "transcribe", stt)
+    first = {"file": ("a.webm", b"first-recording", "audio/webm")}
+    second = {"file": ("a.webm", b"second-recording", "audio/webm")}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(lambda: client.post(f"/practice/answers/{aid}/audio", files=first, headers=h))
+        assert entered.wait(5)
+        try:
+            later = client.post(f"/practice/answers/{aid}/audio", files=second, headers=h)
+        finally:
+            resume.set()
+        earlier = pending.result(timeout=5)
+    assert later.status_code == 200, later.text
+    assert earlier.status_code == 409, earlier.text
+    a = client.get(f"/practice/sessions/{_session_of(aid)}", headers=h).json()["answers"][0]
+    assert a["transcript"] == "나중에 시작한 녹음"
+    assert _file(a).read_bytes() == b"second-recording"
+    assert _user_files(h["X-User-Id"]) == [_file(a)]
 
 
 @pytest.mark.parametrize("during", ["delete-all", "delete-one"])

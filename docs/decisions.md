@@ -133,3 +133,83 @@
 - 결정: 공개 설명·공개 클라이언트·도구 실행 결과를 구분해 기록함. 개별 기능을 새로운 발명이라고 주장하지 않음.
 - 이유: 경쟁 서비스의 내부 구조를 알아냈다고 오해받지 않으려고.
 - 근거: `docs/research/interview-products-2026-10-15.md`
+
+### D-17 카메라 자세 분석은 브라우저 안에서만 계산하고 메모리에만 둠
+- 날짜·상태: 2026-10-28 · 유효
+- 결정: MediaPipe Face Landmarker를 브라우저에서 돌리고(서버 영상 모델·OpenAI Vision 미사용), 결과 수치는 탭 메모리에만 둔다. API·DB 스키마는 바꾸지 않는다. 고개 방향은 변환 행렬의 각도 대신 특징점 비율(코끝 위치 ÷ 얼굴 폭·이마–턱 길이)을 쓰고, 각 답변의 중앙값 대비 변화로 표시한다. WASM은 앱과 함께 배포하고 모델 파일만 Google 공식 주소에서 받는다.
+- 이유: 사용자 요청(경량·브라우저 분석, 원본 미저장·미업로드, 결과는 우선 메모리). 행렬 각도는 축 규약을 실제 얼굴로 검증하지 못해 부호·크기를 확신할 수 없고, 비율 지표는 방향이 분명하다. 기준값(좌우 0.12, 숙임 0.06)은 대략 20°·15°를 노린 기하 추정이며 실제 웹캠으로 맞춰 보지 않았다.
+- 근거: `web/src/video/metrics.ts`, `web/src/components/useFaceAnalysis.ts`, README "카메라 자세 분석", `web/e2e/camera.spec.ts`, `web/tests/unit/video-metrics.spec.ts`
+
+### D-18 음성 전사는 기본으로 로컬 faster-whisper, LLM 키와 분리
+- 날짜·상태: 2026-10-30 · 유효
+- 결정: `STT_PROVIDER=local|openai|off`(기본 `local`)로 전사 제공자를 고르고, 전사 가능 여부를 `OPENAI_API_KEY`와 따로 판단한다. 로컬은 다국어 Whisper `base`·CPU·INT8, 모델은 첫 전사 때 한 번 불러와 재사용하고(설정이 바뀌면 다시), 캐시를 먼저 보고 없을 때만 내려받는다. 전사는 한 번에 하나만 돌리고 대기가 `LOCAL_STT_QUEUE_TIMEOUT_SEC`를 넘으면 실패로 돌려준다. 모든 전사 실패(무음·잘못된 파일·너무 긴 녹음·바쁨·모델 다운로드/로딩 실패)는 기존 `failed`로 두어 원본을 남기고 다시 시도하게 한다(API 상태 값은 늘리지 않음). 실패 사유는 로그와 `/health`의 `stt.error`로만 알린다. 녹음은 faster-whisper의 `decode_audio` 대신 직접 PyAV로 푼다. 기존 테스트는 `STT_PROVIDER=openai`, e2e는 `off`로 고정한다.
+- 이유: 사용자 요청(외부 API 없이 노트북에서 한국어 전사, 녹음을 외부로 보내지 않음). 노트북 CPU에서 전사를 겹치면 둘 다 느려지고 요청이 쌓인다. 설치된 faster-whisper 1.2.1의 `decode_audio`는 PyAV 19에서 없어진 `metadata_errors` 인자를 넘겨 실패한다. 실패 사유를 답변마다 저장하려면 DB 스키마를 바꿔야 해서 이번에는 하지 않았다. `beam_size` 5와 1은 실측 속도 차가 약 1.4배이고 정확도는 비슷해 기본 5를 유지했다.
+- 근거: `backend/app/stt.py`, `backend/tests/test_local_stt.py`, README "음성 인식·자동 전사", [progress.md](progress.md) 2026-10-30 측정
+
+### D-19 카메라 지표: `none`과 `edge`를 나누고 답변·분석 시간을 구분, 판정 기준은 실측 전까지 유지
+- 날짜·상태: 2026-10-30 · 유효(D-17 보완)
+- 결정: "화면을 벗어난 시간"(`none`+`edge`)을 없애고 "얼굴을 찾지 못한 시간"(`none`)과 "얼굴 일부가 프레임 밖"(`edge`)으로 나눈다. 얼굴 검출 비율(`in`+`edge`)은 그대로 두고 계산 방법을 화면에 적는다. 답변 시간과 분석한 시간을 따로 보여 주고 그 차이는 어느 지표에도 넣지 않는다. 미리보기는 `object-fit: contain`(좌우 반전 유지)으로 바꾸고, 면접 중 `edge`일 때 넘은 쪽을 미리보기 기준으로 알린다. 실제 웹캠 점검용 진단은 개발 서버(`VITE_CAMERA_DEBUG=true`)에서만 보이고 저장·전송하지 않는다. `EDGE_MARGIN`·회전·숙임 기준값과 상태 판정 규칙은 바꾸지 않는다.
+- 이유: `edge` 프레임을 검출 비율과 이탈 시간이 함께 세서 "검출 100%, 이탈 100%"가 동시에 나올 수 있었다(사용자 보고: 얼굴이 화면 안인데 이탈로 판정). 미리보기 `cover`는 카메라가 4:3이 아니면 분석 프레임 일부를 잘라 보여 줬다. `none`은 검출 실패일 수도 있어 의도된 이탈의 증거가 아니다. 판정 기준을 바꿀 근거(실제 웹캠 결과)가 아직 없다.
+- 근거: [specs/2026-10-30-d-camera-metrics-design.md](superpowers/specs/2026-10-30-d-camera-metrics-design.md), `web/src/video/metrics.ts`, `web/tests/unit/video-metrics.spec.ts`·`camera.spec.ts`, [progress.md](progress.md) "카메라 지표 점검(D) 수동 절차"
+
+### D-20 기본 음성 전사 모델은 `base` 유지, `small` 평가는 하드웨어 한계로 미완료
+- 날짜·상태: 2026-11-01 · 유효(D-18 보완)
+- 결정: `LOCAL_STT_MODEL` 기본값은 `base` 그대로 둔다. `small`은 이 개발 기계에서 메모리 보호 기준(스왑 증가 256MB 등)을 넘겨 평가를 끝내지 못했으므로 "미완료(하드웨어 한계)"로 기록하고, 보호 기준을 우회해 다시 돌리지 않는다. 평가 도구는 실행 사이에 메모리 압박이 가라앉기를 기다리고(`wait_for_recovery`), 보고서는 자원 보호 중단·미시작을 모델 추론 오류와 따로 센다. 전체 재실행은 사용자 승인 뒤에만 한다.
+- 이유: 사용자 결정. 같은 23개 낭독 클립에서는 `small`의 CER이 낮았지만(−5.9%p) 표본이 작고 낭독 음성뿐이며, 지연이 약 3.1배이고 이 기계에서 스왑을 일으켜 같은 서버의 다른 요청까지 느려질 위험이 있다. 끝까지 측정한 것은 `base-default` 1회뿐이다.
+- 근거: [research/stt-eval-2026-10-30.md](research/stt-eval-2026-10-30.md), [stt-eval.md](stt-eval.md), `backend/evals/stt/`, [progress.md](progress.md)
+
+### D-21 시선 분석은 브라우저 안의 개인 보정으로, 0단계 실현 가능성 시험을 거친 뒤에만 본 구현
+- 날짜·상태: 2026-11-01 · 유효(0단계 진행 중)
+- 결정: 기존 카메라 스트림·MediaPipe 검출기를 그대로 쓰고(검출기 설정은 바꾸지 않음), 홍채·눈꼬리·눈꺼풀 기하 특징과 D의 고개 비율로 사용자별 보정을 브라우저에서 계산한다. 렌즈 응시(G1)는 화면 좌표를 외삽하지 않고 렌즈·화면(특히 위쪽 가운데) 응시로 학습한 별도 L2 로지스틱 분류기로 판정하며, 보수적 임계값과 `unknown`을 두고 학습·임계값 선택에 쓰지 않은 응시로만 평가한다. 화면 영역(G2)은 선형·정규화 2차 릿지 회귀를 응시 단위 교차 검증으로 고르고, 처음 보는 위치에서 좌표 오차와 영역 판정 성능을 함께 낸다. 오차가 영역보다 크면 그 영역을 봤다고 하지 않는다. 보정 값과 결과는 탭 메모리에만 두고 외부 AI API를 쓰지 않는다. 먼저 개발 전용 실험실(0단계)로 실제 웹캠에서 핵심 가정을 시험하고, 결과를 사용자가 검토한 뒤 1단계(보정 화면·면접 화면·회고)를 정한다. 0단계 기준 통과는 진행 근거일 뿐 정확도 보장이 아니다.
+- 이유: 사용자 요청(개인 맞춤 시선 보정, 외부 AI API 금지, 불확실하면 판정하지 않음). 노트북 렌즈는 화면 위 가장자리에 붙어 있어 화면 좌표 회귀의 외삽으로는 화면 위쪽과 구별할 수 있는지 알 수 없다. 지금 질문 글(한 줄 약 32px)은 웹캠 시선 오차보다 작을 가능성이 커서 필요한 패널 크기를 먼저 재야 한다.
+- 근거: [specs/2026-11-01-g-gaze-calibration-design.md](superpowers/specs/2026-11-01-g-gaze-calibration-design.md), [plans/2026-11-01-g-gaze-calibration.md](superpowers/plans/2026-11-01-g-gaze-calibration.md), `web/src/video/gaze/`, `web/src/pages/GazeLab.tsx`, [progress.md](progress.md) "G 0단계"
+
+### D-22 회고 그래프와 보완점은 LLM 없이 세션 값과 고정 규칙으로 계산
+- 날짜·상태: 2026-11-03 · 유효(기준값은 잠정)
+- 결정: 회고 맨 위 "한눈에 보기"는 세션 상세 응답에 이미 있는 값(코칭 보고서, 녹음 길이, 전사문, 자기평가)만으로 브라우저에서 계산한다. 새 API·스키마·LLM 호출이 없다. 보완점은 코칭 보완 → 제한 시간 초과 → 너무 짧음 → 역할 표현 없음 → 세션 평균 대비 말 빠르기 → 자기평가 1~2점 순서의 고정 규칙으로 고르고, 문구도 정해 둔다(코칭 보고서가 있으면 그 이유를 근거로 쓴다). 인용은 지금 전사문에 그대로 있는 부분만 보인다. 말 빠르기는 일반 인구 기준 없이 같은 세션 평균과만 비교하고, 녹음 길이에 침묵이 들어 있다는 점을 화면에 적는다. 말버릇 횟수는 세지 않는다. 기준값(40%, 1초, 25%, 3개, 5초, 50자, 2점, 5개)은 `web/src/review/insights.ts` 한 곳에 둔다.
+- 이유: 사용자가 유료 LLM 호출을 원하지 않음. 같은 입력이면 같은 결과가 나와 테스트할 수 있고, 녹음·전사문을 새로 밖으로 보내지 않는다. 전사는 말버릇을 빼고 적는 경우가 많아 셀 수 없다(A 평가). 무료 LLM(로컬 Ollama 등)은 `OPENAI_BASE_URL`로 기존 코칭 경로에 붙일 수 있으므로 별도 단계(R3)로 둔다.
+- 근거: [specs/2026-11-03-r1-review-insights-design.md](superpowers/specs/2026-11-03-r1-review-insights-design.md), `web/src/review/insights.ts`, `web/e2e/review-insights.spec.ts`, `web/tests/unit/review-insights-math.spec.ts`
+
+### D-23 녹음은 업로드마다 다른 경로에 저장하고, 겹치면 나중에 시작한 녹음이 이김
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: `POST /practice/answers/{id}/audio`는 `{user_id}/{session_id}/{answer_id}.{토큰12자}.{확장자}`에 저장하고, 답변 행을 잠근 뒤 커밋한다. `recorded_at`은 업로드를 시작한 시각으로 저장하고, 커밋 직전 행의 `recorded_at`이 이 업로드의 시작 시각보다 나중이면 이 업로드를 409로 버리고 자기 파일만 지운다. 이전 녹음 파일은 새 녹음을 연결·커밋한 뒤 지우고, 못 지우면 고아 파일로 표시해 다음 만료 정리가 지운다. 예전 행의 토큰 없는 경로도 소유 경로로 인정한다.
+- 이유: 같은 경로를 덮어쓰면 겹친 업로드에서 한 녹음의 전사문이 다른 녹음 파일과 짝지어지고, 전사 후 원본 삭제가 다른 요청의 파일을 지울 수 있었다(`test_concurrent_uploads_never_pair_one_recording_with_another_transcript`로 재현). 이전 파일을 먼저 지우던 방식은 새 업로드가 실패하면 녹음을 잃었다.
+- 근거: `backend/app/routers/practice.py` `upload_audio`, `backend/app/retention.py` `owned_audio_path`·`recorded_since`, `backend/tests/test_privacy.py`
+
+### D-24 Track 제약은 SQLite와 Supabase를 같게: URL 고유(409), 버전 번호는 문항 잠금 뒤, 필수 필드 null은 422
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: 모델에 `schema.sql`과 같은 `applications_user_url_uq`(사용자·URL, URL 있는 건만)를 두고 로컬 SQLite 업그레이드도 이 인덱스를 만든다(이미 겹치면 경고만). 웹·API의 생성·수정이 겹치는 URL이면 409, 빈 URL은 null로 저장한다. `/track/sync`는 동시 첫 동기화가 고유 제약에 걸리면 한 번 더 돌아 기존 건을 갱신한다. 버전은 `services/track_versions.py`가 문항 행을 잠근 뒤 최신 번호를 다시 읽어 정한다. PATCH에서 회사·직무·분류·단계·상태의 명시적 null은 422로 막는다. 로컬 SQLite도 외래 키를 켠다.
+- 이유: 같은 요청이 SQLite에서는 중복 행을, Supabase에서는 500을 냈고, 동시 버전 저장은 고유 제약 500, null PATCH는 NOT NULL 500이었다.
+- 근거: `backend/app/models.py`, `backend/app/db.py`, `backend/app/routers/track.py`, `backend/app/schemas.py`, `backend/tests/test_track.py`·`test_migration.py`
+
+### D-25 서비스 계층은 라우터 역방향 의존을 없앨 때만 만든다
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: 라우터와 백그라운드 작업이 함께 쓰는 업무 처리만 `backend/app/services/`로 옮긴다(`answer_coaching`, `track_versions`). 서비스는 HTTP 예외를 쓰지 않고 도메인 예외를 던지며 라우터가 상태 코드로 바꾼다. `main.py` 밖에서는 `routers`를 가져오지 않는다(`tests/test_architecture.py`). 녹음 업로드·다시 전사 조정은 역방향 의존이 없어 이번에는 옮기지 않았고, 웹의 `hooks/`·`components/practice/` 같은 이름만 바꾸는 이동도 하지 않았다.
+- 이유: `debrief.py`가 라우터 내부 함수 `_report`를 지연 import하는 순환이 있었다. 이름만 바꾸는 이동은 다른 브랜치와 충돌만 늘린다(외부 분석 보고서의 권고와도 같음).
+- 근거: `backend/app/services/`, `backend/app/debrief.py`, `backend/tests/test_architecture.py`
+
+### D-26 설정은 시작할 때 검증하고, 인증을 켠 서버의 토큰은 uuid `sub`만 받음
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: `Settings`를 환경변수 매핑에서 만들고 숫자 설정이 숫자가 아니면 변수 이름과 함께 `ConfigError`로 시작을 막는다. `AUTH_DISABLED=false`인데 `SUPABASE_JWT_SECRET`이 비면 시작하지 않고, `AUTH_DISABLED=true`로 Postgres에 연결하면 경고한다. `AUTH_DISABLED`는 `true`일 때만 개발 모드다. JWT의 `sub`가 없거나 uuid가 아니면 401. 웹 로그인 화면과 토큰 제공자 등록은 팀원 연동 작업으로 남기고, 확장에는 `setAccessToken()`/`getAccessToken()`(`chrome.storage.session`) 연결 지점만 둔다.
+- 이유: 사용자 결정(2026-11-03, "백엔드 강화만"). 인증 오설정은 모든 요청 401이나 500으로만 드러났다. 웹 로그인은 새 의존성(@supabase/supabase-js)이 필요하고 팀원 담당이다.
+- 근거: `backend/app/config.py`, `backend/app/auth.py`, `backend/tests/test_config.py`·`test_auth.py`, `extension-track/settings.js`
+
+### D-27 테스트 격리: e2e 녹음은 실행별 임시 폴더, 문서 스크린샷은 명시할 때만, 계산 테스트는 서버 없이
+- 날짜·상태: 2026-11-03 · 유효
+- 결정: `playwright.config.ts`가 실행마다 임시 녹음 폴더를 만들어 백엔드 `RECORDINGS_DIR`로 넘기고, 임시 폴더 밖이면 시작을 거부한다. 문서 스크린샷은 `UPDATE_DOC_SCREENSHOTS=1`일 때만 `docs/screenshots/`에 쓴다. 브라우저 없는 계산·확장 함수 테스트는 `web/tests/unit/`과 `playwright.unit.config.ts`(`npm run test:unit`)로 옮긴다(새 테스트 도구 없음). 백엔드에서 DB 전체를 훑는 정리 테스트는 `isolated_db` 픽스처로 테스트 전용 DB·녹음 폴더를 쓴다.
+- 이유: e2e가 동의를 철회하면 임시 DB에 없는 개발 사용자 녹음까지 `backend/recordings/`에서 지울 수 있었다. 공유 DB에서 만료 정리 한 번이 다른 테스트의 녹음 16개를 함께 지워 결과가 실행 순서에 의존했다.
+- 근거: `web/playwright.config.ts`, `web/e2e/env.ts`, `web/playwright.unit.config.ts`, `backend/tests/conftest.py`
+
+### 통합 기록: Stage 1 Review Insights + Architecture Fixes (2026-11-03)
+- 결정: 기존 두 브랜치와 원본 미커밋 작업을 보존하고, 별도 `feature/integration-review-architecture` Worktree에서 `59d7470` 기준으로 `1774030`을 병합한다. 공통 조상은 `eaa8477`. D-28은 원본 디렉터리의 별도 로컬 실행기 작업이므로 이 통합 기록에 가져오지 않는다.
+- 이유: Stage 1 마지막 커밋의 녹음 답변·접근성 검증과 Architecture의 녹음 격리·동시성·인증·DB·확장 수정을 함께 검증하면서, 다른 세션의 실행기 작업과 사용자 데이터를 보존하기 위해서다.
+- 검증 원칙: 단위 테스트는 `npm run test:unit`, 브라우저 테스트는 desktop·mobile 전체 `npm run test:e2e`로 따로 집계한다. E2E는 새 canonical 임시 녹음 폴더·임시 SQLite만 사용하며 기존 서버를 재사용하지 않는다. 기존 gaze-lab 간헐 실패는 새 회귀와 구분한다.
+- 근거: [통합 계획](superpowers/plans/2026-11-03-integration-review-architecture.md), [통합 검증 결과](progress.md#통합-검증-2026-11-03-별도-worktree).
+
+
+### 배포 전 녹음 경합·카메라 수명 보완 (2026-11-04)
+- 결정: 저장소 삭제 후 녹음 메타데이터는 조회했던 경로가 아직 연결된 경우에만 갱신한다. 이미 다른 경로가 저장됐으면 그 녹음과 기한·시각을 보존한다. 업로드 중 아직 flush하지 않은 새 경로는 기존 답변 잠금 아래의 처리 경로를 유지한다. 삭제 실패한 옛 파일은 다음 고아 파일 정리 대상으로 표시한다.
+- 결정: 사용자 전체 삭제는 삭제 표시 시각 뒤 녹음을 선택하지 않는다. 폴더 목록에 저장 시각이 없거나 오래돼도 현재 답변의 연결을 확인해 새 녹음을 보호하고, 실제 고아 파일은 계속 삭제한다.
+- 결정: 카메라와 검출기는 각각 도착하자마자 소유하고, 화면 이탈·시작 실패·늦은 응답에서 개별 정리한다. 둘 다 준비되기 전에는 분석 준비 완료로 취급하지 않는다. Gaze Phase 0은 개발 전용 실험으로 유지한다.
+- 이유: 독립 리뷰와 실패 회귀 테스트에서 새 녹음 연결 소실·기한 단축, 삭제 cutoff 뒤 파일 삭제, 모델 대기 중 카메라 트랙 유지가 재현됨. API·스키마·의존성 변경 없이 기존 개인정보 원칙을 지키는 수정이다.
+- 근거: `backend/tests/test_retention_concurrency.py`(저장소 삭제 성공/실패·cutoff·목록 시각9개), `web/e2e/camera-lifecycle.spec.ts`(카메라/검출기 준비3개), [검증 기록](progress.md).

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api } from "../api";
+import CameraPanel from "../components/CameraPanel";
 import ConsentPanel from "../components/ConsentPanel";
 import InterviewContext from "../components/InterviewContext";
+import { useFaceAnalysis } from "../components/useFaceAnalysis";
 import { useRecorder } from "../components/useRecorder";
 import type { PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
+import { saveVideoSegment } from "../video/metrics";
 
 type Phase = "ready" | "prep" | "answer" | "uploading" | "reviewing";
 const fmt = (s: number) => `${Math.floor(Math.max(0, Math.ceil(s)) / 60)}:${String(Math.max(0, Math.ceil(s)) % 60).padStart(2, "0")}`;
@@ -30,6 +33,9 @@ export default function SessionRunner() {
   const [consentFor, setConsentFor] = useState<"upload" | "transcribe" | null>(null);
   const rec = useRecorder();
   const { start, stop, ensureStream } = rec;
+  // 선택 기능. 꺼져 있거나 실패해도 아래 흐름은 그대로다(답변 시작·끝에서 기록 구간만 알린다)
+  const cam = useFaceAnalysis();
+  const { beginSegment, endSegment } = cam;
   const deadline = useRef(0);
   const processing = useRef(false);
   const pendingAudio = useRef<{ blob: Blob; durationSec: number } | null>(null);
@@ -74,6 +80,9 @@ export default function SessionRunner() {
     processing.current = true;
     setPhase("uploading");
     setErr(null);
+    // 카메라 구간 요약은 첫 호출에서만 나온다(녹음 저장을 다시 시도할 때는 null이라 저장한 값을 덮지 않음)
+    const video = endSegment();
+    if (video) saveVideoSegment(id, answer.id, video);
     try {
       let saved: PracticeAnswer;
       if (inputMode === "audio") {
@@ -96,31 +105,42 @@ export default function SessionRunner() {
       processing.current = false;
       setPhase("reviewing");
     }
-  }, [answer, askConsent, inputMode, stop, updateAnswer]);
+  }, [answer, askConsent, endSegment, id, inputMode, stop, updateAnswer]);
 
   const beginAnswer = useCallback(async () => {
     try {
       if (inputMode === "audio") await start();
       setPhase("answer");
+      beginSegment();
       if (session) {
         deadline.current = performance.now() + session.answer_sec * 1000;
         setLeft(session.answer_sec);
       }
     } catch { setPhase("ready"); }
-  }, [inputMode, start, session]);
+  }, [beginSegment, inputMode, start, session]);
 
+  // 마이크 권한을 묻는 동안 '답변 시작'을 다시 눌러도 한 번만 시작한다(녹음기가 둘 생기지 않게)
+  const starting = useRef(false);
+  const [startingUi, setStartingUi] = useState(false);
   const beginQuestion = async () => {
-    if (!session) return;
-    setErr(null);
-    setDraft("");
-    setUploadFailed(false);
-    setConsentFor(null); // 앞 질문에서 띄운 동의 패널(다시 전사 등)은 이 질문과 상관없다
-    try { if (inputMode === "audio") await ensureStream(); } catch { return; }
-    if (mock && session.prep_sec > 0) {
-      deadline.current = performance.now() + session.prep_sec * 1000;
-      setLeft(session.prep_sec);
-      setPhase("prep");
-    } else await beginAnswer();
+    if (!session || starting.current) return;
+    starting.current = true;
+    setStartingUi(true);
+    try {
+      setErr(null);
+      setDraft("");
+      setUploadFailed(false);
+      setConsentFor(null); // 앞 질문에서 띄운 동의 패널(다시 전사 등)은 이 질문과 상관없다
+      try { if (inputMode === "audio") await ensureStream(); } catch { return; }
+      if (mock && session.prep_sec > 0) {
+        deadline.current = performance.now() + session.prep_sec * 1000;
+        setLeft(session.prep_sec);
+        setPhase("prep");
+      } else await beginAnswer();
+    } finally {
+      starting.current = false;
+      setStartingUi(false);
+    }
   };
 
   useEffect(() => {
@@ -201,6 +221,7 @@ export default function SessionRunner() {
   return <>
     <div className="row"><h1 className="grow">{session.title}</h1><span className="muted">{idx + 1} / {session.answers.length}</span></div>
     <InterviewContext context={session.context_snapshot} />
+    <CameraPanel status={cam.status} error={cam.error} face={cam.face} edge={cam.edge} diag={cam.diag} onEnable={() => void cam.enable()} onDisable={cam.disable} attachVideo={cam.attachVideo} />
     <section className="card">
       <div className="row small"><span className="chip">{answer.question.category}</span>{mock && <span className="chip accent">모의시험</span>}{answer.parent_answer_id && <span className="chip accent">꼬리질문</span>}</div>
       {answer.followup_reason && <p className="followup-reason">{answer.followup_reason}</p>}
@@ -213,7 +234,7 @@ export default function SessionRunner() {
         {inputMode === "audio" && consent === "needed" ? <>
           {consentPanel(null, "동의하고 시작", () => void beginQuestion())}
           <div className="row"><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>
-        </> : <div className="row"><button className="primary" onClick={beginQuestion}>답변 시작</button><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>}
+        </> : <div className="row"><button className="primary" disabled={startingUi} onClick={beginQuestion}>답변 시작</button><button disabled={busy} onClick={() => next(false, false)}>건너뛰기</button></div>}
       </>}
       {phase === "prep" && <><p className="phase">답변 준비 시간</p><div className="timer">{fmt(left)}</div><button className="primary" onClick={beginAnswer}>바로 답변 시작</button></>}
       {phase === "answer" && <>

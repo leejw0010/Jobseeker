@@ -1,6 +1,7 @@
 """OpenAI 호출(맞춤 질문 생성, 음성 전사, 답변 피드백, 세션 디브리프).
 
 OPENAI_API_KEY가 없으면 생성은 템플릿 기반으로 대체하고, 전사·피드백·디브리프는 쓰지 않는다.
+음성 전사(transcribe)는 STT_PROVIDER=openai일 때만 stt.py가 부른다. 기본 전사는 로컬(stt.py)이다.
 SDK 버전 차이를 피하려고 REST 엔드포인트를 httpx로 직접 호출한다. 주소는 OPENAI_BASE_URL(기본 OpenAI)이다.
 """
 import json
@@ -64,14 +65,24 @@ def generate_questions(company: str, position: str, essay: str, count: int) -> l
     user = f"회사: {company}\n직무: {position}\n질문 수: {count}\n\n[자기소개서]\n{essay or '(없음)'}"
     try:
         data = json.loads(_chat(_GEN_SYSTEM, user, json_mode=True))
-        out = [
-            {"category": q.get("category", "인성") if q.get("category") in ("인성", "직무", "기업", "상황") else "인성",
-             "text": q["text"].strip()}
-            for q in data.get("questions", []) if q.get("text")
-        ]
-        return out[:count] or _template_questions(company, position, essay, count)
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError):
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
         return _template_questions(company, position, essay, count)
+    return _parse_questions(data)[:count] or _template_questions(company, position, essay, count)
+
+
+def _parse_questions(data) -> list[dict]:
+    """모델 응답에서 쓸 수 있는 문항만 고른다. 약속한 꼴({"questions": [{"category", "text"}]})이 아닌 부분은 버린다."""
+    items = data.get("questions") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    out = []
+    for q in items:
+        text = q.get("text") if isinstance(q, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            continue
+        category = q.get("category")
+        out.append({"category": category if category in ("인성", "직무", "기업", "상황") else "인성", "text": text.strip()})
+    return out
 
 
 _EXPERIENCE_HINT = re.compile(r"(경험|프로젝트|담당|개선|해결|협업|리더|성과|달성|극복|도전)")

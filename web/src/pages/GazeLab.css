@@ -1,0 +1,7 @@
+/* 시선 실험실(개발 전용, /dev/gaze-lab). 이 화면이 불러올 때만 들어간다(프로덕션 번들에 없음): 시험 중 화면 전체를 덮는다. 카메라 미리보기는 밑에서 계속 재생된다 */
+.gaze-lab-overlay { position: fixed; inset: 0; z-index: 1000; background: var(--surface, #fff); }
+.gaze-lab-prompt { position: absolute; left: 50%; top: 15%; transform: translateX(-50%); max-width: 70%; margin: 0; text-align: center; font-size: 18px; }
+.gaze-lab-dot { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: #d33; box-shadow: 0 0 0 5px rgba(221, 51, 51, 0.25); }
+.gaze-lab-lens { position: absolute; left: 50%; top: 4px; transform: translateX(-50%); font-weight: 600; }
+.gaze-lab-panel { position: absolute; background: #c8c8c8; border-radius: 6px; }
+.gaze-lab-typing { position: absolute; left: 50%; top: 80%; width: 480px; max-width: 80%; height: 80px; transform: translate(-50%, -50%); }

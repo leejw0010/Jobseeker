@@ -8,6 +8,10 @@ __pycache__/
 .venv/
 backend/jobseeker.db
 backend/recordings/
+# 로컬 STT 모델(LOCAL_STT_MODEL_DIR을 저장소 안에 둘 때). 대용량이라 커밋하지 않는다
+backend/models/
 web/test-results/
 web/playwright-report/
 web/*.tsbuildinfo
+# STT 평가 데이터·결과(--data-dir는 저장소 밖에 두지만, 실수로 안에 둘 때를 막는다)
+backend/evals/stt/data/

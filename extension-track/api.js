@@ -1,10 +1,10 @@
 // FastAPI 백엔드(③ Track) 호출. 웹 대시보드와 같은 API를 쓴다.
-import { getSettings } from "./settings.js";
+import { getAccessToken, getSettings } from "./settings.js";
 
-/** 로그인(Supabase Auth)을 붙이면 액세스 토큰을 돌려주도록 이 함수를 바꾼다.
- *  지금은 백엔드 개발 모드(AUTH_DISABLED=true)의 고정 사용자로 동작한다. */
+/** 로그인 쪽이 settings.js의 setAccessToken()으로 넣은 Supabase 액세스 토큰. 없으면 null이고,
+ *  그때는 백엔드 개발 모드(AUTH_DISABLED=true)의 고정 사용자로만 동작한다(인증을 켠 서버는 401). */
 async function getToken() {
-  return null;
+  return getAccessToken();
 }
 
 async function req(method, path, body) {

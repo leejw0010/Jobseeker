@@ -5,7 +5,10 @@ import Stars from "../components/Stars";
 import CoachingPanel from "../components/CoachingPanel";
 import ConsentPanel from "../components/ConsentPanel";
 import InterviewContext from "../components/InterviewContext";
+import ReviewInsights from "../components/ReviewInsights";
+import VideoReportCard from "../components/VideoReportCard";
 import type { CoachingRubric, InterviewContext as Context, PracticeAnswer, PracticeSession, PracticeSettings } from "../types";
+import { clearSessionVideo } from "../video/metrics";
 
 const STT_LABEL = { none: "녹음 없음", done: "음성 인식 완료", failed: "음성 인식 재시도 필요", unavailable: "자동 전사 미연결" } as const;
 const POLL_MS = 2500;
@@ -63,7 +66,11 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
   }, [a.id, a.audio_available, a.recorded_at]);
 
   /** syncText: 서버가 전사문을 새로 만든 경우에만 입력란을 덮어쓴다(작성 중인 내용 보호). */
+  // 저장·점검 중에 다른 동작(별점 연속 클릭 등)이 끼어들지 않게 한 번에 하나만 보낸다
+  const acting = useRef(false);
   const act = async (fn: () => Promise<PracticeAnswer>, syncText = false) => {
+    if (acting.current) return;
+    acting.current = true;
     setBusy(true);
     setErr(null);
     setNeedConsent(null);
@@ -78,6 +85,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
       else setErr((e as Error).message);
       onReload();
     } finally {
+      acting.current = false;
       setBusy(false);
     }
   };
@@ -143,7 +151,7 @@ function AnswerCard({ a, context, rubric, onChange, onReload }: {
       <div className="spacer" />
       <div className="row">
         <span className="small muted">자기 평가</span>
-        <Stars value={a.self_rating} onChange={(v) => act(() => api.reflect(a.id, { self_rating: v }))} />
+        <Stars value={a.self_rating} disabled={busy} onChange={(v) => act(() => api.reflect(a.id, { self_rating: v }))} />
       </div>
       <label>회고 메모
         <textarea style={{ minHeight: 70 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="다음엔 무엇을 바꿀지" />
@@ -389,6 +397,7 @@ export default function SessionReview() {
     setErr(null);
     try {
       await api.deleteSession(id);
+      clearSessionVideo(id);
       nav("/practice/history");
     } catch (e) {
       setErr((e as Error).message);
@@ -412,7 +421,9 @@ export default function SessionReview() {
       </div>
       <p className="muted small">{new Date(s.created_at).toLocaleString("ko-KR")} · {s.mode === "mock" ? `모의시험 (준비 ${s.prep_sec}초 / 답변 ${s.answer_sec}초)` : "자유 연습"}</p>
       {err && <p className="err">{err}</p>}
+      <ReviewInsights s={s} />
       <DebriefCard s={s} ai={ai} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
+      <VideoReportCard sessionId={s.id} answers={s.answers} />
       <InterviewContext context={s.context_snapshot} />
       <section className="card review-summary">
         <h2>다음 연습으로 연결하기</h2>

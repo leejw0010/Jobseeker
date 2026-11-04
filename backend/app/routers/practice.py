@@ -1,5 +1,6 @@
 """② Practice: 질문은행·맞춤 질문, 모의시험 세션, 녹음·전사, 회고, 코칭·디브리프·재연습, 녹음 동의."""
 import random
+import secrets
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -9,7 +10,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .. import coaching, llm, storage
+from .. import coaching, llm, storage, stt
 from ..auth import current_user_id
 from ..config import settings
 from ..db import get_db
@@ -33,6 +34,7 @@ from ..retention import (
     delete_session_files,
     delete_user_audio,
     owned_audio_path,
+    recorded_since,
     request_sweep,
     retention,
 )
@@ -50,6 +52,7 @@ from ..schemas import (
     SessionOut,
     SessionSummary,
 )
+from ..services import answer_coaching
 
 router = APIRouter(prefix="/practice", tags=["practice"])
 
@@ -170,31 +173,20 @@ def _invalidate_coaching(answer: PracticeAnswer) -> None:
 
 
 def _report(answer: PracticeAnswer, db: Session) -> dict:
-    if not answer.transcript or not answer.transcript.strip():
-        raise HTTPException(422, "답변 전사문을 입력하거나 녹음해 주세요")
-    history = [{"question": a.question.text, "answer": a.transcript}
-               for a in answer.session.answers if a.order_no < answer.order_no and a.transcript]
-    transcript = answer.transcript
-    report = coaching.build_report(answer.question.text, transcript, answer.session.context_snapshot or {}, history)
-    # Lock only after the external request. An edit while it ran must not revive stale evidence.
-    unchanged = db.execute(update(PracticeAnswer).where(PracticeAnswer.id == answer.id,
-                           PracticeAnswer.transcript == transcript).values(transcript=PracticeAnswer.transcript),
-                           execution_options={"synchronize_session": False})
-    if unchanged.rowcount != 1:
-        db.rollback()
-        raise HTTPException(409, "점검 중 답변이 바뀌었어요. 수정한 답변으로 다시 점검해 주세요")
-    # Another request may have created this row while the model was running.
-    saved = db.get(AnswerCoaching, answer.id, populate_existing=True)
-    answer.coaching = saved if saved is not None else AnswerCoaching()
-    answer.coaching.report = report
-    return answer.coaching.report
+    """답변 점검(services.answer_coaching)을 부르고 그 오류를 HTTP 응답으로 바꾼다."""
+    try:
+        return answer_coaching.coach(answer, db)
+    except answer_coaching.NoTranscript:
+        raise HTTPException(422, "답변 전사문을 입력하거나 녹음해 주세요") from None
+    except answer_coaching.TranscriptChanged:
+        raise HTTPException(409, "점검 중 답변이 바뀌었어요. 수정한 답변으로 다시 점검해 주세요") from None
 
 
 def _stt(data: bytes, filename: str, ctype: str) -> str:
-    """전사문. 빈 전사문(무음 등)과 잘못된 응답·오류는 빈 문자열(실패)."""
+    """전사문. 전사하지 못했으면(무음, 잘못된 파일, 모델·제공자 오류, 바쁨 등) 빈 문자열(실패)."""
     try:
-        return (llm.transcribe(data, filename, ctype) or "").strip()
-    except (httpx.HTTPError, llm.TranscriptionError):
+        return stt.transcribe(data, filename, ctype).strip()
+    except stt.STTError:
         return ""
 
 
@@ -493,7 +485,10 @@ def upload_audio(
     """녹음을 저장하고 곧바로 전사한다. 전사에 성공하면 원본은 지우고(보관을 고르지 않았을 때) 전사문만 남긴다.
 
     전사가 실패하면 다시 시도할 수 있게 원본을 남기되, 보관 기한이 지나면 자동으로 지운다.
-    저장·전사하는 동안 원본 녹음을 지웠으면(모두 지우기, 덮어쓴 이전 녹음 삭제) 녹음은 지운 것으로 저장하고 전사문은 남긴다.
+    업로드마다 다른 경로({user_id}/{session_id}/{answer_id}.{토큰}.{확장자})에 저장하고, 답변에 연결한 뒤에 이전 녹음 파일을
+    지운다. 그래서 겹친 업로드가 서로의 파일을 덮어쓰거나 지우지 않는다. 같은 답변에 업로드가 겹치면 나중에 시작한 녹음이
+    이기고, 먼저 시작해 늦게 끝난 업로드는 409로 버린다(그 파일만 지운다).
+    저장·전사하는 동안 원본 녹음을 모두 지웠으면(모두 지우기) 녹음은 지운 것으로 저장하고 전사문은 남긴다.
     """
     started = _now()
     a = _own_answer(db, user_id, answer_id)
@@ -507,38 +502,36 @@ def upload_audio(
         raise HTTPException(413, "녹음 파일이 25MB를 넘습니다")
     ext = (file.filename or "rec.webm").rsplit(".", 1)[-1].lower()
     ctype = _audio_media_type(f"recording.{ext}")
-    path = f"{user_id}/{a.session_id}/{a.id}.{ext}"
-    # 확장자가 다른 이전 녹음은 먼저 지운다. 못 지우면 경로를 잃지 않게 새 녹음을 받지 않는다
-    if a.audio_path and a.audio_path != path:
-        ok = delete_audio(a)
-        db.commit()  # 지운 것(못 지웠으면 당긴 보관 기한)을 바로 저장한다
-        if not ok:
-            raise HTTPException(502, "이전 녹음을 지우지 못했어요. 잠시 후 다시 녹음해 주세요")
-    overwrite = a.audio_path == path  # 같은 경로의 이전 녹음을 덮어쓴다: 그 녹음을 지우면 이번 파일이 지워진다
+    path = f"{user_id}/{a.session_id}/{a.id}.{secrets.token_hex(6)}.{ext}"
     storage.save(path, data, ctype)
-    transcript = _stt(data, f"{a.id}.{ext}", ctype) if llm.available() else ""
-    # 저장·전사하는 동안 세션·질문이 지워졌거나 동의를 철회했을 수 있다: 잠그고 다시 확인한 뒤에 반영한다
+    can_stt = stt.available()
+    transcript = _stt(data, f"{a.id}.{ext}", ctype) if can_stt else ""
+    # 저장·전사하는 동안 세션·질문이 지워졌거나, 동의를 철회했거나, 더 나중에 시작한 녹음이 저장됐을 수 있다:
+    # 잠그고 다시 확인한 뒤에 반영한다
     if not _lock_answer(db, a.id):
         db.rollback()
         _discard(db, user_id, path)
         raise HTTPException(404, ANSWER_NOT_FOUND)
     prefs = _locked_consent(db, user_id)
     db.refresh(a)
-    # 저장·전사하는 동안 원본 녹음을 모두 지웠거나(전체 삭제는 아직 행이 가리키지 않는 이 파일도 지우고 센다)
-    # 덮어쓴 이전 녹음을 지웠다(녹음 삭제 등): 그 삭제 뒤에 커밋한 것과 같게 녹음을 지운 것으로 저장한다
-    deleted = prefs is not None and (cleared_since(prefs, started) or (overwrite and not a.audio_path))
+    if recorded_since(a, started):
+        # 이 업로드보다 나중에 시작한 녹음이 이미 저장됐다: 그 녹음과 전사문을 덮지 않는다
+        db.commit()
+        _discard(db, user_id, path)
+        raise HTTPException(409, "더 나중에 녹음한 답변이 이미 저장됐어요. 새로고침해 확인해 주세요")
+    previous = owned_audio_path(a)  # 이번 녹음을 연결한 뒤 지울 이전 녹음 파일(그사이 지웠으면 None)
+    # 저장·전사하는 동안 원본 녹음을 모두 지웠다(전체 삭제는 아직 행이 가리키지 않는 이 파일도 지우고 센다):
+    # 그 삭제 뒤에 커밋한 것과 같게 녹음을 지운 것으로 저장한다
+    deleted = prefs is not None and cleared_since(prefs, started)
     if prefs is None and not transcript:
-        # 철회했고 전사문도 없다: 이번 녹음은 없던 일로 하고 파일만 지운다
-        if a.audio_path == path:  # 같은 경로의 이전 녹음을 덮어썼다
-            delete_audio(a)
-            db.commit()
-        else:
-            db.commit()
-            _discard(db, user_id, path)
+        # 철회했고 전사문도 없다: 이번 녹음은 없던 일로 하고 파일만 지운다(이전 녹음은 철회가 지운다)
+        db.commit()
+        _discard(db, user_id, path)
         raise HTTPException(403, NEED_CONSENT)
+    # 녹음한 시각은 업로드를 시작한 시각이다(겹친 업로드 중 어느 녹음이 나중인지 이 값으로 가린다)
     now = _now()
     a.audio_path, a.duration_sec = path, duration_sec
-    a.recorded_at, a.audio_expires_at, a.audio_deleted_at = now, now + retention(), None
+    a.recorded_at, a.audio_expires_at, a.audio_deleted_at = started, now + retention(), None
     _invalidate_coaching(a)
     a.transcript = None
     if prefs is None:
@@ -546,15 +539,32 @@ def upload_audio(
         _apply_transcript(a, transcript)
         delete_audio(a)  # 못 지우면 보관 기한을 당겨 두어 다음 만료 정리가 지운다
         db.commit()
+        _drop_previous(db, user_id, previous, path)
         raise HTTPException(403, NEED_CONSENT)
-    if not llm.available():
+    if not can_stt:
         a.stt_status = "unavailable"
     else:
         _apply_stt(a, transcript, prefs.keep_audio)
     if deleted:
         delete_audio(a)  # 전사문은 남기고 파일이 아직 있으면 지운다. 못 지우면 보관 기한을 당겨 다음 만료 정리가 지운다
     db.commit()
+    _drop_previous(db, user_id, previous, path)
     return a
+
+
+def _drop_previous(db: Session, user_id: str, previous: str | None, path: str) -> None:
+    """새 녹음을 연결·커밋한 뒤 이전 녹음 파일을 지운다. 이제 어떤 행도 가리키지 않으므로, 못 지우면 고아 파일로
+    표시해 다음 만료 정리가 지우게 한다."""
+    if previous and previous != path:
+        _discard(db, user_id, previous)
+
+
+def _load_audio(path: str) -> bytes | None:
+    """녹음 내용(없으면 None). 저장소 오류는 '녹음 없음'이 아니라 502로 알린다."""
+    try:
+        return storage.load(path)
+    except storage.StorageError as e:
+        raise HTTPException(502, "녹음 저장소에 연결하지 못했어요. 잠시 후 다시 시도해 주세요") from e
 
 
 @router.get("/answers/{answer_id}/audio")
@@ -563,7 +573,7 @@ def download_audio(answer_id: str, user_id: str = Depends(current_user_id), db: 
     if a.audio_deleted_at:
         raise HTTPException(404, "원본 녹음은 삭제됐어요")
     path = owned_audio_path(a)
-    data = storage.load(path) if path else None
+    data = _load_audio(path) if path else None
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
     return Response(content=data, media_type=_audio_media_type(path))
@@ -584,7 +594,7 @@ def delete_answer_audio(answer_id: str, user_id: str = Depends(current_user_id),
 def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     """원본 녹음을 다시 전사한다. 원본 보관은 지금 설정을 따른다.
 
-    다시 전사할 수 없는 경우(원본 삭제, 녹음 없음, 키 없음)는 동의보다 먼저 알린다: 동의해도 할 수 있는 일이 없다.
+    다시 전사할 수 없는 경우(원본 삭제, 녹음 없음, 자동 전사 꺼짐)는 동의보다 먼저 알린다: 동의해도 할 수 있는 일이 없다.
     전사하는 동안 원본을 지웠으면 이미 얻은 전사문은 남긴다(동의 철회와 같다).
     """
     started = _now()
@@ -594,13 +604,13 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
     path = owned_audio_path(a)
     if not path:
         raise HTTPException(404, "녹음이 없습니다")
-    if not llm.available():
-        raise HTTPException(503, "OPENAI_API_KEY가 설정되지 않아 전사를 할 수 없습니다")
+    if not stt.available():
+        raise HTTPException(503, stt.unavailable_reason())
     ctype = _audio_media_type(path)
-    data = storage.load(path)
+    data = _load_audio(path)
     if data is None:
         raise HTTPException(404, "녹음이 없습니다")
-    _require_consent(db, user_id)  # 녹음을 OpenAI로 보내므로 업로드와 같은 동의가 필요하다
+    _require_consent(db, user_id)  # 녹음을 다시 전사하므로(제공자가 openai면 OpenAI로 보낸다) 업로드와 같은 동의가 필요하다
     recorded_at = a.recorded_at
     transcript = _stt(data, path.rsplit("/", 1)[-1], ctype)
     # 전사하는 동안 답변이 지워졌거나, 동의를 철회했거나, 녹음이 바뀌었을 수 있다: 잠그고 다시 확인한 뒤에 반영한다

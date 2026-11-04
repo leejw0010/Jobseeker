@@ -2,7 +2,21 @@ import hashlib
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, false
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    false,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -177,6 +191,9 @@ class UserSettings(Base):
 
 class Application(Base):
     __tablename__ = "applications"
+    # 사용자마다 공고 URL은 한 건(supabase/schema.sql의 applications_user_url_uq와 같다). URL이 없는 건은 제한 없음
+    __table_args__ = (Index("applications_user_url_uq", "user_id", "url", unique=True,
+                            sqlite_where=text("url IS NOT NULL"), postgresql_where=text("url IS NOT NULL")),)
     id: Mapped[str] = mapped_column(ID, primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(ID, index=True)
     company: Mapped[str] = mapped_column(String(100))
