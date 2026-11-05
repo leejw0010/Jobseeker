@@ -4,7 +4,7 @@
 
 ## 현재 브랜치 상태
 
-- **Practice·Track 실사용 안정화(2026-11-06, `codex/practical-validation`):** 원격 main `e7e7967` 기준. 작업 위치 `/home/user/projects/Jobseeker/.worktrees/practical-validation`; 이전 `/tmp` 소스는 작업 기록에서 복구·독립 대조 후 새로 검증했다. 원본 실행기·문서8개 SHA-256 일치, 실제 사용자 DB·녹음·비밀 설정 접근 없음. main 병합·팀 저장소 변경 없음. [기능별 결과·한계](validation/2026-11-06-usability-results.md), [파일별 팀 이식](integration/team-repository-handoff.md).
+- **Practice·Track 실사용 안정화(2026-11-06, `codex/practical-validation`):** 원격 main `e7e7967` 기준. 검증 소스 `9a9e526`을 정상 Push하고 [PR #6](https://github.com/leejw0010/Jobseeker/pull/6)을 생성했다(OPEN·미병합·자동 병합 없음). 작업 위치 `/home/user/projects/Jobseeker/.worktrees/practical-validation`; 이전 `/tmp` 소스는 작업 기록에서 복구·독립 대조 후 새로 검증했다. 원본 실행기·문서8개 SHA-256 일치, 실제 사용자 DB·녹음·비밀 설정 접근 없음. main 병합·팀 저장소 변경 없음. [기능별 결과·한계](validation/2026-11-06-usability-results.md), [파일별 팀 이식](integration/team-repository-handoff.md).
   - **최종 자동 검증:** Backend **388 passed36.37s**, build **85modules3.00s**, unit **132 passed4.0s**, 전체 E2E **107 passed/33skipped234.369s**, unexpected0/flaky0. desktop70·mobile37통과; mobile기존제외33(camera lifecycle3/Gaze5/recorder4/popup5/Track경합16). 단위 테스트와 E2E는 합산하지 않는다. 실제 Track등록→3문항/버전비교/복원/제출확인→전형편집·삭제/통계→Practice고정 자료를 두viewport에서 검증했다.
   - **실제 격리 DB:** PostgreSQL16.15/PostgREST16.5 **17 passed36.18s**. JWT A/B의 API 소유권과 비권한 RLS, 신규/기존/반복 migration, 활성화→off→on, 독립 트랜잭션 동시 저장, 버전 불변성·명시적 부모 삭제를 검증했다. 실제 Supabase 클라우드 Auth/Storage/RLS 확인으로 표현하지 않는다.
   - **수정:** append-only 제출 확인·복원 새초안, sticky수동/legacy상태와 날짜순 이벤트재계산·통계 분모·지원일미상, 상세응답 경합, 전사/대화 전체 지문·초안/저장후 코칭 무효화, 질문별 접근성. 전체 E2E에서 발견한 다른 지원 건 질문 혼입·생성/삭제 중첩과 옛 별점 역할selector도 실패 회귀→수정→통과했다. 타임아웃 증가/기능 제거 없음. 독립 전체/부분 재리뷰의 남은 Critical/Important 없음.

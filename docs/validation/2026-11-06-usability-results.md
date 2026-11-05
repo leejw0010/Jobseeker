@@ -21,9 +21,9 @@
 | 독립 전체 코드 리뷰 | 전체 위험 중심 리뷰 및 마지막 중첩 요청 수정의 부분 재리뷰 승인; 남은 Critical/Important 없음 | 사용자 격리·불변성·상태 계산·인증·미디어 경계 |
 | 오프라인 집계 비교 | **7시도 /6그룹 · JSON/CSV/Markdown 생성** | 실패 complete 포함·Gaze invalid/aborted 구분 |
 | 사람용 pilot 기동/종료 | **API200 / Web200 · 소유 프로세스 종료 확인** | 장치 접근·모델 로딩 없음 |
-| Git diff·보호 파일·원격 확인 | **diff 검사·원본8개 해시 일치; 원격은 PR 후 재확인** | 원래 Worktree·스크린샷·기존 migration·main 보존 |
+| Git diff·보호 파일·원격 확인 | **diff 검사·원본8개 해시 일치·main e7e7967 유지·PR #6 OPEN/미병합** | 원래 Worktree·스크린샷·기존 migration·main 보존 |
 
-검증 소스 커밋: **PENDING** · PR: **PENDING**. 개인 저장소 main 병합과 팀 저장소 수정·PR 생성은 이번 작업에 포함하지 않는다.
+검증 소스 커밋: `9a9e526e172a19d2e153116494706cd8fa38aaea` · PR: [#6](https://github.com/leejw0010/Jobseeker/pull/6). 후속 커밋은 결과·PR 주소를 기록하는 문서 변경만 포함한다. 개인 저장소 main 병합과 팀 저장소 수정·PR 생성은 이번 작업에 포함하지 않는다.
 
 
 최종 전체 E2E의 desktop은70개 통과, mobile은37개 통과·33개 건너뜀이었다. mobile 의도적 제외는 camera lifecycle3, Gaze Lab5, recorder4, 확장 popup5, Track의 desktop 전용 경합16이다. 실제 Track A–F 흐름과 신규 지원 건/질문 전환 회귀는 두 프로젝트에서 모두 실행했다. viewport를 바꾼 Chromium이며 실제 모바일 Safari/기기 검증은 아니다.
