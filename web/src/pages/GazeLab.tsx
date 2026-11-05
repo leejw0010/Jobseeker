@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { downloadArtifacts, EXPORT_NOTICE, compatibleRepeatSpread, type ValidationArtifact } from "../validation/artifact";
+import { gazeArtifact } from "../validation/gaze";
+import { faceDetectorMetadata } from "../video/detector";
 import CameraPanel from "../components/CameraPanel";
 import { useFaceAnalysis } from "../components/useFaceAnalysis";
 import {
@@ -43,10 +46,13 @@ export default function GazeLab() {
   const [invalidReason, setInvalidReason] = useState<CalibrationInvalid>("viewport_changed");
   const [current, setCurrent] = useState<Current | null>(null);
   const [skipRate, setSkipRate] = useState(false);
+  const [condition,setCondition]=useState("baseline");
   const [report, setReport] = useState<FeasibilityReport | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [videoSize, setVideoSize] = useState<{ w: number; h: number } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [artifacts,setArtifacts]=useState<ValidationArtifact[]>([]);
+  const activeAttempt=useRef<{id:string;stopped:boolean;finish:(status:"complete"|"invalid"|"aborted"|"error",r?:FeasibilityReport,reason?:string)=>void}|null>(null);
   const alive = useRef(true);
   const size = useRef<{ w: number; h: number } | null>(null);
   // 개발 모드(StrictMode)는 마운트를 두 번 하므로 마운트할 때마다 다시 켠다. 화면을 떠나면 진행 중인 시험을 멈춘다
@@ -59,6 +65,15 @@ export default function GazeLab() {
   }), [subscribeFrames]);
 
   const run = useCallback(async () => {
+    const id=crypto.randomUUID();
+    let observed=0;
+    let stopCollection:(()=>void)|undefined;
+    const attempt={id,stopped:false,finish:(status:"complete"|"invalid"|"aborted"|"error",r?:FeasibilityReport,reason?:string)=>{
+      if(attempt.stopped)return;attempt.stopped=true;stopCollection?.();
+      if(alive.current)setArtifacts(prev=>[...prev,gazeArtifact(id,status,r??null,E2E?"synthetic-signal":"human-device",faceDetectorMetadata().delegate,skipRate,reason?[reason]:[],condition,observed,size.current)]);
+    }};
+    activeAttempt.current=attempt;
+    try {
     const k = timeScale(), collectHz = k < 1 ? 60 : 15;
     // 채점 좌표는 스크롤바를 뺀 화면 기준(시험 화면을 덮는 고정 레이어와 같은 크기)
     const view = { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight };
@@ -69,7 +84,7 @@ export default function GazeLab() {
     setCopied(null);
     setPhase("running");
     for (let i = 0; i < queue.length; i++) {
-      const { fx, attempt } = queue[i];
+      const { fx, attempt: retryAttempt } = queue[i];
       const panel = fx.target === "panel" ? mockPanelRect(view, fx.panelPx!) : undefined;
       const target: [number, number] | undefined = panel ? [panel.left + panel.width / 2, panel.top + panel.height / 2]
         : typeof fx.target === "object" ? [fx.target.x * view.w, fx.target.y * view.h] : undefined;
@@ -77,17 +92,20 @@ export default function GazeLab() {
       setTargetHz(fx.hz ?? collectHz);
       await sleep(fx.settleMs * k);
       const frames: Frame[] = [];
-      if (!alive.current) return;
+      if (!alive.current || attempt.stopped) { attempt.finish("aborted"); return; }
       const stop = subscribeFrames((f) => {
+        observed++;
         guard.check(geometry(), { width: f.width, height: f.height });
         // A fixation lasts at most 20sec. Guard against a stalled timer retaining raw frames indefinitely.
         if (frames.length < 2400) frames.push(f);
       });
+      stopCollection=stop;
       await sleep(fx.collectMs * k);
       stop();
-      if (!alive.current) return;
+      if (!alive.current || attempt.stopped) { attempt.finish("aborted"); return; }
       const invalid = guard.check(geometry());
       if (invalid) {
+        attempt.finish("invalid",undefined,invalid);
         setInvalidReason(invalid);
         setTargetHz(4);
         setCurrent(null);
@@ -96,22 +114,26 @@ export default function GazeLab() {
       }
       const d = collect(frames, fx, { target, rate: fx.hz ? rateSnapshot() : undefined, panelRect: panel });
       // 유효 표본이 모자란 학습·검증 응시는 끝에 다시 잰다(최대 MAX_RETRY번)
-      if (d.samples.length < MIN_VALID && attempt < MAX_RETRY && (fx.role === "train" || fx.role === "validate")) {
-        queue.push({ fx, attempt: attempt + 1 });
+      if (d.samples.length < MIN_VALID && retryAttempt < MAX_RETRY && (fx.role === "train" || fx.role === "validate")) {
+        queue.push({ fx, attempt: retryAttempt + 1 });
       } else data.push(d);
     }
     setTargetHz(4);
     setCurrent(null);
     const r = evaluateRun(data, view, Object.fromEntries(FEASIBILITY.panel.heights.map((h) => [h, mockPanelRect(view, h)])));
+    attempt.finish("complete",r);
     setReport(r);
     setRuns((prev) => [...prev, { run: prev.length + 1, ...aggregate(r), "camera.w": size.current?.w ?? null,
       "camera.h": size.current?.h ?? null, devicePixelRatio, skippedRate: skipRate ? "yes" : "no" }]);
     setPhase("done");
-  }, [rateSnapshot, setTargetHz, skipRate, subscribeFrames]);
+    } catch { attempt.finish("error",undefined,"model_error"); setTargetHz(4);setCurrent(null);setPhase("intro"); }
+  }, [rateSnapshot, setTargetHz, skipRate, condition, subscribeFrames]);
+
+  useEffect(()=>{if(phase==="running" && cam.status!=="on"){activeAttempt.current?.finish(cam.status==="error"?"error":"aborted",undefined,cam.status==="error"?"camera_error":"user_aborted");setTargetHz(4);setCurrent(null);setPhase("intro");}},[cam.status,phase,setTargetHz]);
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(JSON.stringify({ note: "G 0단계 집계(특징점·좌표·영상 없음)", runs }, null, 1));
+      await navigator.clipboard.writeText(JSON.stringify(artifacts, null, 1));
       setCopied("복사했어요. docs/progress.md의 G 0단계 표에 붙여 주세요.");
     } catch {
       setCopied("복사하지 못했어요. 아래 표의 숫자를 직접 옮겨 주세요.");
@@ -134,6 +156,7 @@ export default function GazeLab() {
       onEnable={() => void cam.enable()} onDisable={cam.disable} attachVideo={cam.attachVideo} />
     <section className="card">
       <div className="row">
+        <label>검증 조건 <select value={condition} disabled={phase==="running"} onChange={e=>setCondition(e.target.value)}><option value="baseline">평소 조건</option><option value="low-light">저조도</option><option value="glasses">안경 조건 변경</option></select></label>
         <label className="check-label"><input type="checkbox" checked={skipRate} disabled={phase === "running"}
           onChange={(e) => setSkipRate(e.target.checked)} />주기 시험 건너뛰기</label>
         <button className="primary" disabled={cam.status !== "on" || phase === "running"} onClick={() => void run()}>시험 시작</button>
@@ -143,8 +166,10 @@ export default function GazeLab() {
         <button onClick={() => void run()}>처음부터 다시</button>
       </div>}
     </section>
+    {phase === "running" && <button className="gaze-lab-stop" onClick={()=>{activeAttempt.current?.finish("aborted",undefined,"user_aborted");setTargetHz(4);setCurrent(null);setPhase("intro");}}>시험 중단</button>}
+    {artifacts.length>0 && <section className="card"><h2>시도 집계</h2><p>전체 {artifacts.length}회 · 완료 {artifacts.filter(a=>a.status==="complete").length} · 무효 {artifacts.filter(a=>a.status==="invalid").length} · 중단 {artifacts.filter(a=>a.status==="aborted").length} · 오류 {artifacts.filter(a=>a.status==="error").length}</p><p>H2 전체 인증: 하지 않음. fresh 보정별 e50 너비 비율의 (최대−최소)/중앙값 참고값: {num(compatibleRepeatSpread(artifacts),3)} (동일 기록 조건의 최소 3회, 반복 안정성만 관찰)</p><p className="small muted">{EXPORT_NOTICE}</p><button onClick={()=>downloadArtifacts(artifacts)}>익명 Gaze 집계 내보내기(JSON)</button><button onClick={()=>{setArtifacts([]);setRuns([]);setReport(null);setPhase("intro");}}>모든 시도 지우기</button></section>}
     {phase === "done" && report && <Results report={report} runs={runs} onCopy={() => void copy()} copied={copied}
-      onClear={() => { setRuns([]); setReport(null); setPhase("intro"); }} />}
+      onClear={() => { setArtifacts([]); setRuns([]); setReport(null); setPhase("intro"); }} />}
     {phase === "running" && current && <Overlay current={current} />}
   </>;
 }
@@ -200,7 +225,7 @@ function Results({ report: r, runs, onCopy, copied, onClear }: { report: Feasibi
     <Diagnostics r={r} />
     <h3>실행 {runs.length}번 요약</h3>
     <p className="small">H1 통과 {passCount("g1.verdict")} · H2 통과 {passCount("g2.verdict")} · 질문 패널 {passCount("panel.verdict")} · 표본 주기 {passCount("rate.verdict")}
-      (설계 기준은 3번 중 2번 이상)</p>
+      (설계 기준은 새 보정 3번 중 2번 이상이며 H2 전체 통과 인증은 하지 않음)</p>
     <div className="row"><button onClick={onCopy}>집계 복사(JSON)</button><button onClick={onClear}>결과 지우기</button></div>
     {copied && <p className="small" role="status">{copied}</p>}
   </section>;

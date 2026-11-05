@@ -104,7 +104,7 @@ test("time rules apply to mock sessions only: over at limit minus 1 second, shor
   expect(keys(zero.points).filter((k) => k.startsWith("time"))).toEqual([]);
 });
 
-test("role rule: 50+ characters without a role expression, quoting the start of the answer", () => {
+test("personal role cannot be assessed by presence of pronouns", () => {
   const ins = sessionInsights(sess([
     ans({ transcript: TEAM }),
     ans({ transcript: TEAM + " 제가 캐시를 맡았습니다" }),
@@ -112,10 +112,7 @@ test("role rule: 50+ characters without a role expression, quoting the start of 
     ans({ transcript: "우리 팀은 잘했습니다" }),
   ]));
   const role = ins.points.find((p) => p.key === "role");
-  expect(orders(role)).toEqual([ins.answers[0].order]);
-  const quote = role?.answers[0].quote ?? "";
-  expect(quote.length).toBeGreaterThan(0);
-  expect(TEAM.includes(quote.replace(/…$/, ""))).toBe(true);
+  expect(role).toBeUndefined();
 });
 
 test("coaching: no report shows 점검 전; 보완 items are grouped by criterion, quoting only text that is in the transcript", () => {
@@ -142,7 +139,7 @@ test("coaching: no report shows 점검 전; 보완 items are grouped by criterio
   expect(ins.points[1].action.length).toBeGreaterThan(0);
 });
 
-test("points are ordered coaching, time over, time short, role, speed, self-rating", () => {
+test("points are ordered coaching, time over, time short, speed, self-rating", () => {
   const base = said(100);
   const ins = sessionInsights(sess([
     rec(20, base, { self_rating: 2 }),
@@ -151,15 +148,16 @@ test("points are ordered coaching, time over, time short, role, speed, self-rati
     rec(20, TEAM.repeat(3), { coaching_report: report({ relevance: "보완" }) }), // 역할 표현 없음, 빠름(분당 495음절, 평균 299)
     rec(20, base, { self_rating: 3 }),
   ], { mode: "mock", answer_sec: 60 }));
-  expect(keys(ins.points)).toEqual(["coaching-relevance", "time-over", "time-short", "role", "speed-fast", "speed-slow", "rating"]);
+  expect(keys(ins.points)).toEqual(["coaching-relevance", "time-over", "time-short", "speed-fast", "speed-slow", "rating"]);
   const ranks = ins.points.map((p) => p.rank);
   expect([...ranks].sort((a, b) => a - b)).toEqual(ranks);
   expect(orders(ins.points.find((p) => p.key === "rating"))).toEqual([ins.answers[0].order, ins.answers[1].order]);
 });
 
 test("a point quotes at most two answers so the list stays short", () => {
-  const ins = sessionInsights(sess([ans({ transcript: TEAM }), ans({ transcript: TEAM }), ans({ transcript: TEAM })]));
-  const role = ins.points.find((p) => p.key === "role");
+  const item = () => ans({transcript:TEAM, coaching_report:report({specificity:"보완"},{quote:"우리 팀은"})});
+  const ins = sessionInsights(sess([item(),item(),item()]));
+  const role = ins.points.find((p) => p.key === "coaching-specificity");
   expect(role?.answers.length).toBe(3);
   expect(role?.answers.map((a) => !!a.quote)).toEqual([true, true, false]);
 });

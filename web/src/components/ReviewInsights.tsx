@@ -118,7 +118,7 @@ function PointItem({ p }: { p: ImprovementPoint }) {
 export default function ReviewInsights({ s }: { s: PracticeSession }) {
   const ins = useMemo(() => sessionInsights(s), [s]);
   const reasons = useMemo(
-    () => new Map(s.answers.map((a) => [a.id, Object.fromEntries((a.coaching_report?.criteria ?? []).map((c) => [c.key, c.reason]))])),
+    () => new Map(s.answers.map((a) => [a.id, Object.fromEntries((a.coaching_report?.input_status === "legacy_unverified" ? [] : a.coaching_report?.criteria ?? []).map((c) => [c.key, c.reason]))])),
     [s],
   );
   const answered = ins.answers.filter((m) => m.recorded || m.hasTranscript);

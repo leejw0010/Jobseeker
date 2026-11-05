@@ -12,7 +12,7 @@ function Funnel({ rows }: { rows: FunnelRow[] }) {
     <div className="bars" onMouseLeave={() => setTip(null)}>
       {rows.map((r) => (
         <div key={r.stage} className="bar-row"
-          onMouseMove={(e) => setTip({ x: e.clientX + 12, y: e.clientY + 12, text: `${r.stage}\n도달 ${r.reached}건\n통과 ${r.passed} · 탈락 ${r.failed} · 대기 ${r.pending}\n통과율(확정 건 기준) ${pct(r.pass_rate)}` })}>
+          onMouseMove={(e) => setTip({ x: e.clientX + 12, y: e.clientY + 12, text: `${r.stage}\n도달 ${r.reached}건\n통과 ${r.passed} · 탈락 ${r.failed} · 대기 ${r.pending - (r.hold ?? 0)} · 보류 ${r.hold ?? 0}\n통과율(확정 건 기준) ${pct(r.pass_rate)}` })}>
           <span>{r.stage}</span>
           <div className="bar-bg"><div className="bar" style={{ width: `${(r.reached / max) * 100}%` }} /></div>
           <span className="muted">{r.reached}건 · 통과율 {pct(r.pass_rate)}</span>
@@ -53,10 +53,10 @@ export default function StatsPage() {
         </div>
         <div className="spacer" />
         {table ? (
-          <table>
-            <thead><tr><th>단계</th><th>도달</th><th>통과</th><th>탈락</th><th>대기</th><th>통과율</th></tr></thead>
-            <tbody>{s.funnel.map((r) => <tr key={r.stage}><td>{r.stage}</td><td>{r.reached}</td><td>{r.passed}</td><td>{r.failed}</td><td>{r.pending}</td><td>{pct(r.pass_rate)}</td></tr>)}</tbody>
-          </table>
+          <div className="table-scroll"><table>
+            <thead><tr><th>단계</th><th>도달</th><th>통과</th><th>탈락</th><th>대기</th><th>보류</th><th>통과율</th></tr></thead>
+            <tbody>{s.funnel.map((r) => <tr key={r.stage}><td>{r.stage}</td><td>{r.reached}</td><td>{r.passed}</td><td>{r.failed}</td><td>{r.pending - (r.hold ?? 0)}</td><td>{r.hold ?? 0}</td><td>{pct(r.pass_rate)}</td></tr>)}</tbody>
+          </table></div>
         ) : (
           <Funnel rows={s.funnel} />
         )}
@@ -65,7 +65,7 @@ export default function StatsPage() {
 
       <section className="card">
         <h2>직무 분류별</h2>
-        <table>
+        <div className="table-scroll"><table>
           <thead>
             <tr><th>분류</th><th>지원</th>{s.funnel.map((r) => <th key={r.stage}>{r.stage} 통과율</th>)}<th>최종 합격</th></tr>
           </thead>
@@ -74,19 +74,20 @@ export default function StatsPage() {
               <tr key={c.job_category}>
                 <td>{c.job_category}</td>
                 <td>{c.total}</td>
-                {c.funnel.map((r) => <td key={r.stage} title={`통과 ${r.passed} / 탈락 ${r.failed} / 대기 ${r.pending}`}>{pct(r.pass_rate)}</td>)}
+                {c.funnel.map((r) => <td key={r.stage} title={`통과 ${r.passed} / 탈락 ${r.failed} / 대기 ${r.pending - (r.hold ?? 0)} · 보류 ${r.hold ?? 0}`}>{pct(r.pass_rate)}</td>)}
                 <td>{c.final_pass}</td>
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       </section>
 
       <section className="card">
         <h2>월별 지원 수</h2>
-        <table>
-          <tbody>{s.monthly.map((m) => <tr key={m.month}><td>{m.month}</td><td>{m.count}건</td></tr>)}</tbody>
-        </table>
+        <p className="small muted">지원일 기준 · 지원일 미입력 {s.undated_count ?? 0}건</p>
+        <div className="table-scroll"><table>
+          <tbody>{(s.applied_monthly ?? []).map((m) => <tr key={m.month}><td>{m.month}</td><td>{m.count}건</td></tr>)}</tbody>
+        </table></div>
       </section>
     </>
   );

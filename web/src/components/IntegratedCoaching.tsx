@@ -17,7 +17,8 @@ export function localDeliveryFacts(s:PracticeSession):DeliveryFact[] {
   return facts;
  });
 }
-export default function IntegratedCoaching({s}:{s:PracticeSession}) {
+export default function IntegratedCoaching({s,paused=false}:{s:PracticeSession;paused?:boolean}) {
+ if(paused) return <div className="integrated-coaching"><h2>통합 코칭</h2><p role="status" data-testid="integrated-content-paused" className="small muted">전사문을 수정 중이거나 변경한 회고 자료를 확인하고 있어요. 현재 대화를 확인할 때까지 세션 해석과 다음 행동을 잠시 멈춰요.</p></div>;
  const result=integratedCoaching(s,localDeliveryFacts(s));
  return <div className="integrated-coaching"><h2>통합 코칭</h2><p className="small muted">저장된 답변 코칭과 이 탭의 측정값을 함께 읽어요. 새로운 AI 요청 없이 만들며, 자료가 적으면 짧게 안내해요.</p><div style={{whiteSpace:'pre-wrap',lineHeight:1.85}}>{result.script}</div>{result.actions.length>0&&<><h3>다음 연습에서 해볼 일</h3><ol>{result.actions.map((x,i)=><li key={i}><a href={`#answer-${x.answerId}`}>Q{x.order}</a> {x.text}</li>)}</ol></>}</div>;
 }
@@ -30,5 +31,5 @@ export function AnswerGuidance({a,sessionId}:{a:PracticeSession['answers'][numbe
  const comments=answerComments(a); const outline=groundedOutline(a);
  const facts=localDeliveryFacts({id:sessionId,answers:[a]} as PracticeSession);
  const coaching=answerCoaching(a,facts);
- return <>{coaching.script&&<div><h4>이번 답변의 코칭</h4><p>{coaching.script}</p>{coaching.priority&&<p><b>우선 해볼 일:</b> {coaching.priority}</p>}</div>}{facts.length>0&&<details><summary>전달 관찰의 근거와 다음 행동</summary>{facts.map((f,i)=><div key={i}><h4>{f.source.includes("음성")?"말하기":"카메라 위치"}</h4><p className="small muted">근거: {f.source}</p><p>{f.text}</p>{f.action&&<p>다음 행동: {f.action}</p>}</div>)}</details>}{comments.length>0&&<details><summary>근거로 보는 답변별 코멘트</summary>{comments.map((c,i)=><div key={i}><p className="small muted">{c.source}</p><blockquote className="quote">“{c.quote}”</blockquote><p>{c.text}</p>{c.action&&<p>우선 해볼 일: {c.action}</p>}</div>)}</details>}{outline.length>0&&<details><summary>내 답변으로 개선 틀 만들기</summary><p className="small muted">실제 전사문을 재료로 가져왔어요. 대괄호는 본인이 확인해 채울 자리이며, 새 경험이나 성과를 만들어 넣지 않아요.</p><ol>{outline.map((line,i)=><li key={i} style={{whiteSpace:'pre-wrap'}}>{line}</li>)}</ol></details>}</>;
+ return <>{(coaching.script||coaching.priority)&&<div><h4>이번 답변의 코칭</h4><p>{coaching.script}</p>{coaching.priority&&<p><b>우선 해볼 일:</b> {coaching.priority}</p>}</div>}{facts.length>0&&<details><summary>전달 관찰의 근거와 다음 행동</summary>{facts.map((f,i)=><div key={i}><h4>{f.source.includes("음성")?"말하기":"카메라 위치"}</h4><p className="small muted">근거: {f.source}</p><p>{f.text}</p>{f.action&&<p>다음 행동: {f.action}</p>}</div>)}</details>}{comments.length>0&&<details><summary>근거로 보는 답변별 코멘트</summary>{comments.map((c,i)=><div key={i}><p className="small muted">{c.source}</p><blockquote className="quote">“{c.quote}”</blockquote><p>{c.text}</p></div>)}</details>}{outline.length>0&&<details><summary>내 답변으로 개선 틀 만들기</summary><p className="small muted">실제 전사문을 재료로 가져왔어요. 대괄호는 본인이 확인해 채울 자리이며, 새 경험이나 성과를 만들어 넣지 않아요.</p><ol>{outline.map((line,i)=><li key={i} style={{whiteSpace:'pre-wrap'}}>{line}</li>)}</ol></details>}</>;
 }

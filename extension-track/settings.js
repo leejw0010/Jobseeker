@@ -2,6 +2,7 @@
 export const DEFAULTS = {
   apiUrl: "http://localhost:8000",
   webUrl: "http://localhost:5173",
+  loginUrl: "",
 };
 
 export async function getSettings() {

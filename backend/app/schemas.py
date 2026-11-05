@@ -137,6 +137,8 @@ class CompetencyEvidence(BaseModel):
 
 
 class CoachingReport(BaseModel):
+    input_sha256: str | None = None
+    input_status: Literal["current", "legacy_unverified"] = "legacy_unverified"
     competency_evidence: CompetencyEvidence | None = None
     transcript_sha256: str | None = None
     question_classification_sha256: str | None = None
@@ -271,6 +273,24 @@ class StageEventOut(ORM):
     memo: str | None
 
 
+class StageEventPatch(BaseModel):
+    stage: Stage | None = None
+    result: Literal["대기", "합격", "불합격"] | None = None
+    event_date: date | None = None
+    memo: str | None = None
+
+    @model_validator(mode="after")
+    def required_fields(self):
+        if any(k in self.model_fields_set and getattr(self, k) is None for k in ("stage", "result", "event_date")):
+            raise ValueError("단계·결과·날짜는 비울 수 없습니다")
+        return self
+
+
+class EventStateIn(BaseModel):
+    baseline_stage: Stage | None = None
+    baseline_status: Status | None = None
+
+
 class VersionIn(BaseModel):
     content: str
     source: Literal["web", "extension"] = "web"
@@ -298,6 +318,9 @@ class EssayItemOut(ORM):
     question_text: str
     char_limit: int | None
     versions: list[VersionOut]
+    submitted_version_id: str | None = None
+    submission_confirmation: Literal["confirmed", "legacy_unverified", "none"] = "none"
+    submission_revision: int = 0
 
 
 class ApplicationIn(BaseModel):
@@ -345,6 +368,9 @@ class ApplicationOut(ORM):
     source: str
     created_at: datetime
     updated_at: datetime
+    state_source: Literal["events", "manual", "legacy"] = "legacy"
+    state_revision: int = 0
+    state_requires_baseline: bool = True
 
 
 class ApplicationDetail(ApplicationOut):

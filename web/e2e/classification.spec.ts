@@ -13,7 +13,7 @@ test('classification controls, frozen review and accessible competency history',
  await row.getByLabel(taxonomy.competencies[0].label,{exact:true}).check();
  await row.getByRole('button',{name:'분류 저장'}).click();
  await expect(row).toContainText(taxonomy.question_types[0].label);
- await row.getByRole('checkbox',{name:'선택',exact:true}).check();
+ await row.getByRole('checkbox',{name:`질문 선택: ${q.text}`,exact:true}).check();
  await page.getByRole('button',{name:'선택한 질문으로 자유 연습'}).click();
  await expect(page.getByText('시작 시점 분류',{exact:true})).toBeVisible();
  await page.getByRole('radio',{name:'글로 답변',exact:true}).check();

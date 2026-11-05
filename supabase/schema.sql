@@ -283,3 +283,87 @@ insert into question_competencies(question_id,competency_key,position)
 select c.id,tag.key,(tag.ordinality-1)::integer from candidates c join updated u on u.id=c.id
 cross join lateral unnest(c.competency_keys) with ordinality as tag(key,ordinality)
 on conflict (question_id,competency_key) do nothing;
+
+-- Full-schema inclusion: 20261105_track_integrity.sql
+-- Additive Track integrity upgrade. Preserve old current states and submitted flags.
+-- No legacy manual intent or actual submission is inferred. Run before this app release.
+create table if not exists application_states (
+ application_id uuid primary key references applications(id) on delete cascade,
+ baseline_stage text check (baseline_stage in ('서류','인적성','1차면접','2차면접','최종')),
+ baseline_status text check (baseline_status in ('진행중','합격','불합격','보류')),
+ override_stage text check (override_stage in ('서류','인적성','1차면접','2차면접','최종')),
+ override_status text check (override_status in ('진행중','합격','불합격','보류')),
+ override_origin text check (override_origin in ('manual','legacy')),
+ revision integer not null default 0 check (revision >= 0),
+ check ((baseline_stage is null) = (baseline_status is null)),
+ check ((override_origin is null and override_stage is null and override_status is null
+          and baseline_stage is not null) or
+        (override_origin is not null and override_stage is not null and override_status is not null))
+);
+create table if not exists essay_submissions (
+ id uuid primary key default gen_random_uuid(),
+ essay_item_id uuid not null references essay_items(id) on delete cascade,
+ version_id uuid not null references answer_versions(id) on delete cascade,
+ sequence integer not null check (sequence > 0),
+ confirmed_at timestamptz not null default now(),
+ source text not null check (source in ('web','extension')),
+ unique(essay_item_id,sequence)
+);
+alter table application_states enable row level security;
+alter table essay_submissions enable row level security;
+drop policy if exists application_states_own on application_states;
+create policy application_states_own on application_states for all
+ using (exists(select 1 from applications a where a.id=application_id and a.user_id=auth.uid()))
+ with check (exists(select 1 from applications a where a.id=application_id and a.user_id=auth.uid()));
+drop policy if exists essay_submissions_read on essay_submissions;
+create policy essay_submissions_read on essay_submissions for select
+ using (exists(select 1 from essay_items e join applications a on a.id=e.application_id
+   where e.id=essay_submissions.essay_item_id and a.user_id=auth.uid()));
+drop policy if exists essay_submissions_insert on essay_submissions;
+create policy essay_submissions_insert on essay_submissions for insert
+ with check (exists(select 1 from essay_items e join applications a on a.id=e.application_id
+   join answer_versions v on v.essay_item_id=e.id
+   where e.id=essay_submissions.essay_item_id and v.id=essay_submissions.version_id and v.is_submitted and a.user_id=auth.uid()));
+-- No UPDATE/DELETE policy: confirmed history is append-only. Parent deletion still cascades.
+
+-- Full-schema inclusion: 20261105_practice_integrity.sql
+-- Preserve all existing rows. Invalid tag positions require explicit repair; never deduplicate here.
+do $$ begin
+ if exists(select 1 from question_competencies group by question_id,position having count(*) > 1) then
+   raise exception 'Duplicate competency positions: review existing data before enabling insights';
+ end if;
+end $$;
+create unique index if not exists question_competencies_position_uq on question_competencies(question_id,position);
+
+-- Owning a session must not permit attaching an answer to another user's private question.
+drop policy if exists pa_all on practice_answers;
+create policy pa_all on practice_answers for all
+ using (exists(select 1 from practice_sessions s where s.id=session_id and s.user_id=auth.uid()))
+ with check (
+   exists(select 1 from practice_sessions s where s.id=session_id and s.user_id=auth.uid())
+   and exists(select 1 from questions q where q.id=question_id and (q.user_id is null or q.user_id=auth.uid()))
+ );
+
+-- Full-schema inclusion: 20261105_version_immutability.sql
+-- Preserve version content/identity and submission receipts, including legacy submitted flags.
+-- Users can explicitly delete a parent application/item; its DB cascade still removes history.
+create or replace function public.protect_answer_version_history() returns trigger
+language plpgsql set search_path = pg_catalog, public as $$
+begin
+ if TG_OP = 'UPDATE' then
+   if (NEW.id,NEW.essay_item_id,NEW.version_no,NEW.content,NEW.char_count,NEW.source,NEW.created_at)
+      is distinct from
+      (OLD.id,OLD.essay_item_id,OLD.version_no,OLD.content,OLD.char_count,OLD.source,OLD.created_at)
+      or (OLD.is_submitted and not NEW.is_submitted) then
+     raise exception 'Answer version history is immutable; save a new version' using errcode='23514';
+   end if;
+   return NEW;
+ end if;
+ if exists(select 1 from public.essay_items e where e.id=OLD.essay_item_id) then
+   raise exception 'Delete the parent essay or application explicitly' using errcode='23514';
+ end if;
+ return OLD;
+end $$;
+drop trigger if exists answer_versions_history_guard on answer_versions;
+create trigger answer_versions_history_guard before update or delete on answer_versions
+ for each row execute function public.protect_answer_version_history();

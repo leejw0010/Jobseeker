@@ -50,3 +50,8 @@ uvicorn==0.54.0
 uvloop==0.23.0
 watchfiles==1.3.0
 websockets==17.3
+
+# JWKS RS256/ES256 verification (isolated local validation, 2026-11-05)
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.12

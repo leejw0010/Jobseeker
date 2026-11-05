@@ -10,11 +10,12 @@ const showWarning = (apiUrl) => {
 const s = await getSettings();
 form.apiUrl.value = s.apiUrl;
 form.webUrl.value = s.webUrl;
+form.loginUrl.value = s.loginUrl;
 showWarning(s.apiUrl);
 form.onsubmit = async (e) => {
   e.preventDefault();
   const apiUrl = form.apiUrl.value.trim();
-  await saveSettings({ apiUrl, webUrl: form.webUrl.value.trim() });
+  await saveSettings({ apiUrl, webUrl: form.webUrl.value.trim(), loginUrl: form.loginUrl.value.trim() });
   showWarning(apiUrl);
   document.getElementById("saved").hidden = false;
 };

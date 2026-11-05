@@ -11,6 +11,8 @@
     <form id="form">
       <label>백엔드 API 주소<input id="apiUrl" type="url" required /></label>
       <label>웹 대시보드 주소<input id="webUrl" type="url" required /></label>
+      <label>팀 로그인 주소 (선택)<input id="loginUrl" type="url" placeholder="팀 로그인 담당자가 제공한 주소" /></label>
+      <p class="small muted">로그인 주소는 팀 로그인 연결 시 설정합니다. 로그인 완료·갱신·로그아웃은 setAccessToken() 연결이 필요해요.</p>
       <p class="small muted">배포한 주소로 바꾸면 manifest.json의 host_permissions에도 그 주소를 추가해야 해요.</p>
       <p id="warning" class="small err" role="alert" hidden></p>
       <button type="submit" class="primary">저장</button>

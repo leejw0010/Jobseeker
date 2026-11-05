@@ -155,6 +155,9 @@ def _require_consent(db: Session, user_id: str) -> UserSettings:
 
 def _lock_answer(db: Session, answer_id: str) -> bool:
     """답변 행을 잠근다(짧은 쓰기). 세션·질문 삭제가 이 요청의 커밋을 기다리게 한다. 이미 지워졌으면 False."""
+    session_id = db.scalar(select(PracticeAnswer.session_id).where(PracticeAnswer.id == answer_id))
+    if not session_id or not answer_coaching.lock_session(db, session_id):
+        return False
     r = db.execute(update(PracticeAnswer).where(PracticeAnswer.id == answer_id).values(order_no=PracticeAnswer.order_no),
                    execution_options={"synchronize_session": False})
     return r.rowcount == 1
@@ -191,7 +194,7 @@ def _report(answer: PracticeAnswer, db: Session) -> dict:
     except answer_coaching.NoTranscript:
         raise HTTPException(422, "답변 전사문을 입력하거나 녹음해 주세요") from None
     except answer_coaching.TranscriptChanged:
-        raise HTTPException(409, "점검 중 답변이 바뀌었어요. 수정한 답변으로 다시 점검해 주세요") from None
+        raise HTTPException(409, "점검 중 답변이나 앞선 대화가 바뀌었어요. 현재 대화로 다시 점검해 주세요") from None
 
 
 def _stt(data: bytes, filename: str, ctype: str) -> str:
@@ -739,6 +742,10 @@ def retry_transcribe(answer_id: str, user_id: str = Depends(current_user_id), db
 @router.patch("/answers/{answer_id}", response_model=AnswerOut)
 def reflect(answer_id: str, body: ReflectionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     a = _own_answer(db, user_id, answer_id)
+    if not answer_coaching.lock_session(db, a.session_id):
+        raise HTTPException(404, ANSWER_NOT_FOUND)
+    db.expire_all()
+    a = _own_answer(db, user_id, answer_id)
     if body.input_mode == "text" and a.recorded_at and not settings.practice_insights_enabled:
         from ..services.recording_identity import clear_optional_recording_identity
         clear_optional_recording_identity(db, a.id)
@@ -788,14 +795,13 @@ def followup(answer_id: str, user_id: str = Depends(current_user_id), db: Sessio
         raise HTTPException(409, "꼬리질문은 원 질문당 한 번 진행합니다")
     if db.scalar(select(AnswerCoaching).where(AnswerCoaching.parent_answer_id == a.id)):
         return _session_out(_own_session(db, user_id, s.id))
-    if not a.coaching_report:
+    if not answer_coaching.current_report(a):
         _report(a, db)
         db.commit()
     # A short database write serializes insertion on SQLite and PostgreSQL alike.
     # No external model request is made while holding this session lock.
     session_id = s.id
-    db.execute(update(PracticeSession).where(PracticeSession.id == session_id).values(title=PracticeSession.title),
-               execution_options={"synchronize_session": False})
+    answer_coaching.lock_session(db, session_id)
     db.expire_all()
     a = _own_answer(db, user_id, answer_id)
     s = a.session
@@ -803,9 +809,9 @@ def followup(answer_id: str, user_id: str = Depends(current_user_id), db: Sessio
         raise HTTPException(409, "종료한 면접입니다. 회고에서 다시 연습해 주세요")
     if db.scalar(select(AnswerCoaching).where(AnswerCoaching.parent_answer_id == a.id)):
         return _session_out(_own_session(db, user_id, s.id))
-    report = a.coaching_report
+    report = answer_coaching.current_report(a)
     if not report:
-        raise HTTPException(409, "답변이 바뀌었어요. 수정한 답변으로 다시 점검해 주세요")
+        raise HTTPException(409, "답변이나 앞선 대화가 바뀌었어요. 현재 대화로 다시 점검해 주세요")
     suggestion = report["followup"]
     q = Question(user_id=user_id, category=a.question.category, source="generated",
                  application_id=s.application_id, job_category=a.question.job_category, text=suggestion["text"],
@@ -838,9 +844,10 @@ def redrill(session_id: str, user_id: str = Depends(current_user_id), db: Sessio
     # 코칭에 '보완'이 있거나 자기평가가 1~2점인 답변(세션 순서대로 최대 20개). 화면의 목록과 같은 규칙이다
     for a, weak, low in drill_picks(original):
         picked.append(a)
+        report = answer_coaching.current_report(a)
         targets.append({"answer_id": a.id, "question_id": a.question_id,
                         "focus": drill_focus(weak, low),
-                        "next_action": a.coaching_report["next_action"] if a.coaching_report else
+                        "next_action": report["next_action"] if report else
                                        f"지난번 자기평가 {low}점이었던 답변이에요. 아쉬웠던 점을 떠올리며 다시 답해 보세요."})
     if not picked:
         raise HTTPException(422, "먼저 답변을 점검하거나 자기평가를 남겨 주세요. "

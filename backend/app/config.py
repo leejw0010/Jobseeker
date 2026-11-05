@@ -2,6 +2,7 @@ import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 log = logging.getLogger(__name__)
@@ -46,7 +47,9 @@ class Settings:
         self.practice_competency_evidence_enabled = env.get("PRACTICE_COMPETENCY_EVIDENCE_ENABLED", "false").lower() == "true"
         self.database_url: str = env.get("DATABASE_URL") or f"sqlite:///{BASE_DIR / 'jobseeker.db'}"
         # true일 때만 개발 모드(로그인 없이 X-User-Id). 그 밖의 값은 인증을 켠 것으로 본다
-        self.auth_disabled: bool = env.get("AUTH_DISABLED", "true").lower() == "true"
+        self.auth_disabled: bool = env.get("AUTH_DISABLED", "false").lower() == "true"
+        self.app_env: str = env.get("APP_ENV", "development").strip().lower()
+        self.jwt_mode: str = env.get("SUPABASE_JWT_MODE", "hs256").strip().lower()
         self.jwt_secret: str = env.get("SUPABASE_JWT_SECRET", "")
         self.supabase_url: str = env.get("SUPABASE_URL", "").rstrip("/")
         self.supabase_service_key: str = env.get("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -82,9 +85,19 @@ class Settings:
 
     def check(self) -> None:
         """서버 시작 전에 부른다. 띄워도 동작할 수 없는 조합은 ConfigError, 배포라면 위험한 조합은 경고 로그."""
-        if not self.auth_disabled and not self.jwt_secret:
-            raise ConfigError("AUTH_DISABLED=false인데 SUPABASE_JWT_SECRET이 비어 있어 모든 요청이 401이 돼요. "
-                              "Supabase 프로젝트의 JWT Secret을 넣어 주세요")
+        if self.app_env == "production" and self.auth_disabled:
+            raise ConfigError("APP_ENV=production에서는 AUTH_DISABLED=true를 사용할 수 없어요")
+        if self.jwt_mode not in {"hs256", "jwks"}:
+            raise ConfigError("SUPABASE_JWT_MODE은 hs256 또는 jwks여야 해요")
+        if not self.auth_disabled:
+            if self.jwt_mode == "hs256" and not self.jwt_secret:
+                raise ConfigError("AUTH_DISABLED=false이면 SUPABASE_JWT_SECRET 또는 SUPABASE_JWT_MODE=jwks 설정이 필요해요")
+            url = urlsplit(self.supabase_url)
+            local_http = url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
+            if (not url.hostname or (url.scheme != "https" and not local_http)
+                    or url.username is not None or url.password is not None
+                    or url.path or url.query or url.fragment):
+                raise ConfigError("SUPABASE_URL에는 프로젝트의 HTTPS 원점 주소가 필요해요(로컬 루프백은 HTTP 허용)")
         if self.auth_disabled and not self.database_url.startswith("sqlite"):
             log.warning("AUTH_DISABLED=true(개발 모드)로 Postgres에 연결합니다: X-User-Id 헤더를 그대로 믿어요. "
                         "배포 환경이라면 AUTH_DISABLED=false로 두세요")

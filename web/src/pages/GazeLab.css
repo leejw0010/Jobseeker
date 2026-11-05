@@ -5,3 +5,5 @@
 .gaze-lab-lens { position: absolute; left: 50%; top: 4px; transform: translateX(-50%); font-weight: 600; }
 .gaze-lab-panel { position: absolute; background: #c8c8c8; border-radius: 6px; }
 .gaze-lab-typing { position: absolute; left: 50%; top: 80%; width: 480px; max-width: 80%; height: 80px; transform: translate(-50%, -50%); }
+
+.gaze-lab-stop { position: fixed; right: 16px; bottom: 16px; z-index: 1001; }

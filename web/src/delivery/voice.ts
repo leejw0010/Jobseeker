@@ -125,17 +125,26 @@ export function summarizeVoice(samples: readonly VoiceSample[], durationSec: num
   return withVoiceTranscript(out, transcript);
 }
 
-const reports = new Map<string, Map<string, { revision: string; summary: DeliverySummary; sourceTranscript?: string }>>();
+const reports = new Map<string, Map<string, { revision: string; summary: DeliverySummary; runId:string; sourceTranscript?: string }>>();
 export function saveVoiceSegment(sessionId: string, answerId: string, summary: DeliverySummary, recordedAt: string, transcript?: string | null) {
   if (!recordedAt) return;
   if (!reports.has(sessionId)) reports.set(sessionId, new Map());
-  reports.get(sessionId)!.set(answerId, { revision: recordedAt, summary, sourceTranscript: transcript === undefined ? undefined : (transcript ?? "").trim() });
+  const previous=reports.get(sessionId)!.get(answerId);
+  reports.get(sessionId)!.set(answerId, { revision: recordedAt, summary, runId:previous?.revision===recordedAt?previous.runId:globalThis.crypto.randomUUID(), sourceTranscript: transcript === undefined ? undefined : (transcript ?? "").trim() });
 }
 export function getVoiceSegment(sessionId: string, answerId: string, recordedAt: string | null | undefined, transcript?: string | null): DeliverySummary | undefined {
   const item = reports.get(sessionId)?.get(answerId);
   if (!recordedAt || item?.revision !== recordedAt) return undefined;
   return transcript === undefined ? item.summary : { ...item.summary, transcriptRevisionMatches: item.sourceTranscript === (transcript ?? "").trim() };
 }
+export function getVoiceRunId(sessionId:string,answerId:string,recordedAt:string){const item=reports.get(sessionId)?.get(answerId);return item?.revision===recordedAt?item.runId:undefined;}
 export function clearVoiceSegment(sessionId: string, answerId: string) { reports.get(sessionId)?.delete(answerId); }
 export function clearSessionVoice(sessionId: string) { reports.delete(sessionId); }
 export function clearAllVoice() { reports.clear(); }
+
+/** Same byte-domain analyser calculation for live recorder and PCM integration checks. */
+export function byteTimeDomainEnergy(buf: Uint8Array): {rms:number;clipped:boolean} {
+  let sum=0,clipped=0;
+  for(const v of buf){sum+=((v-128)/128)**2;if(v<=1||v>=254)clipped++;}
+  return {rms:buf.length?Math.sqrt(sum/buf.length):0,clipped:buf.length>0&&clipped/buf.length>0.05};
+}

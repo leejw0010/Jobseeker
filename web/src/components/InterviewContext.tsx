@@ -13,7 +13,7 @@ export default function InterviewContext({ context }: { context: Context | null 
       {essays.length === 0 && <p className="small muted">연결된 자소서가 없어요. 질문과 답변을 중심으로 연습해요.</p>}
       {essays.map((e) => (
         <details key={e.version_id} className="source-detail">
-          <summary>{e.question_text} <span className="chip">v{e.version_no} · {e.selection === "submitted" ? "제출본" : "최신본"}</span></summary>
+          <summary>{e.question_text} <span className="chip">v{e.version_no} · {e.selection === "submitted" ? e.submission_confirmation === "confirmed" ? "제출본 · 확인됨" : e.submission_confirmation === "legacy_unverified" ? "이전 제출 표시 · 확인 전" : "제출본 · 확인 기록 없음" : "최신본"}</span></summary>
           {context.essay_basis === "submitted" && e.selection === "latest" && <p className="small muted">제출 표시가 없어 이 문항은 최신본을 사용했어요.</p>}
           <p className="evidence-text">{e.content}</p>
         </details>

@@ -19,46 +19,80 @@ import type {
   Stats,
 } from "./types";
 
-const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
+import { clearAllVoice } from "./delivery/voice";
+import { clearAllVideo } from "./video/metrics";
 
-/** 로그인(Supabase Auth) 담당 코드가 액세스 토큰을 돌려주는 함수를 등록한다.
- *  등록 전에는 백엔드 개발 모드(AUTH_DISABLED=true)의 고정 사용자로 동작한다. */
-let tokenProvider: (() => Promise<string | null>) | null = null;
-export function setAuthTokenProvider(fn: () => Promise<string | null>) {
-  tokenProvider = fn;
-}
+const BASE = (import.meta.env?.VITE_API_URL as string | undefined) ?? "http://localhost:8000";
 
-async function headers(extra: Record<string, string> = {}): Promise<Record<string, string>> {
-  const token = tokenProvider ? await tokenProvider() : null;
-  return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;
-}
+export type ApiClientOptions = {
+  baseUrl?: string;
+  getAccessToken?: (() => Promise<string | null>) | null;
+  /** Host owns Supabase refresh. Writes are never automatically replayed. */
+  onUnauthorized?: () => Promise<void>;
+  onSessionReset?: () => void;
+};
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
+  constructor(public status: number, message: string) { super(message); }
 }
 
-async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const isForm = body instanceof FormData;
-  const res = await fetch(BASE + path, {
-    method,
-    headers: await headers(body && !isForm ? { "Content-Type": "application/json" } : {}),
-    body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
-  });
-  if (!res.ok) {
-    let msg = res.statusText;
+/** Router- and Supabase-SDK-independent transport for a host application. */
+export function createApiClient(options: ApiClientOptions = {}) {
+  let generation = 0;
+  let refresh: Promise<void> | null = null;
+  const pending = new Set<AbortController>();
+  function resetSession() {
+    generation++;
+    for (const controller of pending) controller.abort();
+    pending.clear();
+    options.onSessionReset?.();
+  }
+  async function request(method: string, path: string, body?: unknown): Promise<Response> {
+    const revision = generation;
+    const controller = new AbortController();
+    pending.add(controller);
+    const current = () => {
+      if (revision !== generation || controller.signal.aborted) throw new DOMException("사용자가 변경되어 요청을 취소했어요", "AbortError");
+    };
+    const send = async () => {
+      const token = await options.getAccessToken?.();
+      current();
+      const isForm = body instanceof FormData;
+      const headers: Record<string,string> = body !== undefined && !isForm ? {"Content-Type":"application/json"} : {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const response = await fetch((options.baseUrl ?? BASE).replace(/\/$/, "") + path, {
+        method, headers, signal: controller.signal,
+        body: body === undefined ? undefined : isForm ? body as FormData : JSON.stringify(body),
+      });
+      current();
+      return response;
+    };
     try {
-      const j = await res.json();
-      msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-    } catch {
-      /* 본문 없음 */
-    }
-    throw new ApiError(res.status, msg);
+      let response = await send();
+      if (response.status === 401 && options.onUnauthorized) {
+        if (!refresh) refresh = Promise.resolve().then(options.onUnauthorized).finally(() => { refresh = null; });
+        await refresh;
+        current();
+        if (method === "GET") response = await send();
+      }
+      return response;
+    } finally { pending.delete(controller); }
   }
-  return (res.status === 204 ? undefined : await res.json()) as T;
-}
-
+  async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const revision = generation;
+    const res = await request(method, path, body);
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const j = await res.json();
+        msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+      } catch { /* empty response */ }
+      throw new ApiError(res.status, msg);
+    }
+    const value = res.status === 204 ? undefined : await res.json();
+    if (revision !== generation) throw new DOMException("사용자가 변경되어 요청을 취소했어요", "AbortError");
+    return value as T;
+  }
 const qs = (p: Record<string, string | string[] | undefined>) => {
   const params = new URLSearchParams();
   Object.entries(p).forEach(([key, value]) => (Array.isArray(value) ? value : [value]).forEach((v) => { if (v) params.append(key, v); }));
@@ -66,7 +100,8 @@ const qs = (p: Record<string, string | string[] | undefined>) => {
   return s ? `?${s}` : "";
 };
 
-export const api = {
+return {
+  resetSession,
   health: () => req<Health>("GET", "/health"),
 
   // ② Practice
@@ -115,14 +150,17 @@ export const api = {
     return req<PracticeAnswer>("POST", `/practice/answers/${answerId}/audio`, fd);
   },
   audioUrl: async (answerId: string) => {
-    const res = await fetch(`${BASE}/practice/answers/${answerId}/audio`, { headers: await headers() });
+    const revision = generation;
+    const res = await request("GET", `/practice/answers/${answerId}/audio`);
     if (!res.ok) {
       // 404는 두 경우다: 원본을 지웠다(서버가 삭제 기록을 보고 알린다) / 지우지 않았는데 저장소에서 파일을 찾지 못했다
       const detail = await res.json().then((j) => j.detail, () => null);
       const deleted = "원본 녹음은 삭제됐어요";
       throw new ApiError(res.status, res.status !== 404 ? "녹음을 불러오지 못했습니다" : detail === deleted ? deleted : "녹음 파일을 찾지 못했어요");
     }
-    return URL.createObjectURL(await res.blob());
+    const blob = await res.blob();
+    if (revision !== generation) throw new DOMException("사용자가 변경되어 요청을 취소했어요", "AbortError");
+    return URL.createObjectURL(blob);
   },
   retryTranscribe: (answerId: string) => req<PracticeAnswer>("POST", `/practice/answers/${answerId}/transcribe`),
   reflect: (answerId: string, b: { self_rating?: number | null; reflection_note?: string | null; transcript?: string | null; input_mode?: "text" | "transcript" }) =>
@@ -153,11 +191,31 @@ export const api = {
   addEvent: (id: string, b: { stage: string; result: string; event_date?: string; memo?: string }) =>
     req<ApplicationDetail>("POST", `/track/applications/${id}/events`, b),
   deleteEvent: (id: string) => req<void>("DELETE", `/track/events/${id}`),
+  updateEvent: (id: string, b: { stage?: string; result?: string; event_date?: string; memo?: string | null }) =>
+    req<ApplicationDetail>("PATCH", `/track/events/${id}`, b),
+  useEventState: (id: string, b: { baseline_stage?: string; baseline_status?: string }) =>
+    req<ApplicationDetail>("POST", `/track/applications/${id}/state-from-events`, b),
   addEssay: (appId: string, b: { question_text: string; char_limit?: number | null; content?: string }) =>
     req<EssayItem>("POST", `/track/applications/${appId}/essays`, b),
   deleteEssay: (id: string) => req<void>("DELETE", `/track/essays/${id}`),
   addVersion: (itemId: string, b: { content: string; is_submitted?: boolean }) =>
     req<EssayItem>("POST", `/track/essays/${itemId}/versions`, b),
   restoreVersion: (versionId: string) => req<EssayItem>("POST", `/track/versions/${versionId}/restore`),
+  submitVersion: (versionId: string) => req<EssayItem>("POST", `/track/versions/${versionId}/submit`),
   stats: () => req<Stats>("GET", "/track/stats"),
 };
+
+}
+
+const hostOptions: ApiClientOptions = { onSessionReset: () => { clearAllVoice(); clearAllVideo(); } };
+export const api = createApiClient(hostOptions);
+
+/** Existing entry point retained. Call on sign-out/user switch, never store tokens in URLs. */
+export function setAuthTokenProvider(fn: (() => Promise<string | null>) | null) {
+  hostOptions.getAccessToken = fn;
+  api.resetSession();
+}
+export function configureApiClient(options: Omit<ApiClientOptions, "onSessionReset"> & { onSessionReset?: () => void }) {
+  Object.assign(hostOptions, options, { onSessionReset: () => { clearAllVoice(); clearAllVideo(); options.onSessionReset?.(); } });
+  api.resetSession();
+}

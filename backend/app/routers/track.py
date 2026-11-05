@@ -3,14 +3,14 @@ from collections import defaultdict
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from ..auth import current_user_id
 from ..db import get_db
 from ..models import STAGES, STATUSES, AnswerVersion, Application, EssayItem, StageEvent, valid_id
-from ..services import track_versions
+from ..services import track_state, track_versions
 from ..schemas import (
     ApplicationDetail,
     ApplicationIn,
@@ -20,6 +20,8 @@ from ..schemas import (
     EssayItemOut,
     StageEventIn,
     StageEventOut,
+    StageEventPatch,
+    EventStateIn,
     SyncIn,
     SyncOut,
     VersionIn,
@@ -33,12 +35,29 @@ def _own_app(db: Session, user_id: str, app_id: str) -> Application:
     app = valid_id(app_id) and db.scalar(
         select(Application)
         .where(Application.id == app_id, Application.user_id == user_id)
+        .execution_options(populate_existing=True)
         .options(selectinload(Application.events),
                  selectinload(Application.essay_items).selectinload(EssayItem.versions))
     )
     if not app:
         raise HTTPException(404, "지원 건을 찾을 수 없습니다")
     return app
+
+
+def _lock_app(db: Session, user_id: str, app_id: str) -> Application:
+    """All Track writers acquire the parent before refreshing children (also works on SQLite)."""
+    if not valid_id(app_id) or not db.execute(update(Application).where(
+        Application.id == app_id, Application.user_id == user_id).values(updated_at=Application.updated_at),
+        execution_options={"synchronize_session": False}).rowcount:
+        raise HTTPException(404, "지원 건을 찾을 수 없습니다")
+    return _own_app(db, user_id, app_id)
+
+
+def _lock_item(db: Session, user_id: str, item_id: str) -> EssayItem:
+    item = _own_item(db, user_id, item_id)
+    _lock_app(db, user_id, item.application_id)
+    db.refresh(item, ["versions", "submissions"])
+    return item
 
 
 def _own_item(db: Session, user_id: str, item_id: str) -> EssayItem:
@@ -97,6 +116,7 @@ def list_applications(
 @router.post("/applications", response_model=ApplicationDetail, status_code=201)
 def create_application(body: ApplicationIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
     app = Application(user_id=user_id, source="web", **body.model_dump())
+    track_state.initialize(app)
     db.add(app)
     _commit_unique_url(db)
     return _own_app(db, user_id, app.id)
@@ -110,16 +130,18 @@ def get_application(app_id: str, user_id: str = Depends(current_user_id), db: Se
 @router.patch("/applications/{app_id}", response_model=ApplicationDetail)
 def update_application(app_id: str, body: ApplicationPatch, user_id: str = Depends(current_user_id),
                        db: Session = Depends(get_db)):
-    app = _own_app(db, user_id, app_id)
+    app = _lock_app(db, user_id, app_id)
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(app, k, v)
+    if {"stage", "status"} & body.model_fields_set:
+        track_state.manual(app)
     _commit_unique_url(db)
     return _own_app(db, user_id, app_id)
 
 
 @router.delete("/applications/{app_id}", status_code=204)
 def delete_application(app_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    db.delete(_own_app(db, user_id, app_id))
+    db.delete(_lock_app(db, user_id, app_id))
     db.commit()
 
 
@@ -131,19 +153,11 @@ def add_event(app_id: str, body: StageEventIn, user_id: str = Depends(current_us
 
     합격 → 다음 단계로 진행(최종 합격이면 상태 '합격'), 불합격 → 상태 '불합격', 대기 → 해당 단계 진행중.
     """
-    app = _own_app(db, user_id, app_id)
+    app = _lock_app(db, user_id, app_id)
     app.events.append(StageEvent(stage=body.stage, result=body.result,
                                  event_date=body.event_date or date.today(), memo=body.memo))
-    idx = STAGES.index(body.stage)
-    if body.result == "합격":
-        if idx == len(STAGES) - 1:
-            app.stage, app.status = body.stage, "합격"
-        else:
-            app.stage, app.status = STAGES[idx + 1], "진행중"
-    elif body.result == "불합격":
-        app.stage, app.status = body.stage, "불합격"
-    else:
-        app.stage, app.status = body.stage, "진행중"
+    db.flush()
+    track_state.project(app)
     db.commit()
     return _own_app(db, user_id, app_id)
 
@@ -154,8 +168,38 @@ def delete_event(event_id: str, user_id: str = Depends(current_user_id), db: Ses
                                           .where(StageEvent.id == event_id, Application.user_id == user_id))
     if not ev:
         raise HTTPException(404, "기록을 찾을 수 없습니다")
+    app = _lock_app(db, user_id, ev.application_id)
     db.delete(ev)
+    db.flush()
+    db.refresh(app, ["events"])
+    track_state.project(app)
     db.commit()
+
+
+@router.patch("/events/{event_id}", response_model=ApplicationDetail)
+def edit_event(event_id: str, body: StageEventPatch, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    ev = valid_id(event_id) and db.scalar(select(StageEvent).join(Application).where(
+        StageEvent.id == event_id, Application.user_id == user_id))
+    if not ev:
+        raise HTTPException(404, "기록을 찾을 수 없습니다")
+    app = _lock_app(db, user_id, ev.application_id)
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(ev, k, v)
+    db.flush()
+    track_state.project(app)
+    db.commit()
+    return _own_app(db, user_id, app.id)
+
+
+@router.post("/applications/{app_id}/state-from-events", response_model=ApplicationDetail)
+def use_event_state(app_id: str, body: EventStateIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    app = _lock_app(db, user_id, app_id)
+    try:
+        track_state.use_events(app, body.baseline_stage, body.baseline_status)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    db.commit()
+    return _own_app(db, user_id, app.id)
 
 
 # ───────── 자소서 문항·버전 ─────────
@@ -163,7 +207,7 @@ def delete_event(event_id: str, user_id: str = Depends(current_user_id), db: Ses
 @router.post("/applications/{app_id}/essays", response_model=EssayItemOut, status_code=201)
 def add_essay_item(app_id: str, body: EssayItemIn, user_id: str = Depends(current_user_id),
                    db: Session = Depends(get_db)):
-    app = _own_app(db, user_id, app_id)
+    app = _lock_app(db, user_id, app_id)
     item = EssayItem(question_text=body.question_text, char_limit=body.char_limit)
     app.essay_items.append(item)
     if body.content:
@@ -174,7 +218,7 @@ def add_essay_item(app_id: str, body: EssayItemIn, user_id: str = Depends(curren
 
 @router.delete("/essays/{item_id}", status_code=204)
 def delete_essay_item(item_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    db.delete(_own_item(db, user_id, item_id))
+    db.delete(_lock_item(db, user_id, item_id))
     db.commit()
 
 
@@ -185,7 +229,7 @@ def list_versions(item_id: str, user_id: str = Depends(current_user_id), db: Ses
 
 @router.post("/essays/{item_id}/versions", response_model=EssayItemOut, status_code=201)
 def add_version(item_id: str, body: VersionIn, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
-    item = _own_item(db, user_id, item_id)
+    item = _lock_item(db, user_id, item_id)
     track_versions.add_version(db, item, body.content, body.source, body.is_submitted)
     db.commit()
     return _own_item(db, user_id, item_id)
@@ -198,8 +242,20 @@ def restore_version(version_id: str, user_id: str = Depends(current_user_id), db
                                            .where(AnswerVersion.id == version_id, Application.user_id == user_id))
     if not v:
         raise HTTPException(404, "버전을 찾을 수 없습니다")
-    item = _own_item(db, user_id, v.essay_item_id)
-    track_versions.add_version(db, item, v.content, "web", False)
+    item = _lock_item(db, user_id, v.essay_item_id)
+    track_versions.add_version(db, item, v.content, "web", False, force=True)
+    db.commit()
+    return _own_item(db, user_id, item.id)
+
+
+@router.post("/versions/{version_id}/submit", response_model=EssayItemOut)
+def submit_version(version_id: str, user_id: str = Depends(current_user_id), db: Session = Depends(get_db)):
+    v = valid_id(version_id) and db.scalar(select(AnswerVersion).join(EssayItem).join(Application).where(
+        AnswerVersion.id == version_id, Application.user_id == user_id))
+    if not v:
+        raise HTTPException(404, "버전을 찾을 수 없습니다")
+    item = _lock_item(db, user_id, v.essay_item_id)
+    track_versions.confirm_submission(db, item, v, "web")
     db.commit()
     return _own_item(db, user_id, item.id)
 
@@ -249,9 +305,12 @@ def _sync(db: Session, user_id: str, body: SyncIn) -> SyncOut:
                           source="extension")
         db.add(app)
         db.flush()  # 고유 제약 충돌을 여기서 알린다
+        track_state.initialize(app)
     elif body.submitted and not app.applied_at:
         app.applied_at = body.applied_at or date.today()
-    app = _own_app(db, user_id, app.id) if not created else app
+    app = _lock_app(db, user_id, app.id) if not created else app
+    if body.submitted and not app.applied_at:
+        app.applied_at = body.applied_at or date.today()
     by_text = {i.question_text.strip(): i for i in app.essay_items}
     new_versions = 0
     for e in body.essays:
@@ -260,7 +319,8 @@ def _sync(db: Session, user_id: str, body: SyncIn) -> SyncOut:
             item = EssayItem(question_text=e.question_text.strip(), char_limit=e.char_limit)
             app.essay_items.append(item)
             by_text[item.question_text] = item
-        if track_versions.add_version(db, item, e.content, "extension", body.submitted):
+        if track_versions.add_version(db, item, e.content, "extension", body.submitted,
+                                     confirmed="submitted" in body.model_fields_set):
             new_versions += 1
     db.commit()
     return SyncOut(application_id=app.id, created=created, new_versions=new_versions)
@@ -275,7 +335,7 @@ def _passed_stage(app: Application, stage: str) -> bool:
         return True
     if cur == idx and app.status == "합격":
         return True
-    return any(e.stage == stage and e.result == "합격" for e in app.events)
+    return False
 
 
 @router.get("/stats")
@@ -291,9 +351,10 @@ def stats(user_id: str = Depends(current_user_id), db: Session = Depends(get_db)
             passed = sum(1 for a in reached if _passed_stage(a, stage))
             failed = sum(1 for a in reached if a.stage == stage and a.status == "불합격")
             pending = len(reached) - passed - failed
+            hold = sum(1 for a in reached if a.stage == stage and a.status == "보류")
             decided = passed + failed
             rows.append({"stage": stage, "reached": len(reached), "passed": passed, "failed": failed,
-                         "pending": pending, "pass_rate": round(passed / decided, 3) if decided else None})
+                         "pending": pending, "hold": hold, "pass_rate": round(passed / decided, 3) if decided else None})
         return rows
 
     by_cat: dict[str, list[Application]] = defaultdict(list)
@@ -301,9 +362,12 @@ def stats(user_id: str = Depends(current_user_id), db: Session = Depends(get_db)
         by_cat[a.job_category].append(a)
     status_counts = {s: sum(1 for a in apps if a.status == s) for s in STATUSES}
     monthly: dict[str, int] = defaultdict(int)
+    applied_monthly: dict[str, int] = defaultdict(int)
     for a in apps:
         d = a.applied_at or a.created_at.date()
         monthly[d.strftime("%Y-%m")] += 1
+        if a.applied_at:
+            applied_monthly[a.applied_at.strftime("%Y-%m")] += 1
     return {
         "total": len(apps),
         "status": status_counts,
@@ -315,4 +379,6 @@ def stats(user_id: str = Depends(current_user_id), db: Session = Depends(get_db)
             for c, lst in sorted(by_cat.items(), key=lambda kv: -len(kv[1]))
         ],
         "monthly": [{"month": m, "count": n} for m, n in sorted(monthly.items())],
+        "applied_monthly": [{"month": m, "count": n} for m, n in sorted(applied_monthly.items())],
+        "undated_count": sum(a.applied_at is None for a in apps),
     }

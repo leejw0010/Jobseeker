@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { StageTrack } from "../components/track/StageTrack";
 import { StatusChip } from "../components/track/StatusChip";
@@ -13,6 +13,8 @@ export default function TrackList() {
   const [f, setF] = useState({ status: "", stage: "", job_category: "", q: "" });
   const [form, setForm] = useState(EMPTY);
   const [open, setOpen] = useState(false);
+  const creating = useRef(false);
+  const [pending, setPending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   // 필터를 빨리 바꾸면 응답 순서가 뒤바뀔 수 있다: 가장 나중에 보낸 조회의 응답만 반영한다
@@ -29,6 +31,10 @@ export default function TrackList() {
   }, [f.status, f.stage, f.job_category, f.q]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const create = async () => {
+    if (creating.current) return;
+    creating.current = true;
+    setPending(true);
+    setErr(null);
     try {
       const a = await api.createApplication({
         company: form.company,
@@ -40,6 +46,9 @@ export default function TrackList() {
       nav(`/track/${a.id}`);
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      creating.current = false;
+      setPending(false);
     }
   };
 
@@ -65,23 +74,23 @@ export default function TrackList() {
           <div className="spacer" />
           <div className="row">
             <label className="grow">채용 공고 URL<input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} /></label>
-            <button className="primary" disabled={!form.company || !form.position} onClick={create}>저장</button>
+            <button className="primary" disabled={pending || !form.company.trim() || !form.position.trim()} onClick={create}>저장</button>
           </div>
         </section>
       )}
-      {err && <p className="err">{err}</p>}
+      {err && <p className="err" role="alert">{err}</p>}
       <section className="card">
         <div className="row">
-          <input className="grow" placeholder="회사·직무 검색" value={f.q} onChange={(e) => setF({ ...f, q: e.target.value })} />
-          <select value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}>
+          <input aria-label="회사·직무 검색" className="grow" placeholder="회사·직무 검색" value={f.q} onChange={(e) => setF({ ...f, q: e.target.value })} />
+          <select aria-label="상태 필터" value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}>
             <option value="">전체 상태</option>
             {STATUSES.map((s) => <option key={s}>{s}</option>)}
           </select>
-          <select value={f.stage} onChange={(e) => setF({ ...f, stage: e.target.value })}>
+          <select aria-label="단계 필터" value={f.stage} onChange={(e) => setF({ ...f, stage: e.target.value })}>
             <option value="">전체 단계</option>
             {STAGES.map((s) => <option key={s}>{s}</option>)}
           </select>
-          <select value={f.job_category} onChange={(e) => setF({ ...f, job_category: e.target.value })}>
+          <select aria-label="직무 필터" value={f.job_category} onChange={(e) => setF({ ...f, job_category: e.target.value })}>
             <option value="">전체 직무</option>
             {JOB_CATEGORIES.map((j) => <option key={j}>{j}</option>)}
           </select>
@@ -90,14 +99,14 @@ export default function TrackList() {
         {rows.length === 0 ? (
           <p className="muted">지원 건이 없습니다. 직접 추가하거나 크롬 확장에서 지원서를 제출하면 자동으로 저장됩니다.</p>
         ) : (
-          <table>
+          <div className="table-scroll"><table>
             <thead>
               <tr><th>회사</th><th>직무</th><th>분류</th><th style={{ width: 160 }}>진행 단계</th><th>상태</th><th>지원일</th></tr>
             </thead>
             <tbody>
               {rows.map((a) => (
                 <tr key={a.id} className="click" onClick={() => nav(`/track/${a.id}`)}>
-                  <td>{a.company}{a.source === "extension" && <span className="chip" style={{ marginLeft: 6 }}>확장</span>}</td>
+                  <td><Link to={`/track/${a.id}`}>{a.company}</Link>{a.source === "extension" && <span className="chip" style={{ marginLeft: 6 }}>확장</span>}</td>
                   <td>{a.position}</td>
                   <td>{a.job_category}</td>
                   <td><StageTrack a={a} /><div className="small muted">{a.stage}</div></td>
@@ -106,7 +115,7 @@ export default function TrackList() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </section>
     </>

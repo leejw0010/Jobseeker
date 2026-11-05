@@ -55,3 +55,46 @@ test('per-answer coaching joins one priority with measured delivery and no inven
  expect(result.priority).toBe('카메라 위치 점검');
  expect(result.script).not.toMatch(/훌륭|좋았|충분/);
 });
+
+test('answer action belongs once to the whole answer, not to every weak criterion', () => {
+ const a=answer({coaching_report:{criteria:['specificity','relevance'].map((key)=>({key,label:key,status:'보완',reason:'추가 설명 필요',answer_quote:'제가 일정 관리를 맡고'})),next_action:'하나의 다음 행동'} as never});
+ const result=answerCoaching(a);
+ expect(result.comments.every(c=>!c.action)).toBe(true);
+ expect(result.priority).toBe('하나의 다음 행동');
+});
+
+test('session themes use distinct affected answers then relevance before specificity ties', () => {
+ const weak=(key:string)=>({key,label:key==='relevance'?'질문 적합성':'구체성',status:'보완',reason:'확인할 근거',answer_quote:'제가 일정 관리를 맡고'});
+ const a=answer({coaching_report:{criteria:[weak('specificity'),weak('relevance')],next_action:'한 행동'} as never});
+ const b=answer({id:'b',order_no:2,coaching_report:{criteria:[weak('relevance')],next_action:'다른 행동'} as never});
+ const r=integratedCoaching(session([a,b]));
+ expect(r.script).toContain('질문 적합성 보완이 2개 답변');
+ expect(r.actions.length).toBeLessThanOrEqual(2);
+ const tied=integratedCoaching(session([a]));
+ expect(tied.script).toContain('질문 적합성 보완이 1개 답변');
+});
+
+test('unverified historical coaching is excluded from current comments, priorities, and observations', () => {
+ const a=answer({question_classification:snapshot,coaching_report:{input_status:'legacy_unverified',criteria:[{key:'specificity',label:'구체성',status:'보완',reason:'과거 조언',answer_quote:'제가 일정 관리를 맡고'}],next_action:'과거 행동',competency_evidence:{status:'analyzed',observations:[{competency_key:'teamwork',basis:'past_action',quote:'매일 진행 상황을 확인했습니다',reason:'과거 해석'}]}} as never});
+ expect(answerComments(a)).toEqual([]);
+ expect(integratedCoaching(session([a])).script).not.toContain('과거 조언');
+ expect(competencyCoverage([a]).rows[0].observedCount).toBe(0);
+});
+
+test('outlines follow each question type and keep unknown questions neutral', () => {
+ const expected:Record<string,string>={behavioral:'상황',situational:'가정',knowledge:'개념',motivation:'지원',project_deep_dive:'선택',self_description:'소개'};
+ for(const [type,word] of Object.entries(expected)) {
+  const lines=groundedOutline(answer({question_classification:{...snapshot,question_type:type}}));
+  expect(lines.join(' ')).toContain(word);
+  expect(lines.join(' ')).toContain(answer().transcript!);
+ }
+ const unknown=groundedOutline(answer()).join(' ');
+ expect(unknown).not.toContain('결과와 배운 점');
+ expect(unknown).toContain('질문이 요구하는');
+});
+
+test('current report keeps its single next action even when every criterion defers without a quote', () => {
+ const a=answer({coaching_report:{input_status:'current',criteria:[{key:'relevance',label:'질문 적합성',status:'판단유보',reason:'근거가 부족해요',answer_quote:''}],next_action:'질문이 요구하는 답을 한 문장으로 정리하기'} as never});
+ expect(answerCoaching(a).priority).toBe('질문이 요구하는 답을 한 문장으로 정리하기');
+ expect(answerCoaching(a).comments).toEqual([]);
+});

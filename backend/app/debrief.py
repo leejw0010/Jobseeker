@@ -48,14 +48,15 @@ def _needs_coaching(a: PracticeAnswer) -> bool:
     if not _has_transcript(a):
         return False
     report = a.coaching_report
-    return not report or bool(report.get("fallback_reason") and llm.available())
+    # Legacy reports remain readable history; never regrade them automatically.
+    return not report or bool(report.get("input_status") != "legacy_unverified" and report.get("fallback_reason") and llm.available())
 
 
 def drill_picks(s: PracticeSession) -> list[tuple[PracticeAnswer, list[str], int | None]]:
     """다시 연습할 답변: 코칭에 '보완'이 있거나 자기평가가 1~2점. (답변, 보완 기준 이름, 낮은 자기평가), 세션 순서대로 최대 20개."""
     picked = []
     for a in s.answers:
-        weak = [c["label"] for c in (a.coaching_report or {}).get("criteria", []) if c["status"] == "보완"]
+        weak = [c["label"] for c in (answer_coaching.current_report(a) or {}).get("criteria", []) if c["status"] == "보완"]
         low = a.self_rating if a.self_rating in (1, 2) else None
         if weak or low:
             picked.append((a, weak, low))
@@ -94,8 +95,7 @@ def debrief_running(s: PracticeSession, now: datetime | None = None) -> bool:
 
 def _lock(db: Session, session_id: str) -> None:
     """세션 행을 잠근다(짧은 쓰기). 같은 세션의 종료·재생성 요청과 작업의 마무리가 서로를 기다리게 한다."""
-    db.execute(update(PracticeSession).where(PracticeSession.id == session_id).values(title=PracticeSession.title),
-               execution_options={"synchronize_session": False})
+    answer_coaching.lock_session(db, session_id)
 
 
 def prepare_debrief(db: Session, s: PracticeSession) -> bool:
@@ -193,7 +193,7 @@ def debrief_fingerprint(s: PracticeSession) -> str:
 def _summary_items(s: PracticeSession) -> list[dict]:
     items = []
     for a in s.answers:
-        report = a.coaching_report or {}
+        report = answer_coaching.current_report(a) or {}
         items.append({"answer_id": a.id, "order_no": a.order_no, "question": a.question.text,
                       "transcript": a.transcript or "", "self_rating": a.self_rating,
                       "reflection_note": a.reflection_note, "coaching_method": report.get("method"),

@@ -4,12 +4,12 @@
 
 ## 기본 상태
 
-`PRACTICE_INSIGHTS_ENABLED=false`, `PRACTICE_COMPETENCY_EVIDENCE_ENABLED=false`를 유지하면 새 분류 기능은 꺼집니다. 모델 로딩 시 새 매핑을 제외하므로 이전 PostgreSQL 스키마에 대한 기존 SELECT/INSERT도 유지됩니다. 기능을 끈 상태에서 기존 녹음을 명시적 글 답변으로 교체하면, 스키마 메타데이터 확인 후 이미 있는 연결 지문만 지웁니다. 아직 마이그레이션하지 않은 스키마에는 새 컬럼 UPDATE나 DDL을 보내지 않으며 STT 상태의 의미도 바꾸지 않습니다. 플래그를 바꾸려면 서버를 재시작해야 합니다. 새 프런트엔드는 `/practice/taxonomy`의 활성 상태를 확인합니다.
+`PRACTICE_INSIGHTS_ENABLED=false`, `PRACTICE_COMPETENCY_EVIDENCE_ENABLED=false`를 유지하면 새 분류 기능은 꺼집니다. 모델 로딩 시 분류 매핑을 제외하므로 분류 migration 전의 SELECT/INSERT 계약은 유지됩니다. 단, 이 릴리스의 Track에는 `20261105_track_integrity.sql`과 `20261105_version_immutability.sql`이 항상 필요합니다. 분류 플래그를 꺼도 이 전제는 해제되지 않으며 준비되지 않은 PostgreSQL은 시작 시 거부합니다. 기능을 끈 상태에서 기존 녹음을 명시적 글 답변으로 교체하면, 스키마 메타데이터 확인 후 이미 있는 연결 지문만 지웁니다. 아직 마이그레이션하지 않은 스키마에는 새 컬럼 UPDATE나 DDL을 보내지 않으며 STT 상태의 의미도 바꾸지 않습니다. 플래그를 바꾸려면 서버를 재시작해야 합니다. 새 프런트엔드는 `/practice/taxonomy`의 활성 상태를 확인합니다.
 
 ## 적용 순서
 
 1. 기존 설치의 백업 정책을 확인하고 먼저 **격리된 테스트 Supabase 프로젝트**에 새 SQL을 적용합니다. 운영 프로젝트에 바로 시험하지 않습니다.
-2. 신규 프로젝트는 전체 `supabase/schema.sql`을 사용합니다. 기존 프로젝트는 이전 증분 SQL을 유지한 채 `supabase/migrations/20261104_practice_insights.sql`을 SQL Editor에서 수동 실행합니다. 같은 새 SQL을 두 번 실행해도 데이터가 지워지지 않는지 확인합니다.
+2. 신규 프로젝트는 전체 `supabase/schema.sql`을 사용합니다. 기존 프로젝트는 이미 적용한 증분 SQL을 유지합니다. 이 릴리스의 Track 전제로 `20261105_track_integrity.sql`, `20261105_version_immutability.sql`을 적용하고, 분류 기능에는 `20261104_practice_insights.sql` 다음 `20261105_practice_integrity.sql`도 적용합니다. 모두 `supabase/migrations/`의 파일을 검토 후 SQL Editor에서 수동 실행합니다. 역량 위치 중복은 자동으로 삭제하지 않고 migration/활성화를 거부하므로 원인을 확인해야 합니다. 같은 새 SQL을 두 번 실행해도 데이터가 지워지지 않는지 확인합니다.
 3. 기존 질문·세션·답변 수를 적용 전후 대조합니다. 새 질문 컬럼·답변 스냅샷·`recording_transcript_sha256` 연결 지문은 nullable이며 기존 기록을 임의 재분류하거나 녹음을 다시 읽지 않습니다. 지문은 녹음 revision과 전사문을 함께 묶습니다. 이 지문이 없는 옛 기록은 녹음 길이는 표시하되 속도 비교에서 제외합니다. 최초 수동 전사는 사용자 확인으로 연결하고 이후 편집은 연결을 갱신하지 않습니다. 원본 녹음·음성/영상 수치를 새로 저장하는 컬럼이 아닙니다.
 4. 신규 연결 테이블의 읽기 정책은 공용 또는 본인 질문만 허용하고, 쓰기는 본인 질문만 허용하는지 서로 다른 두 사용자 JWT로 확인합니다. 공용 질문 태그를 일반 사용자가 바꾸거나 타인·비공개 꼬리질문을 조회/수정할 수 없어야 합니다.
 5. 테스트 프로젝트에서 `PRACTICE_INSIGHTS_ENABLED=true`로 재시작합니다. 준비되지 않은 스키마는 명확한 시작 오류로 거부되어야 합니다. `/practice/taxonomy`의 `enabled=true`, 질문 추가/필터/세션 생성/스냅샷/꼬리질문/재연습을 확인합니다.
@@ -24,4 +24,4 @@
 
 ## 외부 검증 기록
 
-자동 검증은 임시 SQLite·컴파일된 PostgreSQL SQL·가짜 AI 응답으로 분리해 검사합니다. 이 문서 자체는 실제 Supabase 적용, RLS/Storage/JWT 동작, 실제 AI 인용의 의미 정확도 또는 실제 장치 분석 정확도를 확인했다는 기록이 아닙니다.
+자동 검증은 임시 SQLite, 실제 격리 PostgreSQL 16.15/PostgREST 16.5의 SQL·JWT A/B·비소유자 RLS, 로컬 HTTP AI 대역을 구분합니다. [현재 검증 기록](validation/2026-11-06-usability-results.md)과 [재현 방법](postgresql-validation.md)을 참고하세요. 이 문서 자체는 실제 Supabase 적용, RLS/Storage/JWT 동작, 실제 AI 인용의 의미 정확도 또는 실제 장치 분석 정확도를 확인했다는 기록이 아닙니다.

@@ -72,3 +72,40 @@ test("warns when the API address is not covered by host_permissions", () => {
   expect(hostPermissionWarning("https://anything.dev", { host_permissions: ["<all_urls>"] })).toBeNull();
   expect(hostPermissionWarning("not a url", manifest)).toContain("주소");
 });
+
+import * as extensionApi from "../../../extension-track/api.js";
+
+test("savePosting always sends explicit submitted false and no harvested essays", async () => {
+  fakeChrome();
+  const previous = globalThis.fetch;
+  let payload: Record<string, unknown> = {};
+  globalThis.fetch = async (_url, init) => {
+    payload = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ created: true }), { status: 200 });
+  };
+  try {
+    await extensionApi.api.savePosting({ company: "회사", position: "개발", url: "https://example.com/jobs/1" });
+    expect(payload.submitted).toBe(false);
+    expect(payload.essays).toEqual([]);
+  } finally { globalThis.fetch = previous; }
+});
+
+test("401 preserves typed status and clears only the token used by the failed request", async () => {
+  const { session } = fakeChrome();
+  await setAccessToken("expired-test-token");
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ detail: "다시 로그인하세요" }), { status: 401 });
+  try {
+    const err = await extensionApi.api.stats().catch((error: unknown) => error);
+    expect(err).toMatchObject({ status: 401, message: "다시 로그인하세요" });
+    expect(err.constructor.name).toBe("ApiError");
+    expect(session).toEqual({});
+    await setAccessToken("old-test-token");
+    globalThis.fetch = async () => {
+      await setAccessToken("new-test-token");
+      return new Response(JSON.stringify({ detail: "expired" }), { status: 401 });
+    };
+    await extensionApi.api.stats().catch(() => {});
+    expect(await getAccessToken()).toBe("new-test-token");
+  } finally { globalThis.fetch = previous; }
+});

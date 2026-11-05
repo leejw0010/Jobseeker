@@ -127,7 +127,7 @@ test("recorded mock session: improvement points in rule order, folded after five
   const points = page.getByTestId("insight-points");
   const shown = points.locator(":scope > ol > li");
   await expect(shown.locator("strong")).toHaveText([
-    "구체성 보완", "제한 시간을 다 썼어요", "제한 시간보다 많이 짧았어요", "내가 한 일이 잘 드러나지 않아요", "평소보다 빠르게 말했어요",
+    "구체성 보완", "제한 시간을 다 썼어요", "제한 시간보다 많이 짧았어요", "평소보다 빠르게 말했어요", "평소보다 느리게 말했어요",
   ]);
   const coaching = shown.nth(0);
   await expect(coaching).toContainText("코칭 결과");
@@ -136,20 +136,19 @@ test("recorded mock session: improvement points in rule order, folded after five
   await expect(coaching).toContainText("개선 전후의 측정 지표와 비교 조건을 설명해 주세요."); // 보고서의 다음 행동
   await expect(shown.nth(1)).toContainText("Q1 60초 / 제한 60초");
   await expect(shown.nth(2)).toContainText("Q2 18초(30%) / 제한 60초");
-  await expect(shown.nth(3)).toContainText("우리 팀은 서비스 응답 속도를");
-  await expect(shown.nth(4)).toContainText("Q4 분당 188음절 · 이 세션 평균 130음절");
+  await expect(shown.nth(3)).toContainText("Q4 분당 188음절 · 이 세션 평균 130음절");
+  await expect(shown.nth(4)).toContainText("Q3 분당 73음절");
 
   const more = points.locator("details");
-  await expect(more.locator("summary")).toHaveText("보완점 2개 더 보기");
+  await expect(more.locator("summary")).toHaveText("보완점 1개 더 보기");
   await more.locator("summary").click();
-  await expect(more.locator("li strong")).toHaveText(["평소보다 느리게 말했어요", "스스로 아쉬웠다고 평가했어요"]);
-  await expect(more.locator("li").nth(0)).toContainText("Q3 분당 73음절");
-  await expect(more.locator("li").nth(1)).toContainText("Q2 2점");
+  await expect(more.locator("li strong")).toHaveText(["스스로 아쉬웠다고 평가했어요"]);
+  await expect(more.locator("li").nth(0)).toContainText("Q2 2점");
 });
 
 test("clicking an improvement point's answer link moves to that answer card", async ({ page }) => {
   await page.goto(`/practice/sessions/${seeded.sessionId}`);
-  const role = page.getByTestId("insight-points").getByRole("listitem").filter({ hasText: "내가 한 일이 잘 드러나지 않아요" });
+  const role = page.getByTestId("insight-points").getByRole("listitem").filter({ hasText: "평소보다 느리게 말했어요" });
   await role.getByRole("link", { name: "Q3" }).click();
   const target = `answer-${seeded.answerIds[2]}`;
   await expect(page).toHaveURL(new RegExp(`#${target}$`));

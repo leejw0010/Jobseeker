@@ -6,6 +6,6 @@ psycopg[binary]>=3.2
 pydantic>=2.7
 python-multipart>=0.0.9
 httpx>=0.27
-pyjwt>=2.8
+pyjwt[crypto]>=2.8
 # 로컬 음성 전사(STT_PROVIDER=local). PyAV·CTranslate2·onnxruntime(VAD)을 함께 설치한다
 faster-whisper>=1.2

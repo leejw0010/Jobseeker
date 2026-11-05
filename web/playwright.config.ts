@@ -15,6 +15,7 @@ const database = join(isolatedTemporaryDirectory(process.env.E2E_DATABASE_DIR), 
 
 export default defineConfig({
   testDir: "./e2e",
+  outputDir: "./test-results/e2e",
   fullyParallel: false,
   workers: 1,
   timeout: 45000,

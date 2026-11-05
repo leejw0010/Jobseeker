@@ -237,7 +237,14 @@ def test_concurrent_followups_keep_a_total_order(client, monkeypatch):
     monkeypatch.setattr(coaching, "build_report", together)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda aid: client.post(f"/practice/answers/{aid}/followup", headers=h), ids))
-    assert all(r.status_code == 201 for r in results), [r.text for r in results]
+    # A preceding insertion changes the later answer's history. Ask the caller to
+    # retry rather than storing a report made from the old conversation.
+    assert all(r.status_code in (201, 409) for r in results), [r.text for r in results]
+    monkeypatch.setattr(coaching, "build_report", original)
+    for aid, result in zip(ids, results):
+        if result.status_code == 409:
+            retried = client.post(f"/practice/answers/{aid}/followup", headers=h)
+            assert retried.status_code == 201, retried.text
     saved = client.get(f"/practice/sessions/{s['id']}", headers=h).json()["answers"]
     assert [a["order_no"] for a in saved] == [1, 2, 3, 4, 5]
     assert saved[1]["parent_answer_id"] == ids[0]

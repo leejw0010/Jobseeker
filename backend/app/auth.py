@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 import jwt
 from fastapi import Header, HTTPException
 
@@ -5,6 +7,34 @@ from .config import settings
 from .models import valid_id
 
 DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
+
+
+@lru_cache(maxsize=8)
+def _jwks_client(project_url: str) -> jwt.PyJWKClient:
+    # Only the configured project determines the endpoint. Never read jku/x5u from a token.
+    return jwt.PyJWKClient(project_url + "/auth/v1/.well-known/jwks.json", timeout=5,
+                           cache_jwk_set=True, lifespan=300)
+
+
+def _decode_token(token: str) -> dict:
+    if settings.jwt_mode == "jwks":
+        header = jwt.get_unverified_header(token)
+        algorithm = header.get("alg")
+        if algorithm not in {"RS256", "ES256"} or not isinstance(header.get("kid"), str) or not header["kid"]:
+            raise jwt.InvalidTokenError("Unsupported signing key")
+        signing_key = _jwks_client(settings.supabase_url).get_signing_key_from_jwt(token)
+        if signing_key.algorithm_name != algorithm:
+            raise jwt.InvalidTokenError("Signing key algorithm mismatch")
+        key = signing_key.key
+        algorithms = [algorithm]
+    elif settings.jwt_mode == "hs256" and settings.jwt_secret:
+        key = settings.jwt_secret
+        algorithms = ["HS256"]
+    else:
+        raise jwt.InvalidTokenError("Authentication configuration unavailable")
+    return jwt.decode(token, key, algorithms=algorithms, audience="authenticated",
+                      issuer=settings.supabase_url + "/auth/v1",
+                      options={"require": ["exp", "iss", "aud", "sub"]})
 
 
 def current_user_id(
@@ -24,9 +54,9 @@ def current_user_id(
         raise HTTPException(401, "로그인이 필요합니다")
     token = authorization.split(" ", 1)[1]
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], audience="authenticated")
+        payload = _decode_token(token)
     except jwt.PyJWTError as e:
-        raise HTTPException(401, f"유효하지 않은 토큰: {e}") from e
+        raise HTTPException(401, "유효하지 않은 토큰입니다") from e
     # Supabase 사용자 id(uuid)만 받는다. 없거나 형식이 다르면 user_id 컬럼(uuid)에 쓸 수 없다
     sub = payload.get("sub")
     if not isinstance(sub, str) or not valid_id(sub):

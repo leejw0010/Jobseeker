@@ -28,7 +28,10 @@ function sttLabel(a: PracticeAnswer) {
   return a.audio_deleted_at ? `${what} · 원본 녹음 삭제됨` : what;
 }
 
-function AnswerCard({ a, context, rubric, onChange, onReload, sessionId, onReportsChanged }: {
+function AnswerCard({ a, context, rubric, onChange, onReload, sessionId, onReportsChanged, onTranscriptDirty, staleForDraft, hasEarlierDraft }: {
+  onTranscriptDirty:(id:string,dirty:boolean)=>void;
+  staleForDraft:boolean;
+  hasEarlierDraft:boolean;
   sessionId:string;
   onReportsChanged:()=>void;
   a: PracticeAnswer;
@@ -96,13 +99,17 @@ function AnswerCard({ a, context, rubric, onChange, onReload, sessionId, onRepor
     }
   };
 
-  const dirty = transcript !== (a.transcript ?? "") || note !== (a.reflection_note ?? "");
+  const transcriptDirty = transcript !== (a.transcript ?? "");
+  const noteDirty = note !== (a.reflection_note ?? "");
+  const dirty = transcriptDirty || noteDirty;
+  useEffect(() => {onTranscriptDirty(a.id, transcriptDirty);}, [a.id, transcriptDirty, onTranscriptDirty]);
+  const reflectionPatch = { ...(transcriptDirty ? {transcript: transcript || null} : {}), ...(noteDirty ? {reflection_note: note || null} : {}) };
   const hasTranscript = !!a.transcript?.trim();
   // 한국어 발화 속도 참고용: 전사 글자 수 / 분
-  const cpm = a.recording_transcript_current === true && a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
+  const cpm = !transcriptDirty && a.recording_transcript_current === true && a.transcript && a.duration_sec ? Math.round((a.transcript.replace(/\s/g, "").length / a.duration_sec) * 60) : null;
 
   const retranscribe = () => act(async () => {
-    if (dirty) onChange(await api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null }));
+    if (dirty) onChange(await api.reflect(a.id, reflectionPatch));
     return api.retryTranscribe(a.id);
   }, true);
 
@@ -173,15 +180,18 @@ function AnswerCard({ a, context, rubric, onChange, onReload, sessionId, onRepor
       </label>
       <div className="spacer" />
       <div className="row">
-        <button className="primary" disabled={busy || !dirty} onClick={() => act(() => api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null }))}>저장</button>
-        <button disabled={busy || !transcript.trim()} onClick={() => act(async () => {
-          if (dirty) await api.reflect(a.id, { transcript: transcript || null, reflection_note: note || null });
+        <button className="primary" disabled={busy || !dirty} onClick={() => act(() => api.reflect(a.id, reflectionPatch))}>저장</button>
+        <button disabled={busy || !transcript.trim() || hasEarlierDraft} onClick={() => act(async () => {
+          if (dirty) await api.reflect(a.id, reflectionPatch);
           return api.coach(a.id);
         })}>{busy ? "점검 중…" : "답변 점검"}</button>
       </div>
-      <AnswerGuidance a={a} sessionId={sessionId}/>
-      {a.coaching_report && <CoachingPanel report={a.coaching_report} context={context} rubric={rubric} />}
-      {a.ai_feedback && !a.coaching_report && (
+      {transcriptDirty && <p role="status" data-testid="unsaved-transcript">전사문에 저장하지 않은 수정이 있어요. 답변을 저장하면 현재 대화 기준으로 다시 점검할 수 있어요.</p>}
+      {!transcriptDirty && staleForDraft && <p className="small muted">앞선 전사문에 저장하지 않은 수정이 있어 대화에 의존하는 코칭을 잠시 제외했어요.</p>}
+      {noteDirty && !transcriptDirty && <p className="small muted">회고 메모에 저장하지 않은 수정이 있어요. 답변 코칭은 저장된 전사문 기준이에요.</p>}
+      {!staleForDraft && <AnswerGuidance a={a} sessionId={sessionId}/>}
+      {!staleForDraft && a.coaching_report && <CoachingPanel report={a.coaching_report} context={context} rubric={rubric} showNextAction={a.coaching_report.input_status === 'legacy_unverified'} />}
+      {!staleForDraft && a.ai_feedback && !a.coaching_report && (
         <>
           <div className="spacer" />
           <div className="card" style={{ marginBottom: 0 }}>
@@ -196,8 +206,9 @@ function AnswerCard({ a, context, rubric, onChange, onReload, sessionId, onRepor
 }
 
 /** 세션을 마치면 자동으로 만드는 디브리프(답변 코칭 위에서). 키가 없으면 기본 점검만 돈다. */
-function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
+function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry, pauseContent=false }: {
   s: PracticeSession;
+  pauseContent?: boolean;
   /** 지금 서버에 OpenAI 키가 있는가(/health). 아직 모르면 null이고, 그때는 저장된 상태만 보고 판단한다 */
   ai: boolean | null;
   gaveUp: boolean;
@@ -224,7 +235,7 @@ function DebriefCard({ s, ai, gaveUp, busy, err, onDebrief, onRetry }: {
 
   return (
     <section className="card debrief-card">
-      <IntegratedCoaching s={s}/>
+      <IntegratedCoaching s={s} paused={pauseContent}/>
       <div className="row">
         <h2 className="grow" style={{ margin: 0 }}>세션 디브리프</h2>
         {status === "done" && d && <span className="chip accent">AI 생성</span>}
@@ -316,6 +327,11 @@ export default function SessionReview() {
   const nav = useNavigate();
   const [,refreshDelivery]=useState(0);
   const [s, setS] = useState<PracticeSession | null>(null);
+  const [refreshPending, setRefreshPending] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [dirtyTranscripts, setDirtyTranscripts] = useState<Record<string, boolean>>({});
+  const onTranscriptDirty = useCallback((answerId:string,dirty:boolean) => setDirtyTranscripts(current => current[answerId]===dirty ? current : {...current,[answerId]:dirty}), []);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [rubric, setRubric] = useState<CoachingRubric | null>(null);
@@ -328,16 +344,34 @@ export default function SessionReview() {
   const seq = useRef(0);
   const load = useCallback(async () => {
     const n = ++seq.current;
-    const next = await api.session(id);
-    if (n === seq.current) setS(next);
+    setRefreshBusy(true);
+    try {
+      const next = await api.session(id);
+      if (n === seq.current) {
+        setS(next);
+        setRefreshPending(false);
+        setRefreshError(null);
+      }
+    } catch (error) {
+      if (n === seq.current) setRefreshError((error as Error).message);
+      throw error;
+    } finally {
+      if (n === seq.current) setRefreshBusy(false);
+    }
   }, [id]);
   const apply = (next: PracticeSession) => {
     seq.current++;
     setS(next);
+    setRefreshPending(false);
+    setRefreshBusy(false);
+    setRefreshError(null);
   };
 
   useEffect(() => {
     setS(null);
+    setDirtyTranscripts({});
+    setRefreshPending(false);
+    setRefreshError(null);
     setErr(null);
     setGaveUp(false);
     setCardErr(null);
@@ -404,7 +438,18 @@ export default function SessionReview() {
 
   /** 답변이 바뀌면 바로 반영하고, 다시 연습할 답변 목록이 맞도록 세션을 다시 불러온다. */
   const onAnswer = (next: PracticeAnswer) => {
-    setS((cur) => cur && { ...cur, answers: cur.answers.map((x) => (x.id === next.id ? next : x)) });
+    setRefreshPending(true);
+    setRefreshError(null);
+    setS((cur) => {
+      if (!cur) return cur;
+      const previous = cur.answers.find(answer => answer.id === next.id);
+      const transcriptChanged = previous?.transcript !== next.transcript;
+      // Invalidate locally before the PATCH response makes the editor clean.
+      // A failed or delayed authoritative GET must never revive old interpretation.
+      return {...cur, debrief:null, debrief_status:"none", redrill:[], answers:cur.answers.map(answer =>
+        answer.id === next.id ? next : transcriptChanged && previous && answer.order_no > previous.order_no
+          ? {...answer,coaching_report:null,ai_feedback:null} : answer)};
+    });
     load().catch(() => {});
   };
   const reload = () => {
@@ -428,7 +473,10 @@ export default function SessionReview() {
   if (!s) return <p className="muted">불러오는 중…</p>;
   // 원본 녹음은 전사가 끝나면 지워질 수 있으니 녹음 여부는 recorded_at으로 본다
   const remaining = s.answers.filter((a) => !a.recorded_at && !a.transcript?.trim()).length;
-  const weak = s.redrill.length;
+  const firstDirtyOrder = Math.min(...s.answers.filter(a=>dirtyTranscripts[a.id]).map(a=>a.order_no));
+  const hasDirtyTranscript = Number.isFinite(firstDirtyOrder);
+  const reviewSession = hasDirtyTranscript ? {...s, debrief:null, debrief_status:'none' as const, redrill:[], answers:s.answers.map(a=>a.order_no>=firstDirtyOrder ? {...a, coaching_report:null, ai_feedback:null, recording_transcript_current:false} : a)} : s;
+  const weak = reviewSession.redrill.length;
   // '보완 항목 N개'(PR #2 문구)는 고른 답변마다 코칭의 보완이 있을 때만 맞다. 자기평가만으로 고른 답변이 있으면 답변 수로 말한다
   const allNeedWork = s.redrill.every((w) => w.reasons.some((r) => r.endsWith("보완")));
 
@@ -441,10 +489,13 @@ export default function SessionReview() {
       </div>
       <p className="muted small">{new Date(s.created_at).toLocaleString("ko-KR")} · {s.mode === "mock" ? `모의시험 (준비 ${s.prep_sec}초 / 답변 ${s.answer_sec}초)` : "자유 연습"}</p>
       {err && <p className="err">{err}</p>}
-      <ReviewInsights s={s} />
-      <DebriefCard s={s} ai={ai} gaveUp={gaveUp} busy={cardBusy} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
-      <CompetencyPanel s={s}/>
-      <VoiceReportCard s={s} onCleared={()=>refreshDelivery(v=>v+1)}/>
+      {refreshPending && <p className="small muted" role="status">변경한 회고 자료를 확인하고 있어요. 확인될 때까지 세션 해석과 재연습 추천을 잠시 멈춰요.</p>}
+      {refreshError && <div data-testid="review-refresh-error" className="err"><p>회고 자료를 다시 확인하지 못했어요. {refreshError}</p><button disabled={refreshBusy} onClick={reload}>회고 다시 불러오기</button></div>}
+      {hasDirtyTranscript && <p className="small muted">저장하지 않은 전사문이 있어 해당 답변과 이후 대화 코칭·세션 요약·재연습 추천을 잠시 제외해요. 수정한 내용을 저장하거나 되돌려 주세요.</p>}
+      <ReviewInsights s={reviewSession} />
+      <DebriefCard s={reviewSession} pauseContent={hasDirtyTranscript || refreshPending} ai={ai} gaveUp={gaveUp} busy={cardBusy || hasDirtyTranscript || refreshPending} err={cardErr} onDebrief={makeDebrief} onRetry={retryDebrief} />
+      <CompetencyPanel s={reviewSession}/>
+      <VoiceReportCard s={s} dirtyAnswerIds={new Set(Object.keys(dirtyTranscripts).filter(id=>dirtyTranscripts[id]))} onCleared={()=>refreshDelivery(v=>v+1)}/>
       <VideoReportCard sessionId={s.id} answers={s.answers} onCleared={()=>refreshDelivery(v=>v+1)} />
       <InterviewContext context={s.context_snapshot} />
       <section className="card review-summary">
@@ -454,7 +505,7 @@ export default function SessionReview() {
           <p className="muted small">코칭에 ‘보완’이 있거나 자기평가가 1~2점인 답변이 여기에 모여요.</p>
         ) : (
           <ul className="plain weak-list">
-            {s.redrill.map((w) => (
+            {reviewSession.redrill.map((w) => (
               <li key={w.answer_id}>
                 <div className="small"><a href={`#answer-${w.answer_id}`}>Q{w.order_no}.</a> {w.question_text}</div>
                 <div className="row small" style={{ gap: 6, marginTop: 4 }}>
@@ -473,7 +524,7 @@ export default function SessionReview() {
         }}>{allNeedWork ? `보완 항목 ${weak}개 다시 연습` : `답변 ${weak}개 다시 연습`}</button>
       </section>
       {s.answers.map((a) => (
-        <AnswerCard key={a.id} sessionId={s.id} onReportsChanged={()=>refreshDelivery(v=>v+1)} a={a} context={s.context_snapshot} rubric={rubric} onChange={onAnswer} onReload={reload} />
+        <AnswerCard key={a.id} onTranscriptDirty={onTranscriptDirty} staleForDraft={a.order_no>=firstDirtyOrder} hasEarlierDraft={a.order_no>firstDirtyOrder} sessionId={s.id} onReportsChanged={()=>refreshDelivery(v=>v+1)} a={a} context={s.context_snapshot} rubric={rubric} onChange={onAnswer} onReload={reload} />
       ))}
     </>
   );

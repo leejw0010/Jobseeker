@@ -37,7 +37,7 @@ def test_auth_enabled_without_secret_is_a_startup_error():
 
 
 def test_auth_enabled_with_secret_passes():
-    Settings({"AUTH_DISABLED": "false", "SUPABASE_JWT_SECRET": "configured"}).check()
+    Settings({"AUTH_DISABLED": "false", "SUPABASE_JWT_SECRET": "configured", "SUPABASE_URL": "https://configured.supabase.co"}).check()
 
 
 def test_dev_mode_on_postgres_warns(caplog):
@@ -47,16 +47,38 @@ def test_dev_mode_on_postgres_warns(caplog):
 
 
 def test_dev_mode_on_sqlite_is_quiet(caplog):
-    Settings({}).check()
+    Settings({"AUTH_DISABLED": "true"}).check()
     assert "AUTH_DISABLED" not in caplog.text
 
 
 def test_unknown_auth_flag_keeps_auth_on():
     """true가 아닌 값은 인증을 켠 것으로 본다(잘못 적어도 열리지 않는다)."""
     assert Settings({"AUTH_DISABLED": "yes"}).auth_disabled is False
-    assert Settings({}).auth_disabled is True
+    assert Settings({}).auth_disabled is False
 
 
 def test_conftest_isolates_recordings():
     from app.config import settings
     assert Path(settings.local_recordings_dir) != BASE_DIR / "recordings"
+
+
+def test_production_refuses_auth_bypass():
+    with pytest.raises(ConfigError, match="APP_ENV.*AUTH_DISABLED"):
+        Settings({"APP_ENV": "production", "AUTH_DISABLED": "true"}).check()
+
+
+def test_jwks_mode_requires_pinned_supabase_url():
+    with pytest.raises(ConfigError, match="SUPABASE_URL"):
+        Settings({"SUPABASE_JWT_MODE": "jwks"}).check()
+    Settings({"SUPABASE_JWT_MODE": "jwks", "SUPABASE_URL": "https://test.supabase.co"}).check()
+
+
+@pytest.mark.parametrize("url", ["https://user:pass@host", "https://host?other=x", "https://host/other", "ftp://host", "http://remote.invalid"])
+def test_auth_url_must_be_project_origin(url):
+    with pytest.raises(ConfigError, match="SUPABASE_URL"):
+        Settings({"SUPABASE_JWT_MODE": "jwks", "SUPABASE_URL": url}).check()
+
+
+def test_unknown_auth_mode_fails_closed():
+    with pytest.raises(ConfigError, match="SUPABASE_JWT_MODE"):
+        Settings({"SUPABASE_JWT_MODE": "none"}).check()

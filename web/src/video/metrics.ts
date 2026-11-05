@@ -1,6 +1,7 @@
 /** 카메라 자세 분석의 계산과 보관. 얼굴 특징점(정규화 좌표)에서 수치만 만들고, 영상·이미지·특징점 원본은 남기지 않는다.
  *  브라우저 API를 쓰지 않아 Node에서도 테스트할 수 있다(web/tests/unit/video-metrics.spec.ts, npm run test:unit). */
 
+import {faceDetectorMetadata,type DetectorMetadata} from "./runtime";
 import { median } from "./stats";
 
 export type Point = { x: number; y: number };
@@ -158,11 +159,17 @@ export function combineSummaries(list: SegmentSummary[]): SegmentSummary {
 // 이 탭의 메모리에만 보관한다(서버·브라우저 저장소에 쓰지 않음). 새로고침하거나 탭을 닫으면 사라진다
 const reports = new Map<string, Map<string, SegmentSummary>>();
 
+const runIds = new Map<string,Map<string,string>>();
+const detectorMetadata = new Map<string,Map<string,DetectorMetadata>>();
 const revisions = new Map<string, Map<string, string>>();
 
 /** Optional revision preserves existing callers; revision-aware reads never accept legacy unkeyed values. */
 export function saveVideoSegment(sessionId: string, answerId: string, summary: SegmentSummary, recordedAt?: string) {
   if (!reports.has(sessionId)) reports.set(sessionId, new Map());
+  if(!runIds.has(sessionId))runIds.set(sessionId,new Map());
+  if(revisions.get(sessionId)?.get(answerId)!==recordedAt||!runIds.get(sessionId)!.has(answerId))runIds.get(sessionId)!.set(answerId,globalThis.crypto.randomUUID());
+  if(!detectorMetadata.has(sessionId))detectorMetadata.set(sessionId,new Map());
+  detectorMetadata.get(sessionId)!.set(answerId,faceDetectorMetadata());
   reports.get(sessionId)!.set(answerId, summary);
   if (!revisions.has(sessionId)) revisions.set(sessionId, new Map());
   if (recordedAt) revisions.get(sessionId)!.set(answerId, recordedAt);
@@ -172,11 +179,15 @@ export function getVideoSegments(sessionId: string, answerId: string, recordedAt
   if (recordedAt !== undefined && (!recordedAt || revisions.get(sessionId)?.get(answerId) !== recordedAt)) return undefined;
   return reports.get(sessionId)?.get(answerId);
 }
+export function getVideoRunId(sessionId:string,answerId:string,recordedAt:string){return getVideoSegments(sessionId,answerId,recordedAt)?runIds.get(sessionId)?.get(answerId):undefined;}
+export function getVideoSegmentMetadata(sessionId:string,answerId:string,recordedAt:string){
+  return getVideoSegments(sessionId,answerId,recordedAt)?detectorMetadata.get(sessionId)?.get(answerId):undefined;
+}
 export const sessionVideo = (sessionId: string) => reports.get(sessionId);
 export function clearVideoSegment(sessionId: string, answerId: string) {
-  reports.get(sessionId)?.delete(answerId); revisions.get(sessionId)?.delete(answerId);
+  reports.get(sessionId)?.delete(answerId); revisions.get(sessionId)?.delete(answerId); detectorMetadata.get(sessionId)?.delete(answerId);runIds.get(sessionId)?.delete(answerId);
 }
-export function clearSessionVideo(sessionId: string) { reports.delete(sessionId); revisions.delete(sessionId); }
+export function clearSessionVideo(sessionId: string) { reports.delete(sessionId); revisions.delete(sessionId); detectorMetadata.delete(sessionId);runIds.delete(sessionId); }
 
 /** Derived comments describe detector coverage and positioning, never gaze, attention or confidence. */
 export function videoDiagnostics(summary: SegmentSummary): {
@@ -194,4 +205,4 @@ export function videoDiagnostics(summary: SegmentSummary): {
   if (!analyzed) comments.push("분석한 영상이 없어 자세를 판단할 수 없습니다.");
   return { quality: !analyzed ? "insufficient" : coverage < 0.8 ? "partial" : "measured", coverage, unanalysedMs, comments };
 }
-export function clearAllVideo() { reports.clear(); revisions.clear(); }
+export function clearAllVideo() { reports.clear(); revisions.clear(); detectorMetadata.clear();runIds.clear(); }

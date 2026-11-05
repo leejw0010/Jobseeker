@@ -1,4 +1,5 @@
 """Frozen sources and evidence-grounded coaching. No truth or hiring scores."""
+import hashlib
 import json
 import re
 
@@ -51,13 +52,15 @@ def snapshot(application: Application | None, basis: str = "submitted", job_desc
         for item in application.essay_items:
             if not item.versions:
                 continue
-            submitted = [v for v in item.versions if v.is_submitted]
-            version = submitted[-1] if basis == "submitted" and submitted else item.versions[-1]
-            selection = "submitted" if basis == "submitted" and submitted else "latest"
+            submitted_id = item.submitted_version_id
+            selected = next((v for v in item.versions if v.id == submitted_id), None)
+            version = selected if basis == "submitted" and selected else item.versions[-1]
+            selection = "submitted" if basis == "submitted" and selected else "latest"
             essays.append({"item_id": item.id, "question_text": item.question_text,
                            "version_id": version.id, "version_no": version.version_no,
                            "content": version.content, "selection": selection,
-                           "is_submitted": version.is_submitted})
+                           "is_submitted": version.is_submitted,
+                           "submission_confirmation": item.submission_confirmation if selection == "submitted" else "none"})
     return {"company": application.company if application else "", "position": application.position if application else "",
             "job_category": application.job_category if application else "", "essay_basis": basis,
             "job_description": job_description, "essays": essays}
@@ -65,6 +68,14 @@ def snapshot(application: Application | None, basis: str = "submitted", job_desc
 
 def essay_text(context: dict) -> str:
     return "\n\n".join(f"Q. {e['question_text']}\nA. {e['content']}" for e in context.get("essays", []))
+
+
+def input_fingerprint(question: str, transcript: str | None, context: dict, history: list[dict]) -> str:
+    """Core identity excludes optional tags so feature rollback preserves coaching."""
+    payload = {"question": question, "answer": transcript, "context": context,
+               "history": history, "rubric_version": RUBRIC_VERSION}
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
 
 
 def _basic(transcript: str, context: dict) -> dict:
@@ -76,9 +87,6 @@ def _basic(transcript: str, context: dict) -> dict:
     if needs_measurement:
         detail = "개선 전후의 측정 지표와 비교 조건을 설명해 주세요."
         reason = "기준 자료에는 수치가 있지만 이번 답변에는 수치가 없어 측정 과정을 더 묻습니다."
-    elif not re.search(r"제가|저는|직접|담당|본인", transcript):
-        detail = "팀 전체의 성과 중 본인이 직접 맡은 역할과 행동을 설명해 주세요."
-        reason = "본인의 역할을 구체적으로 설명하는 연습입니다."
     else:
         detail = "그때 선택한 방법의 이유와 결과를 확인한 과정을 설명해 주세요."
         reason = "답변에 나온 경험의 선택 근거와 결과를 더 자세히 확인합니다."
@@ -143,10 +151,10 @@ criteria는 specificity(구체성), relevance(질문 적합성), consistency(제
 
 
 def build_report(question: str, transcript: str, context: dict, history: list[dict], classification: dict | None = None) -> dict:
-    """답변 코칭 보고서. 채점한 전사문의 지문(transcript_sha256)을 함께 남긴다: 그사이 전사문이 바뀌면 이 보고서는
-    없는 것으로 본다(PracticeAnswer.coaching_report). 키가 있는데 AI 점검이 실패해 기본 점검으로 대신하면
+    """답변 코칭 보고서. 입력 지문과 전사문 지문을 함께 남긴다. 저장 서비스는 미답변 이전 질문까지
+    포함한 보수적인 대화 지문을 저장하고, 읽기·저장 시 일치 여부를 확인한다. AI 점검이 실패해 기본 점검으로 대신하면
     fallback_reason(ai_error: 호출 실패, ai_invalid: 응답이 형식·인용 검증을 통과하지 못함)을 남겨 디브리프가 다시 점검한다."""
-    stamp = {"transcript_sha256": transcript_hash(transcript),"question_classification_sha256":classification_hash(classification)}
+    stamp = {"input_status": "current", "input_sha256": input_fingerprint(question, transcript, context, history), "transcript_sha256": transcript_hash(transcript),"question_classification_sha256":classification_hash(classification)}
     fallback_reason = None
     if llm.available():
         try:
