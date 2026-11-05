@@ -164,14 +164,18 @@ test("detail ignores an older id response after client navigation", async ({ pag
   const second = await newApp(request, `새상세 ${Date.now()}`);
   const delayed = hold();
   await page.route(`**/track/applications/${first.id}`, async (route) => { await delayed.gate; await route.continue(); });
+  // 이전 id의 API 요청이 실제로 나간 뒤에 이동해야 경합을 재현한다(페이지 주소도 id로 끝나므로 API 경로로 구분)
+  const firstRequested = page.waitForRequest((r) => r.url().endsWith(`/track/applications/${first.id}`));
   await page.goto(`/track/${first.id}`);
+  await firstRequested;
   await page.evaluate((nextId) => {
     history.pushState({}, '', `/track/${nextId}`);
     window.dispatchEvent(new PopStateEvent('popstate'));
   }, second.id);
   await expect(page.getByRole('heading', { name: `${second.company} · 백엔드` })).toBeVisible();
+  const firstResponded = page.waitForResponse((r) => r.url().endsWith(`/track/applications/${first.id}`));
   delayed.release();
-  await page.waitForResponse((r) => r.url().endsWith(first.id));
+  await firstResponded;
   await expect(page.getByRole('heading', { name: `${second.company} · 백엔드` })).toBeVisible();
 });
 
