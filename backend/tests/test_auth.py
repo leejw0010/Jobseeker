@@ -18,10 +18,12 @@ SECRET = "test-only-jwt-secret-not-a-real-project-key"
 def auth_on(monkeypatch):
     monkeypatch.setattr(settings, "auth_disabled", False)
     monkeypatch.setattr(settings, "jwt_secret", SECRET)
+    monkeypatch.setattr(settings, "supabase_url", "https://test.supabase.co")
+    monkeypatch.setattr(settings, "jwt_mode", "hs256", raising=False)
 
 
 def token(claims: dict | None = None, secret: str = SECRET, drop: tuple[str, ...] = ()) -> str:
-    body = {"sub": str(uuid.uuid4()), "aud": "authenticated", "exp": int(time.time()) + 300, **(claims or {})}
+    body = {"sub": str(uuid.uuid4()), "aud": "authenticated", "iss": "https://test.supabase.co/auth/v1", "exp": int(time.time()) + 300, **(claims or {})}
     for key in drop:
         body.pop(key, None)
     return jwt.encode(body, secret, algorithm="HS256")
@@ -48,7 +50,10 @@ def test_non_bearer_scheme_is_401(client, auth_on):
     token({"exp": int(time.time()) - 10}),  # 만료
     token(secret="another-test-only-secret-with-32-bytes+"),  # 서명이 다름
     token({"aud": "anon"}),  # 대상이 다름
-    token(drop=("aud",)),  # 대상 없음
+    token(drop=("aud",)),
+    token(drop=("exp",)),
+    token(drop=("iss",)),
+    token({"iss": "https://other.supabase.co/auth/v1"}),  # 대상 없음
     "not-a-jwt",
 ])
 def test_invalid_tokens_are_401(client, auth_on, bad):

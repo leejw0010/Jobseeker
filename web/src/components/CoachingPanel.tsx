@@ -24,14 +24,15 @@ function RubricDetails({ rubric }: { rubric: CoachingRubric }) {
   );
 }
 
-export default function CoachingPanel({ report, context, rubric }: { report: CoachingReport; context: InterviewContext | null; rubric?: CoachingRubric | null }) {
+export default function CoachingPanel({ report, context, rubric, showNextAction = true }: { showNextAction?: boolean; report: CoachingReport; context: InterviewContext | null; rubric?: CoachingRubric | null }) {
   return (
     <div className="coaching-panel">
       <div className="row"><strong>답변 회고</strong><span className="chip accent">{report.method === "ai" ? "AI 코칭" : "기본 점검"}</span></div>
       <p>{report.summary}</p>
       {report.method === "basic" && <p className="small muted">표현을 확인하는 기본 점검이에요. 답변의 의미나 사실 여부를 판정하지 않아요.</p>}
       {report.method === "ai" && rubric && <p className="small muted">{rubric.note}</p>}
-      <div className="next-action"><strong>다음 연습</strong><p>{report.next_action}</p></div>
+      {report.input_status === "legacy_unverified" && <p className="small muted">이전 코칭 보관본 · 입력 지문이 없어 현재 대화와 일치하는지 확인하지 못했어요. 통합 코칭과 재연습 기준에서 제외해요.</p>}
+      {showNextAction && <div className="next-action"><strong>다음 연습</strong><p>{report.next_action}</p></div>}
       <div className="criteria-list">
         {report.criteria.map((c) => {
           const source = context?.essays?.find((e) => e.version_id === c.source_version_id);
@@ -45,7 +46,7 @@ export default function CoachingPanel({ report, context, rubric }: { report: Coa
       </div>
       {/* 채점 기준(앵커)과 일치도 안내는 AI 코칭에만 해당한다. 기본 점검은 규칙으로만 본다(coaching._basic) */}
       {report.method === "ai" && rubric && <RubricDetails rubric={rubric} />}
-      {report.method === "basic" && <p className="small muted">기본 점검은 답변·자소서에 숫자가 있는지와 ‘제가·직접’ 같은 표현만 봐요. AI 코칭의 채점 기준으로 채점하지 않아요.</p>}
+      {report.method === "basic" && <p className="small muted">기본 점검은 답변·자소서의 수치 표현을 확인해요. 대명사 유무로 본인 역할을 판단하지 않아요. AI 코칭의 채점 기준으로 채점하지 않아요.</p>}
     </div>
   );
 }

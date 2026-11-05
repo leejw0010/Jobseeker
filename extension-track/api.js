@@ -1,10 +1,18 @@
 // FastAPI 백엔드(③ Track) 호출. 웹 대시보드와 같은 API를 쓴다.
-import { getAccessToken, getSettings } from "./settings.js";
+import { getAccessToken, getSettings, setAccessToken } from "./settings.js";
 
 /** 로그인 쪽이 settings.js의 setAccessToken()으로 넣은 Supabase 액세스 토큰. 없으면 null이고,
  *  그때는 백엔드 개발 모드(AUTH_DISABLED=true)의 고정 사용자로만 동작한다(인증을 켠 서버는 401). */
 async function getToken() {
   return getAccessToken();
+}
+
+export class ApiError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
 }
 
 async function req(method, path, body) {
@@ -31,7 +39,8 @@ async function req(method, path, body) {
     } catch {
       /* 본문 없음 */
     }
-    throw new Error(msg);
+    if (res.status === 401 && token && await getAccessToken() === token) await setAccessToken(null);
+    throw new ApiError(res.status, msg);
   }
   return res.status === 204 ? null : res.json();
 }
@@ -52,6 +61,6 @@ export const api = {
       job_category: p.job_category,
       url: p.url,
       essays: [],
-      submitted: p.submitted,
+      submitted: p.submitted === true,
     }),
 };

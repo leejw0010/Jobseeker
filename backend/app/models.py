@@ -94,6 +94,7 @@ class Question(Base):
 if settings.practice_insights_enabled:
     class QuestionCompetency(Base):
         __tablename__ = "question_competencies"
+        __table_args__ = (Index("question_competencies_position_uq", "question_id", "position", unique=True),)
         question_id: Mapped[str] = mapped_column(ID, ForeignKey("questions.id", ondelete="CASCADE"), primary_key=True)
         competency_key: Mapped[str] = mapped_column(String(40), primary_key=True)
         position: Mapped[int] = mapped_column(Integer)
@@ -183,6 +184,13 @@ class PracticeAnswer(Base):
         report = self.coaching.report if self.coaching else None
         if report and report.get("transcript_sha256") not in (None, transcript_hash(self.transcript)):
             return None
+        if report:
+            fingerprint = report.get("input_sha256")
+            if fingerprint:
+                from .services.answer_coaching import input_fingerprint
+                if fingerprint != input_fingerprint(self):
+                    return None
+            report = {**report, "input_status": "current" if fingerprint else "legacy_unverified"}
         if report and report.get("competency_evidence") is not None:
             from .taxonomy import current_evidence
             # Optional classification must not hide transcript-valid core coaching on rollback.
@@ -259,6 +267,31 @@ class Application(Base):
     essay_items: Mapped[list["EssayItem"]] = relationship(
         back_populates="application", cascade="all, delete-orphan", order_by="EssayItem.created_at"
     )
+    state_control: Mapped["ApplicationState | None"] = relationship(cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def state_source(self) -> str:
+        return (self.state_control.override_origin or "events") if self.state_control else "legacy"
+
+    @property
+    def state_revision(self) -> int:
+        return self.state_control.revision if self.state_control else 0
+
+    @property
+    def state_requires_baseline(self) -> bool:
+        return not self.state_control or self.state_control.baseline_stage is None
+
+
+class ApplicationState(Base):
+    """Explicit provenance; old rows without metadata retain their current state."""
+    __tablename__ = "application_states"
+    application_id: Mapped[str] = mapped_column(ID, ForeignKey("applications.id", ondelete="CASCADE"), primary_key=True)
+    baseline_stage: Mapped[str | None] = mapped_column(String(10))
+    baseline_status: Mapped[str | None] = mapped_column(String(10))
+    override_stage: Mapped[str | None] = mapped_column(String(10))
+    override_status: Mapped[str | None] = mapped_column(String(10))
+    override_origin: Mapped[str | None] = mapped_column(String(10))
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class StageEvent(Base):
@@ -281,8 +314,23 @@ class EssayItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     application: Mapped[Application] = relationship(back_populates="essay_items")
     versions: Mapped[list["AnswerVersion"]] = relationship(
-        cascade="all, delete-orphan", order_by="AnswerVersion.version_no"
+        cascade="save-update, merge", passive_deletes="all", order_by="AnswerVersion.version_no"
     )
+    submissions: Mapped[list["EssaySubmission"]] = relationship(cascade="save-update, merge", passive_deletes="all", order_by="EssaySubmission.sequence", lazy="selectin")
+
+    @property
+    def submission_revision(self) -> int:
+        return self.submissions[-1].sequence if self.submissions else 0
+
+    @property
+    def submitted_version_id(self) -> str | None:
+        if self.submissions:
+            return self.submissions[-1].version_id
+        return next((v.id for v in reversed(self.versions) if v.is_submitted), None)
+
+    @property
+    def submission_confirmation(self) -> str:
+        return "confirmed" if self.submissions else "legacy_unverified" if self.submitted_version_id else "none"
 
 
 class AnswerVersion(Base):
@@ -296,3 +344,14 @@ class AnswerVersion(Base):
     source: Mapped[str] = mapped_column(String(10), default="web")
     is_submitted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class EssaySubmission(Base):
+    __tablename__ = "essay_submissions"
+    __table_args__ = (UniqueConstraint("essay_item_id", "sequence"),)
+    id: Mapped[str] = mapped_column(ID, primary_key=True, default=_uuid)
+    essay_item_id: Mapped[str] = mapped_column(ID, ForeignKey("essay_items.id", ondelete="CASCADE"))
+    version_id: Mapped[str] = mapped_column(ID, ForeignKey("answer_versions.id", ondelete="CASCADE"))
+    sequence: Mapped[int] = mapped_column(Integer)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    source: Mapped[str] = mapped_column(String(10))

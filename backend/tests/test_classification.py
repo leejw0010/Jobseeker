@@ -422,13 +422,20 @@ def test_schema_flags_default_off_and_enabled_pg_startup_checks_readonly(tmp_pat
     monkeypatch.setattr(db, 'engine', engine)
     monkeypatch.setattr(db, '_is_sqlite', False)
     monkeypatch.setattr(settings, 'practice_insights_enabled', True)
+    with pytest.raises(RuntimeError, match='20261105_track_integrity.sql'):
+        db.init_db()
+    assert not any(stmt.lstrip().upper().startswith(('CREATE', 'ALTER', 'INSERT', 'UPDATE', 'DELETE')) for stmt in seen)
+    # Track is a prerequisite of this release; Stage 2 can still be independently disabled.
+    for name in ('application_states', 'essay_submissions'):
+        db.Base.metadata.tables[name].create(engine)
+    seen.clear()
     with pytest.raises(RuntimeError, match='20261104_practice_insights.sql'):
         db.init_db()
     assert not any((stmt.lstrip().upper().startswith(('CREATE', 'ALTER', 'INSERT', 'UPDATE', 'DELETE')) for stmt in seen))
     monkeypatch.setattr(settings, 'practice_insights_enabled', False)
     seen.clear()
     db.init_db()
-    assert seen == []
+    assert not any(stmt.lstrip().upper().startswith(('CREATE', 'ALTER', 'INSERT', 'UPDATE', 'DELETE')) for stmt in seen)
 
 def test_bank_backfill_uses_full_tuple_and_preserves_manual_bundles(client, isolated_db):
     from app.models import Question

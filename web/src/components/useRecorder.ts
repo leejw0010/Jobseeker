@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createVoiceSampler, summarizeVoice, type DeliverySummary } from "../delivery/voice";
+import { byteTimeDomainEnergy, createVoiceSampler, summarizeVoice, type DeliverySummary } from "../delivery/voice";
 
 /** 브라우저 마이크 녹음(MediaRecorder). 입력 레벨도 함께 계산해 마이크가 잡히는지 보여준다.
  *  권한 요청은 한 번에 하나만 보낸다. 권한 응답이 화면을 떠난 뒤에 오면 그 스트림을 바로 닫는다. */
@@ -42,11 +42,9 @@ export function useRecorder() {
       const tick = () => {
         try {
           analyser.getByteTimeDomainData(buf);
-          let sum = 0, clipped = 0;
-          for (const v of buf) { sum += ((v - 128) / 128) ** 2; if (v <= 1 || v >= 254) clipped++; }
-          const rms = Math.sqrt(sum / buf.length);
+          const {rms,clipped} = byteTimeDomainEnergy(buf);
           setLevel(Math.min(1, rms * 4));
-          voice.current?.add({ t: (performance.now() - startedAt.current) / 1000, rms, clipped: clipped / buf.length > 0.05 });
+          voice.current?.add({ t: (performance.now() - startedAt.current) / 1000, rms, clipped });
           raf.current = requestAnimationFrame(tick);
         } catch {
           setLevel(0); // Analyser failure leaves a visible coverage gap; recording continues.

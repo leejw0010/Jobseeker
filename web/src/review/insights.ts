@@ -7,12 +7,10 @@ export const OVER_MARGIN_SEC = 1; // 제한 − 1초 이상이면 제한 시간�
 export const SPEED_DEVIATION = 0.25; // 세션 평균보다 25% 넘게 빠르거나 느림
 export const MIN_SPEED_ANSWERS = 3; // 평균·비교에 필요한 말 빠르기 측정 답변 수
 export const MIN_RATE_SEC = 5; // 이보다 짧은 녹음은 말 빠르기를 내지 않는다
-export const ROLE_MIN_CHARS = 50; // 역할 규칙을 적용할 최소 글자 수(공백 제외)
 export const LOW_RATING = 2; // 자기 평가가 이 값 이하면 보완점
 export const VISIBLE_POINTS = 5;
 export const MAX_QUOTES = 2; // 한 보완점에 인용을 보일 답변 수
 
-const ROLE_WORDS = /제가|저는|직접|담당|본인|맡/;
 const QUOTE_CHARS = 60;
 
 export type CriterionKey = CoachingReport["criteria"][number]["key"];
@@ -66,6 +64,8 @@ export function syllableCount(text: string): number {
   return text.match(/[가-힣A-Za-z0-9]/g)?.length ?? 0;
 }
 
+const currentReport = (a: PracticeAnswer) => a.coaching_report?.input_status === "legacy_unverified" ? null : a.coaching_report;
+
 const transcriptOf = (a: PracticeAnswer) => a.transcript?.trim() ?? "";
 
 export function answerMetrics(a: PracticeAnswer, s: PracticeSession): AnswerMetrics {
@@ -76,7 +76,7 @@ export function answerMetrics(a: PracticeAnswer, s: PracticeSession): AnswerMetr
   const spm = a.recording_transcript_current === true && durationSec != null && durationSec >= MIN_RATE_SEC && syllables > 0 ? Math.round((syllables / durationSec) * 60) : null;
   const limitSec = s.mode === "mock" && s.answer_sec > 0 ? s.answer_sec : null;
   const statuses = Object.fromEntries(
-    CRITERIA.map(({ key }) => [key, a.coaching_report?.criteria.find((c) => c.key === key)?.status ?? "점검 전"]),
+    CRITERIA.map(({ key }) => [key, currentReport(a)?.criteria.find((c) => c.key === key)?.status ?? "점검 전"]),
   ) as Record<CriterionKey, CriterionState>;
   return {
     id: a.id, order: a.order_no, question: a.question.text, durationSec, syllables, spm, limitSec,
@@ -105,16 +105,16 @@ export function sessionInsights(s: PracticeSession): Insights {
 
   // 1. 코칭 기준이 '보완'인 답변을 기준별로 묶는다
   for (const c of CRITERIA) {
-    const hits = sorted.filter((a) => a.coaching_report?.criteria.some((x) => x.key === c.key && x.status === "보완"));
+    const hits = sorted.filter((a) => currentReport(a)?.criteria.some((x) => x.key === c.key && x.status === "보완"));
     if (!hits.length) continue;
-    const first = hits[0].coaching_report as CoachingReport;
+    const first = currentReport(hits[0]) as CoachingReport;
     const crit = first.criteria.find((x) => x.key === c.key)!;
     // 보고서의 다음 행동은 답변 전체에 대한 것이다: 보완이 이 기준 하나뿐일 때만 이 기준의 행동으로 쓴다
     const only = first.criteria.filter((x) => x.status === "보완").length === 1;
     push({
       key: `coaching-${c.key}`, rank: 1, source: "coaching", title: `${crit.label || c.label} 보완`,
       answers: hits.map((a) => {
-        const q = a.coaching_report?.criteria.find((x) => x.key === c.key)?.answer_quote?.trim();
+        const q = currentReport(a)?.criteria.find((x) => x.key === c.key)?.answer_quote?.trim();
         // 전사문에 그대로 있는 인용만 보인다(AI가 고쳐 쓴 인용은 근거가 되지 못한다)
         return ref(answers.find((m) => m.id === a.id)!, q && transcriptOf(a).includes(q) ? head(q) : undefined);
       }),
@@ -136,18 +136,6 @@ export function sessionInsights(s: PracticeSession): Insights {
     key: "time-short", rank: 3, title: "제한 시간보다 많이 짧았어요", answers: short.map((m) => ref(m)),
     evidence: `${short.map((m) => `Q${m.order} ${secs(m.durationSec as number)}(${Math.round((m.usage as number) * 100)}%)`).join(" · ")} / 제한 ${secs(s.answer_sec)}`,
     action: "상황 → 내 행동 → 결과 순서로 한 번 더 채워 보기",
-  });
-
-  // 4. 본인 역할 표현이 없음
-  const noRole = sorted.filter((a) => {
-    const t = transcriptOf(a);
-    return t.replace(/\s/g, "").length >= ROLE_MIN_CHARS && !ROLE_WORDS.test(t);
-  });
-  push({
-    key: "role", rank: 4, title: "내가 한 일이 잘 드러나지 않아요",
-    answers: noRole.map((a) => ref(answers.find((m) => m.id === a.id)!, head(transcriptOf(a)))),
-    evidence: "‘제가·저는·직접·담당·본인·맡’ 같은 표현이 없어요",
-    action: "팀이 한 일은 그대로 두고, 그중 내가 맡은 부분과 판단을 한 문장 더하기",
   });
 
   // 5. 세션 평균 대비 말 빠르기

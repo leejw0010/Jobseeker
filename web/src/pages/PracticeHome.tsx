@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
+import { questionsForApplication } from "../practice/questions";
 import { ClassificationControls } from "../components/ClassificationControls";
-import { CATEGORIES, JOB_CATEGORIES, type Application, type Category, type Question, type PracticeTaxonomy, type ClassificationInput } from "../types";
+import { CATEGORIES, JOB_CATEGORIES, type Application, type ApplicationDetail, type Category, type Question, type PracticeTaxonomy, type ClassificationInput } from "../types";
 
 const SOURCE_LABEL = { bank: "공용", generated: "맞춤", custom: "직접 추가" } as const;
 
@@ -18,21 +19,31 @@ export default function PracticeHome() {
   useEffect(()=>{api.taxonomy().then(setTaxonomy).catch(()=>{});},[]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [apps, setApps] = useState<Application[]>([]);
+  const [applicationId, setApplicationId] = useState(params.get("application") ?? "");
+  const [applicationDetail, setApplicationDetail] = useState<ApplicationDetail | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setApplicationDetail(null); setPreviewError(null);
+    if (applicationId) api.application(applicationId).then(a => {if(alive) setApplicationDetail(a);}).catch(e => {if(alive) setPreviewError(e.message);});
+    return () => {alive=false;};
+  }, [applicationId]);
   const [filter, setFilter] = useState({ category: "", job_category: "", source: "", q: "" });
   const [selected, setSelected] = useState<string[]>([]);
+  useEffect(() => { setSelected([]); }, [applicationId]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const running = useRef(false);
   const [essayBasis, setEssayBasis] = useState<"submitted" | "latest">("submitted");
   const [jobDescription, setJobDescription] = useState("");
   const [followups, setFollowups] = useState(true);
 
   // 모의시험 설정
-  const [mock, setMock] = useState({ count: 5, prep_sec: 30, answer_sec: 90, job_category: "", application_id: params.get("application") ?? "" });
+  const [mock, setMock] = useState({ count: 5, prep_sec: 30, answer_sec: 90, job_category: "" });
   const [mockCats, setMockCats] = useState<Category[]>(["인성", "직무", "기업", "상황"]);
 
   // 맞춤 질문 생성
   const [gen, setGen] = useState({
-    application_id: params.get("application") ?? "",
     company: "",
     position: "",
     job_category: "",
@@ -58,12 +69,14 @@ export default function PracticeHome() {
   }, []);
 
   const shown = useMemo(
-    () => (filter.q ? questions.filter((q) => q.text.includes(filter.q)) : questions),
-    [questions, filter.q],
+    () => questionsForApplication(questions, applicationId).filter(q => !filter.q || q.text.includes(filter.q)),
+    [questions, applicationId, filter.q],
   );
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   const run = async (fn: () => Promise<void>) => {
+    if (running.current) return;
+    running.current = true;
     setBusy(true);
     setErr(null);
     try {
@@ -71,6 +84,7 @@ export default function PracticeHome() {
     } catch (e) {
       setErr((e as Error).message);
     } finally {
+      running.current = false;
       setBusy(false);
     }
   };
@@ -78,7 +92,7 @@ export default function PracticeHome() {
   const startFree = () =>
     run(async () => {
       const s = await api.createSession({ mode: "free", question_ids: selected,
-        application_id: gen.application_id || undefined, essay_basis: essayBasis,
+        application_id: applicationId || undefined, essay_basis: essayBasis,
         job_description: jobDescription, followups_enabled: followups });
       nav(`/practice/sessions/${s.id}/run`);
     });
@@ -92,7 +106,7 @@ export default function PracticeHome() {
         answer_sec: mock.answer_sec,
         categories: mockCats,
         job_category: mock.job_category || undefined,
-        application_id: mock.application_id || undefined,
+        application_id: applicationId || undefined,
         essay_basis: essayBasis,
         job_description: jobDescription,
         followups_enabled: followups,
@@ -104,11 +118,13 @@ export default function PracticeHome() {
   const generate = () =>
     run(async () => {
       const made = await api.generateQuestions({
-        application_id: gen.application_id || undefined,
-        company: gen.company || undefined,
-        position: gen.position || undefined,
-        job_category: gen.job_category || undefined,
-        essay_text: gen.essay_text || undefined,
+        application_id: applicationId || undefined,
+        ...(!applicationId ? {
+          company: gen.company || undefined,
+          position: gen.position || undefined,
+          job_category: gen.job_category || undefined,
+          essay_text: gen.essay_text || undefined,
+        } : {}),
         count: gen.count,
         essay_basis: essayBasis,
         ...(taxonomy?.enabled?genClassification:{}),
@@ -136,6 +152,12 @@ export default function PracticeHome() {
       <section className="card practice-settings">
         <h2>이번 면접의 기준</h2>
         <p className="small muted">지원 건을 연결하면 시작 시점의 자소서를 보관하고, 그 내용을 기준으로 답변과 꼬리질문을 연결해요.</p>
+        <label>이번 연습에 연결할 지원 건
+          <select value={applicationId} disabled={busy} onChange={e => setApplicationId(e.target.value)}>
+            <option value="">연결 안 함 · 직접 입력으로 질문 생성 가능</option>
+            {apps.map(a => <option key={a.id} value={a.id}>{a.company} · {a.position}</option>)}
+          </select>
+        </label>
         <div className="row">
           <label className="grow">자소서 기준
             <select value={essayBasis} onChange={(e) => setEssayBasis(e.target.value as "submitted" | "latest")}>
@@ -149,6 +171,17 @@ export default function PracticeHome() {
         <label>채용 공고의 주요 업무·자격 요건 (선택)
           <textarea value={jobDescription} maxLength={12000} onChange={(e) => setJobDescription(e.target.value)} placeholder="지원하는 직무의 업무와 요구 역량을 붙여 넣어 주세요." style={{ minHeight: 80 }} />
         </label>
+        <div data-testid="practice-context-preview" className="small">
+          <h3>시작 전 기준 자료 확인</h3>
+          <p>{applicationId ? applicationDetail ? `${applicationDetail.company} · ${applicationDetail.position}` : previewError ?? "지원 건을 불러오는 중…" : "연결된 지원 건 없음 · 제출본 연결은 판단유보로 안내해요."}</p>
+          <p>자소서: {essayBasis === "submitted" ? "제출본 우선 · 없으면 최신본" : "최신본"} · 공고 {jobDescription.trim() ? "포함" : "없음"} · 꼬리질문 {followups ? "사용" : "사용 안 함"}</p>
+          {applicationDetail?.essay_items.map(item => {
+            const submitted=item.versions.find(v=>v.id===item.submitted_version_id);
+            const version=essayBasis==='submitted'&&submitted ? submitted : item.versions[item.versions.length-1];
+            return version ? <p key={item.id}>{item.question_text} · v{version.version_no} · {essayBasis==='submitted'&&submitted ? item.submission_confirmation==='confirmed' ? '제출본 · 확인됨' : item.submission_confirmation==='legacy_unverified' ? '이전 제출 표시 · 확인 전' : '제출본 · 확인 기록 없음' : '최신본'}</p> : null;
+          })}
+          <p className="muted">자유 연습과 모의시험 모두 이 기준을 사용해요. 실제 기준 자료는 시작하는 순간 고정해요.</p>
+        </div>
       </section>
       <div className="grid2">
         <section className="card">
@@ -176,12 +209,7 @@ export default function PracticeHome() {
                 {JOB_CATEGORIES.map((j) => <option key={j}>{j}</option>)}
               </select>
             </label>
-            <label className="grow">지원 건 맞춤 질문 포함
-              <select value={mock.application_id} onChange={(e) => setMock({ ...mock, application_id: e.target.value })}>
-                <option value="">선택 안 함</option>
-                {apps.map((a) => <option key={a.id} value={a.id}>{a.company} · {a.position}</option>)}
-              </select>
-            </label>
+            <p className="small muted">위에서 연결한 지원 건의 맞춤 질문을 포함해요.</p>
           </div>
           <div className="spacer" />
           {taxonomy?.enabled&&<p className="small muted">아래 질문은행의 질문 유형·역량 필터가 모의시험 질문 선택에도 적용돼요.</p>}
@@ -191,13 +219,8 @@ export default function PracticeHome() {
         <section className="card">
           <h2>맞춤 질문 만들기</h2>
           <p className="small muted">지원 건을 고르면 위에서 선택한 자소서를 바탕으로 질문을 만들어요. 직접 입력해도 됩니다.</p>
-          <label>지원 건
-            <select value={gen.application_id} onChange={(e) => setGen({ ...gen, application_id: e.target.value })}>
-              <option value="">직접 입력</option>
-              {apps.map((a) => <option key={a.id} value={a.id}>{a.company} · {a.position}</option>)}
-            </select>
-          </label>
-          {!gen.application_id && (
+          <p className="small muted">위에서 연결한 지원 건을 질문 생성에도 사용해요. 아래 직접 입력은 질문을 만들 때만 쓰며 세션 기준 자료로 저장되지 않아요.</p>
+          {!applicationId && (
             <>
               <div className="spacer" />
               <div className="row">
@@ -237,11 +260,12 @@ export default function PracticeHome() {
           <input placeholder="검색" value={filter.q} onChange={(e) => setFilter({ ...filter, q: e.target.value })} />
         </div>
         <div className="spacer" />
+        <p className="small muted">지원 건을 바꾸면 질문을 다시 선택해 주세요. 지원 건을 연결하면 해당 지원 건과 공통 질문만 보여요.</p>
         {taxonomy?.enabled&&<fieldset><legend>질문 유형·역량 필터</legend><label>질문 유형 필터<select value={tagFilter.type} onChange={e=>setTagFilter({...tagFilter,type:e.target.value})}><option value="">전체 유형</option>{taxonomy.question_types.map(t=><option key={t.key} value={t.key}>{t.label}</option>)}</select></label><div className="row small">{taxonomy.competencies.map(c=><label className="check-label" key={c.key}><input type="checkbox" checked={tagFilter.keys.includes(c.key)} onChange={()=>setTagFilter({...tagFilter,keys:tagFilter.keys.includes(c.key)?tagFilter.keys.filter(k=>k!==c.key):[...tagFilter.keys,c.key]})}/>{c.label}</label>)}</div><label>역량 필터 조건<select value={tagFilter.match} onChange={e=>setTagFilter({...tagFilter,match:e.target.value as 'any'|'all'})}><option value="any">하나 이상 포함</option><option value="all">모두 포함</option></select></label></fieldset>}
         <ul className="qlist">
           {shown.map((q) => (
             <li key={q.id} style={{flexWrap:"wrap"}}>
-              <input type="checkbox" checked={selected.includes(q.id)} onChange={() => toggle(q.id)} aria-label="선택" />
+              <input type="checkbox" checked={selected.includes(q.id)} onChange={() => toggle(q.id)} aria-label={`질문 선택: ${q.text}`} />
               <span className="grow">{q.text}</span>
               <span className="chip">{q.category}</span>
               {q.job_category && <span className="chip">{q.job_category}</span>}
@@ -250,7 +274,7 @@ export default function PracticeHome() {
               {taxonomy?.enabled&&q.source!=="bank"&&<button className="small" onClick={()=>{setEditing(editing===q.id?null:q.id);setEditTags({question_type:q.question_type,competency_keys:q.competency_keys??[]});}}>분류 편집</button>}
               {editing===q.id&&<div style={{flexBasis:'100%'}}><ClassificationControls taxonomy={taxonomy} value={editTags} onChange={setEditTags} label="질문 분류 편집"/><p className="small muted">기존 세션의 시작 시점 분류는 바뀌지 않아요.</p><button disabled={busy} onClick={()=>run(async()=>{await api.classifyQuestion(q.id,editTags);setEditing(null);reload();})}>분류 저장</button><button onClick={()=>setEditing(null)}>취소</button></div>}
               {q.source !== "bank" && (
-                <button className="small danger" onClick={() => run(async () => { await api.deleteQuestion(q.id); reload(); })}>삭제</button>
+                <button className="small danger" disabled={busy} onClick={() => run(async () => { await api.deleteQuestion(q.id); reload(); })}>삭제</button>
               )}
             </li>
           ))}

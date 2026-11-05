@@ -77,7 +77,7 @@ def recapture(snapshot: dict | None, role: str = "primary") -> dict | None:
 
 
 def assign(question, question_type: str | None, competency_keys: list[str], source: str = "manual") -> None:
-    """Replace one bundle in the caller's transaction. Existing tag objects preserve PK identity."""
+    """Replace the bundle atomically; flush removals before reusing unique positions."""
     if not settings.practice_insights_enabled:
         return
     from .models import QuestionCompetency
@@ -88,13 +88,15 @@ def assign(question, question_type: str | None, competency_keys: list[str], sour
     question.question_type = question_type
     question.taxonomy_version = TAXONOMY_VERSION
     question.tagging_source = source
-    existing = {tag.competency_key: tag for tag in question.competency_tags}
+    from sqlalchemy.orm import object_session
+    question.competency_tags.clear()
+    session = object_session(question)
+    if session is not None:
+        session.flush()
     question.competency_tags = [
-        existing.get(key) or QuestionCompetency(competency_key=key, position=index)
+        QuestionCompetency(competency_key=key, position=index)
         for index, key in enumerate(competency_keys)
     ]
-    for index, tag in enumerate(question.competency_tags):
-        tag.position = index
 
 
 def filter_questions(stmt, question_types: list[str], competency_keys: list[str], match: str = "any"):

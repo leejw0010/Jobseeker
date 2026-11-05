@@ -136,6 +136,8 @@ jobseeker/
 - 실제 웹캠 점검용 진단: `cd web && VITE_CAMERA_DEBUG=true npm run dev`로 띄우면 카메라 패널에 상태·넘은 쪽과 크기·핵심 부위(눈·코·입)가 프레임 안인지·카메라 해상도·상태별 표본 수가 보입니다. 개발 서버 전용이고 프로덕션 빌드에는 들어가지 않으며, 저장하거나 보내지 않습니다.
 - **시선 분석 0단계 실험실(개발 전용, 2026-11-01):** `cd web && VITE_GAZE_LAB=true npm run dev` 뒤 `/dev/gaze-lab`. 개인별 보정으로 렌즈 응시(G1)와 화면 영역(G2)을 실제 웹캠에서 시험하고 집계 숫자만 보여 줍니다. 아직 면접 화면·회고에는 시선 분석이 없습니다. 절차와 기록표는 [docs/progress.md](docs/progress.md) "G 0단계", 설계는 [docs/superpowers/specs/2026-11-01-g-gaze-calibration-design.md](docs/superpowers/specs/2026-11-01-g-gaze-calibration-design.md).
 
+실사용 안정화의 기능별 검증·제한 사항은 [최신 검증 기록](docs/validation/2026-11-06-usability-results.md), 팀 frontend로의 파일별 이식은 [팀 저장소 인계](docs/integration/team-repository-handoff.md)를 참고하세요.
+
 ## 실행 방법
 
 ### 1) 백엔드
@@ -143,7 +145,7 @@ jobseeker/
 cd backend
 python3 -m pip install -r requirements-dev.txt   # 실행 패키지 + pytest. 배포 서버는 requirements.txt만
 # 검증한 정확한 버전으로 맞추려면: python3 -m pip install -r requirements-dev.txt -c requirements-lock.txt
-cp .env.example .env        # 값을 비워 두면 로컬 SQLite + 로그인 없이 동작
+cp .env.example .env        # 인증은 기본 활성화. 로컬 개발만 AUTH_DISABLED=true로 명시
 python3 -m uvicorn app.main:app --reload --port 8000
 # API 문서: http://localhost:8000/docs
 python3 -m pytest -q        # 테스트
@@ -160,8 +162,8 @@ npm run dev                 # http://localhost:5173
 `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드 → `extension-track` 폴더. 자세한 내용은 [extension-track/README.md](extension-track/README.md).
 
 ### 4) Supabase 연결(배포 시)
-1. Supabase SQL Editor에서 `supabase/schema.sql` 실행. 이미 예전 스키마로 만든 프로젝트라면 `supabase/migrations/`의 `20261015_interview_coaching.sql`과 `20261015_practice_p0.sql`을 실행하면 됩니다(두 파일은 서로 의존하지 않음). 로컬 SQLite는 서버를 켤 때 빠진 테이블·컬럼을 자동으로 추가합니다.
-2. `backend/.env`에 `DATABASE_URL`(Connection string), `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` 입력, `AUTH_DISABLED=false`. `AUTH_DISABLED=false`인데 `SUPABASE_JWT_SECRET`이 비어 있으면 서버가 시작하지 않고, `AUTH_DISABLED=true`로 Postgres에 연결하면 경고 로그를 남깁니다. 숫자 설정(`AUDIO_RETENTION_DAYS` 등)이 숫자가 아니면 변수 이름을 알려 주며 시작하지 않습니다.
+1. 새 Supabase 프로젝트에는 `supabase/schema.sql`을 사용합니다. 기존 프로젝트는 이미 적용한 파일을 확인한 뒤 새 증분 migration만 검토·적용합니다. 이번 앱의 Track에는 `20261105_track_integrity.sql`과 `20261105_version_immutability.sql`이 필요하고, Stage 2를 켜려면 `20261104_practice_insights.sql` 다음 `20261105_practice_integrity.sql`도 필요합니다. 기존 파일을 수정하거나 운영 DB에 자동 실행하지 않습니다. [활성화·롤백](docs/practice-insights-rollout.md), [격리 PostgreSQL 검증](docs/postgresql-validation.md). SQLite는 빠진 테이블·컬럼·인덱스를 추가하되 역량 위치가 중복된 기존 데이터를 삭제하지 않고 활성화를 거부합니다.
+2. 백엔드에 `DATABASE_URL`, `SUPABASE_URL`, Storage용 서버 전용 설정을 넣고 `APP_ENV=production`, `AUTH_DISABLED=false`로 실행합니다. `SUPABASE_JWT_MODE=hs256`은 서버 JWT secret, `jwks`는 프로젝트 공개키(RS256/ES256)를 사용합니다. issuer·audience·만료·UUID sub를 검증하며 설정 누락과 운영 인증 우회는 시작 오류입니다. 실제 팀 서명 방식은 별도 확인해야 합니다. 숫자 설정이 잘못되어도 변수 이름과 함께 시작을 거부합니다.
 3. `OPENAI_API_KEY`를 넣으면 맞춤 질문(LLM), AI 답변 코칭·꼬리질문, 세션 디브리프 요약이 켜집니다. 전사는 키와 상관없이 기본으로 로컬(`STT_PROVIDER=local`)에서 하고, `STT_PROVIDER=openai`로 바꿀 때만 키로 OpenAI 전사를 씁니다. 모델은 `OPENAI_CHAT_MODEL`(질문 생성·답변 코칭·꼬리질문), `OPENAI_FEEDBACK_MODEL`(세션 디브리프 요약, 비우면 `OPENAI_CHAT_MODEL`), `OPENAI_STT_MODEL`로 바꿀 수 있어요. 원본 녹음 보관 기한은 `AUDIO_RETENTION_DAYS`, 만료 정리 주기는 `PURGE_INTERVAL_MIN`입니다.
 
 키가 없어도 앱은 동작합니다. 맞춤 질문은 자소서 문장에서 경험 서술을 골라 만드는 규칙 기반으로 대체되고, 전사는 로컬 모델이 하며(전사문은 직접 고치거나 입력할 수 있음), 답변 코칭은 기본 점검으로 바뀝니다. 서버의 AI 디브리프는 만들지 않지만, 회고는 현재 자료에 근거한 제한적인 통합 코칭 글을 브라우저에서 제공합니다.
@@ -169,7 +171,7 @@ npm run dev                 # http://localhost:5173
 ## 팀원과 맞물리는 부분
 
 - **로그인(1단계 계정·DB 담당):** 웹에서 Supabase 로그인 후 `setAuthTokenProvider(async () => (await supabase.auth.getSession()).data.session?.access_token ?? null)`만 호출하면 모든 API에 토큰이 붙습니다(`web/src/api.ts`). 백엔드는 토큰의 `sub`를 사용자 id로 씁니다.
-  - Supabase 프로젝트가 비대칭 JWT 서명 키(JWKS)를 쓰도록 설정돼 있다면 `backend/app/auth.py`의 HS256 검증을 JWKS 검증으로 바꿔야 합니다.
+  - 비대칭 키는 `SUPABASE_JWT_MODE=jwks`를 설정합니다. API 주소·세션 갱신·사용자 전환의 연결과 파일별 이식표는 [팀 저장소 인계](docs/integration/team-repository-handoff.md)를 따릅니다. GET만 제한적으로 재시도하고 저장·업로드를 자동 재전송하지 않습니다.
 - **확장 로그인 토큰:** `extension-track/settings.js`의 `setAccessToken(token)`으로 Supabase 액세스 토큰을 넣으면 확장의 모든 API 요청에 붙습니다(`chrome.storage.session`에만 보관, `setAccessToken(null)`로 지움). 넣는 쪽(로그인 화면·① 확장과의 통합)은 아직 없습니다.
 - **① Apply(크롬 확장):** 지원서 제출 시 `POST /track/sync`로 아래 형식을 보내면 Track에 저장됩니다. 예전 답변 재사용은 `GET /track/answers/search?q=키워드`를 쓰면 됩니다. CORS는 `chrome-extension://` 출처를 허용해 두었습니다.
   ```json
@@ -202,16 +204,25 @@ npm run dev                 # http://localhost:5173
 | DELETE | `/practice/recordings` | 내 원본 녹음 모두 삭제 |
 | POST | `/practice/answers/{id}/feedback` | 예전 AI 피드백(화면에서는 쓰지 않음) |
 | GET/POST | `/track/applications` | 지원 건 목록(`url`로 찾기 가능) / 추가 |
+| GET/PATCH/DELETE | `/track/applications/{id}` | 본인 지원 건 조회·수정·삭제. 수동 단계·상태는 명시 해제 전까지 유지 |
 | POST | `/track/applications/{id}/events` | 단계 결과 기록 |
+| PATCH/DELETE | `/track/events/{id}` | 결과·날짜·메모 수정 / 삭제. 이벤트 기준 모드에서 현재 상태 재계산 |
+| POST | `/track/applications/{id}/state-from-events` | 수동/기존 상태 유지 해제. 기존 기록은 baseline_stage와 baseline_status 선택 필요 |
 | POST | `/track/applications/{id}/essays` | 자소서 문항 추가 |
 | POST | `/track/essays/{id}/versions` | 새 답변 버전 |
-| POST | `/track/versions/{id}/restore` | 예전 버전 복원 |
+| POST | `/track/versions/{id}/restore` | 선택한 내용을 항상 새 초안 버전으로 복원 |
+| POST | `/track/versions/{id}/submit` | 선택한 버전을 실제 제출본으로 명시 확인. 본문·이전 버전은 보존 |
 | POST | `/track/sync` | 확장 프로그램 동기화 |
 | GET | `/track/stats` | 통계 |
 
 분류 확장 응답: 질문의 `question_type`, `competency_keys`, `taxonomy_version`, `tagging_source`; 답변의 nullable `question_classification`과 `recording_transcript_current`; 세션 목록의 `competency_keys`, `classification_missing_count`를 추가합니다. `recording_transcript_current`는 최초 자동/수동 전사 이후 글이 같은지 나타내며 실제 발화 정확도를 보증하지 않습니다. 예전 디브리프의 `input_status=legacy_unverified`는 보관 원문이며 현재 통합 코칭 근거에서 제외됩니다.
 
 응답 규칙(2026-11-03, 기존 경로·필드는 그대로):
+
+- Track 추가 응답: 지원 건 `state_source`(`events/manual/legacy`), `state_revision`, `state_requires_baseline`; 문항 `submitted_version_id`, `submission_confirmation`(`confirmed/legacy_unverified/none`), `submission_revision`(명시 확인 순번). 최근 확인한 제출본을 Practice 기준으로 사용하고 확인 이력이 없으면 기존 제출 표시를 보존·구분합니다. 실제 제출을 확인하지 않은 신규 Apply는 `submitted=false`, 확인한 경우만 true를 명시합니다. 생략 시 true인 옛 계약은 유지하지만 명시 확인 이력은 만들지 않습니다.
+- 상태 계산은 결과 날짜·기록 시각·ID 순입니다. 기존 상태의 수동 의도를 추측하지 않고 legacy로 유지하며, 수동 모드에서는 이벤트 변경이 현재 상태와 상태 기반 통계를 덮지 않습니다. 보류와 결과 대기는 다릅니다.
+- 통계는 `passed/(passed+failed)`, 미확정 결과는 분모에서 제외합니다. `pending`에는 보류가 포함되고 `hold`로 세분합니다. 기존 `monthly`는 지원일이 없으면 등록월을 쓰는 호환 필드입니다. 새 화면은 실제 지원일만의 `applied_monthly`와 `undated_count`를 사용하며 날짜 미상을 초안으로 추정하지 않습니다.
+- 코칭의 `input_status=current/legacy_unverified`는 전체 대화 입력의 현재성입니다. 기존 지문 없는 보고서는 보존하되 현재 종합 평가에 쓰지 않습니다. 전사문 수정 중과 저장 후에는 영향을 받은 이후 답변 코칭도 현재 결과로 표시하지 않습니다.
 - 같은 사용자의 같은 공고 URL은 한 건입니다(Supabase `applications_user_url_uq`와 같음). `POST /track/applications`·`PATCH /track/applications/{id}`가 이미 있는 URL이면 **409**, 빈 URL은 `null`로 저장합니다. `POST /track/sync`는 동시에 처음 들어온 같은 URL도 한 건으로 합칩니다.
 - `PATCH /track/applications/{id}`에서 회사·직무·분류·단계·상태를 `null`로 보내면 **422**(예전에는 DB 오류 500). URL·지원일·메모는 `null`이면 비웁니다.
 - `POST /practice/answers/{id}/audio`: 같은 답변에 업로드가 겹치면 나중에 시작한 녹음이 이기고, 먼저 시작해 늦게 끝난 업로드는 **409**(그 파일만 지움). 녹음은 업로드마다 다른 경로(`{user_id}/{session_id}/{answer_id}.{토큰}.{확장자}`)에 저장하고, 새 녹음을 연결한 뒤 이전 파일을 지웁니다. `recorded_at`은 업로드를 시작한 시각입니다.

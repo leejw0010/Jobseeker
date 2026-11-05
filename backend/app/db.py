@@ -121,16 +121,57 @@ def upgrade_sqlite(bind: Engine) -> list[str]:
     Base.metadata.create_all(bind)
     added = add_missing_columns(bind)
     add_missing_indexes(bind)
+    if settings.practice_insights_enabled:
+        validate_insights_schema(bind)
+    protect_sqlite_version_history(bind)
     backfill_legacy(bind)
     return added
+
+
+def protect_sqlite_version_history(bind: Engine) -> None:
+    """Match PostgreSQL history guards; parent deletion uses database cascades."""
+    fields = ('id', 'essay_item_id', 'version_no', 'content', 'char_count', 'source', 'created_at')
+    changed = ' OR '.join(f'NEW.{name} IS NOT OLD.{name}' for name in fields)
+    with bind.begin() as conn:
+        conn.execute(text(f"""CREATE TRIGGER IF NOT EXISTS answer_versions_immutable_update
+          BEFORE UPDATE ON answer_versions WHEN {changed} OR (OLD.is_submitted AND NOT NEW.is_submitted)
+          BEGIN SELECT RAISE(ABORT, 'Answer version history is immutable'); END"""))
+        conn.execute(text("""CREATE TRIGGER IF NOT EXISTS answer_versions_immutable_delete
+          BEFORE DELETE ON answer_versions
+          WHEN EXISTS(SELECT 1 FROM essay_items WHERE id=OLD.essay_item_id)
+          BEGIN SELECT RAISE(ABORT, 'Delete the parent essay or application explicitly'); END"""))
 
 
 def init_db() -> None:
     """로컬 SQLite일 때만 테이블을 만들고 빠진 컬럼을 채운다. Supabase는 supabase/schema.sql·migrations로 만든다."""
     if _is_sqlite:
         upgrade_sqlite(engine)
-    elif settings.practice_insights_enabled:
-        validate_insights_schema(engine)
+    else:
+        validate_track_schema(engine)
+        if settings.practice_insights_enabled:
+            validate_insights_schema(engine)
+
+
+def validate_track_schema(bind: Engine) -> None:
+    required = {"application_states": {"application_id", "baseline_stage", "baseline_status", "override_stage", "override_status", "override_origin", "revision"},
+                "essay_submissions": {"id", "essay_item_id", "version_id", "sequence", "confirmed_at", "source"}}
+    inspector = inspect(bind)
+    tables = set(inspector.get_table_names())
+    missing = []
+    for table, columns in required.items():
+        actual = {c['name'] for c in inspector.get_columns(table)} if table in tables else set()
+        missing.extend(f'{table}.{name}' for name in sorted(columns-actual))
+    if missing:
+        raise RuntimeError('Track requires manual migration 20261105_track_integrity.sql; missing: ' + ', '.join(missing))
+    if bind.dialect.name == 'postgresql':
+        with bind.connect() as conn:
+            present = conn.execute(text("""SELECT EXISTS(
+              SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+              JOIN pg_namespace n ON n.oid=c.relnamespace
+              WHERE n.nspname='public' AND c.relname='answer_versions'
+                AND t.tgname='answer_versions_history_guard' AND NOT t.tgisinternal AND t.tgenabled <> 'D')""")).scalar_one()
+        if not present:
+            raise RuntimeError('Track requires manual migration 20261105_version_immutability.sql')
 
 
 def validate_insights_schema(bind: Engine) -> None:
@@ -144,5 +185,9 @@ def validate_insights_schema(bind: Engine) -> None:
     for table,columns in required.items():
         actual={c["name"] for c in inspector.get_columns(table)} if table in tables else set()
         missing.extend(f"{table}.{c}" for c in sorted(columns-actual))
+    if "question_competencies" in tables:
+        indexes = {i['name'] for i in inspector.get_indexes('question_competencies') if i['unique']}
+        if 'question_competencies_position_uq' not in indexes:
+            missing.append('question_competencies_position_uq')
     if missing:
-        raise RuntimeError("PRACTICE_INSIGHTS_ENABLED requires manual migration supabase/migrations/20261104_practice_insights.sql; missing: "+", ".join(missing))
+        raise RuntimeError("PRACTICE_INSIGHTS_ENABLED requires manual migrations 20261104_practice_insights.sql and 20261105_practice_integrity.sql; missing: "+", ".join(missing))

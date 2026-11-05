@@ -139,6 +139,8 @@ export interface Debrief {
 export type DebriefStatus = "none" | "pending" | "done" | "failed" | "unavailable";
 
 export interface CoachingReport {
+  input_sha256?: string | null;
+  input_status?: "current" | "legacy_unverified";
   competency_evidence?: CompetencyEvidence | null;
   method: "basic" | "ai";
   rubric_version: string;
@@ -161,7 +163,7 @@ export interface InterviewContext {
   position?: string;
   essay_basis?: "submitted" | "latest";
   job_description?: string;
-  essays?: { item_id: string; question_text: string; version_id: string; version_no: number; content: string; selection: "submitted" | "latest"; is_submitted: boolean }[];
+  essays?: { item_id: string; question_text: string; version_id: string; version_no: number; content: string; selection: "submitted" | "latest"; is_submitted: boolean; submission_confirmation?: "confirmed" | "legacy_unverified" | "none" }[];
   origin_session_id?: string;
   drill_targets?: { answer_id: string; question_id: string; focus: string[]; next_action: string }[];
 }
@@ -211,6 +213,9 @@ export interface Application {
   source: "web" | "extension";
   created_at: string;
   updated_at: string;
+  state_source?: "events" | "manual" | "legacy";
+  state_revision?: number;
+  state_requires_baseline?: boolean;
 }
 
 /** POST /track/applications 요청(backend ApplicationIn). 서버가 정하는 id·source·시각은 보내지 않는다 */
@@ -261,6 +266,9 @@ export interface EssayItem {
   question_text: string;
   char_limit: number | null;
   versions: AnswerVersion[];
+  submitted_version_id?: string | null;
+  submission_confirmation?: "confirmed" | "legacy_unverified" | "none";
+  submission_revision?: number;
 }
 
 export interface ApplicationDetail extends Application {
@@ -274,6 +282,7 @@ export interface FunnelRow {
   passed: number;
   failed: number;
   pending: number;
+  hold?: number;
   pass_rate: number | null;
 }
 
@@ -283,4 +292,6 @@ export interface Stats {
   funnel: FunnelRow[];
   by_job_category: { job_category: string; total: number; final_pass: number; funnel: FunnelRow[] }[];
   monthly: { month: string; count: number }[];
+  applied_monthly?: { month: string; count: number }[];
+  undated_count?: number;
 }

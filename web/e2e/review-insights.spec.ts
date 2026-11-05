@@ -32,9 +32,8 @@ test("typed answers: status grid, rule-based points with answer links, and reaso
 
   const points = card.getByTestId("insight-points");
   const role = points.getByRole("listitem").filter({ hasText: "내가 한 일이 잘 드러나지 않아요" });
-  await expect(role).toContainText("우리 팀은 서비스 응답 속도를");
-  await expect(role).toContainText("내가 맡은 부분과 판단을 한 문장 더하기");
-  await expect(role.getByRole("link", { name: "Q1" })).toHaveAttribute("href", `#answer-${a1.id}`);
+  await expect(role).toHaveCount(0); // 대명사 유무로 본인 역할을 판정하지 않는다
+  await expect(points.getByRole("listitem").filter({hasText:"스스로 아쉬웠다고 평가했어요"}).getByRole("link", {name:"Q1"})).toHaveAttribute("href", `#answer-${a1.id}`);
   await expect(points.getByRole("listitem").filter({ hasText: "스스로 아쉬웠다고 평가했어요" })).toContainText("Q1 2점");
   await expect(points).not.toContainText("Q2 4점");
 

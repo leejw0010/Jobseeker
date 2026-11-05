@@ -23,7 +23,7 @@
 | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` | `backend/recordings/`(또는 `RECORDINGS_DIR`. e2e는 실행마다 임시 폴더) | Storage REST API(서비스 키) |
 | `OPENAI_API_KEY` | 규칙 기반 질문, 기본 점검, 디브리프 요약 없음 | LLM 질문·코칭·꼬리질문·디브리프 요약, `STT_PROVIDER=openai`면 STT |
 | `STT_PROVIDER`(기본 `local`) | — | `local`: faster-whisper로 서버 CPU에서 전사(모델은 첫 전사 때 불러와 재사용, 캐시 우선) · `openai` · `off` |
-| `AUTH_DISABLED=true`(기본, **로컬 개발 전용**) | `X-User-Id` 헤더 또는 고정 dev 사용자. 헤더만 바꾸면 누구로든 접근 가능. Postgres에 연결하면 시작 시 경고 로그 | `false`(배포 시 필수)면 Supabase JWT(HS256, aud `authenticated`)의 `sub`(uuid가 아니거나 없으면 401). `SUPABASE_JWT_SECRET`이 비어 있으면 서버가 시작하지 않음 |
+| 인증 기본 활성화(`AUTH_DISABLED=false`) | `SUPABASE_JWT_MODE=hs256` 또는 `jwks`(RS256/ES256), 고정 프로젝트 issuer·audience·만료·UUID sub를 검증 | 로컬 우회만 `AUTH_DISABLED=true`로 명시. `APP_ENV=production`에서 우회하면 시작 거부. 팀 실제 서명 방식은 별도 확인 |
 
 ## 백엔드 (`backend/app/`)
 
@@ -47,12 +47,12 @@
 
 ## 인증과 데이터 접근 경계
 
-API의 JWT 검증과 DB의 RLS는 서로 다른 장치이고, 현재 코드에서 둘은 연결돼 있지 않습니다. 아래 "확인된 사실"은 2026-10-28 소스를 읽고 확인한 것이고, "검증하지 않음"은 실제 Supabase에서 확인하지 않은 것입니다.
+API의 JWT 검증과 DB의 RLS는 서로 다른 장치이고, 현재 코드에서 둘은 연결돼 있지 않습니다. 아래 구조는 2026-11-06 소스와 격리 검증 기준이며, 실제 Supabase 클라우드에서 확인하지 않은 사항은 별도로 적습니다.
 
 확인된 사실(코드 기준):
-- **API 인증:** `app/auth.py`의 `current_user_id`가 `AUTH_DISABLED=false`일 때 Bearer 토큰을 `SUPABASE_JWT_SECRET`으로 검증(HS256, aud `authenticated`)하고 `sub`를 사용자 id로 돌려줍니다. 검증은 API 계층에서 끝납니다.
+- **API 인증:** `app/auth.py`의 `current_user_id`가 `AUTH_DISABLED=false`일 때 Bearer 토큰을 서버가 고른 HS256 secret 또는 프로젝트 JWKS 공개키로 검증(issuer, aud `authenticated`, 만료, UUID sub)하고 `sub`를 사용자 id로 돌려줍니다. 검증은 API 계층에서 끝납니다.
 - **사용자 id는 DB 세션으로 전달되지 않습니다.** 백엔드는 `DATABASE_URL` 하나로 만든 공용 SQLAlchemy 엔진을 씁니다(`app/db.py`). 요청마다 `set_config('request.jwt.claims', …)`나 `SET LOCAL role` 같은 처리를 하지 않습니다(`backend/app`에 해당 코드 없음).
-- **실제 사용자 격리는 라우터 쿼리가 담당합니다.** 모든 조회·수정이 `user_id`(또는 소유한 세션·지원 건)로 거릅니다. 다른 사용자의 데이터를 읽거나 고칠 수 없다는 것은 pytest(SQLite)로 검증했습니다.
+- **실제 사용자 격리는 라우터 쿼리가 담당합니다.** 모든 조회·수정이 `user_id`(또는 소유한 세션·지원 건)로 거릅니다. 다른 사용자의 데이터를 읽거나 고칠 수 없다는 것은 pytest(SQLite)와 격리 PostgreSQL의 사용자 A/B API 테스트로 검증했습니다.
 - **`supabase/schema.sql`의 RLS 정책**은 `auth.uid()`로 소유자를 비교합니다. 이 정책은 Supabase 클라이언트(anon/authenticated 역할 + 사용자 JWT)로 직접 접속하는 경우를 막는 장치입니다.
 - **Storage:** 백엔드는 `SUPABASE_SERVICE_ROLE_KEY`로 Storage REST API를 호출합니다(`app/storage.py`). 서비스 키는 RLS를 우회하므로 `storage.objects`의 `rec_own` 정책은 백엔드 요청에 적용되지 않습니다. 녹음 객체 접근을 막는 것은 API의 소유권 검사와 경로 규칙(`{user_id}/{session_id}/{answer_id}.{토큰}.{ext}`, 2026-11-03 전 녹음은 토큰 없이 `{answer_id}.{ext}`)입니다. 그래서 녹음 API를 고칠 때 소유권 검사를 빠뜨리면 다른 사용자의 녹음이 노출될 수 있습니다.
 - **`AUTH_DISABLED=true`**는 로컬 개발용입니다. 이 상태에서는 `X-User-Id` 헤더 값이 곧 사용자이므로, 배포 환경에서는 반드시 `false`로 둡니다.
@@ -104,8 +104,14 @@ API의 JWT 검증과 DB의 RLS는 서로 다른 장치이고, 현재 코드에�
 ## 현재 구현이 아닌 것 (계획·연동 대기)
 
 - 웹 로그인 UI와 Supabase Auth 연결: 1단계 담당 팀원 몫. `setAuthTokenProvider` 연결 지점만 있습니다.
-- JWKS(비대칭 JWT) 검증: 현재는 HS256만 지원합니다.
+- 실제 팀 Supabase의 서명 설정·키 교체·클라우드 Auth/Storage/RLS 확인: HS256/JWKS 구현 및 로컬 검증과 별도입니다.
 - ① Apply 확장의 지원서 제출 자동 감지와 essays 전송: 팀원 몫. 이 저장소의 확장은 공고 저장만 하고 `essays: []`를 보냅니다.
 - ④ Encourage 팝업: 팀원 몫. `App.tsx`에 끼울 자리만 언급돼 있습니다.
 - 디브리프 작업 큐: 별도 워커 없이 프로세스 안의 BackgroundTasks로 돕니다.
 - 배포 설정(호스팅, CI): 저장소에 없습니다.
+
+## 실사용 안정화 변경
+
+Track의 상태 기준/수동 override와 append-only 제출 확인 이력을 분리합니다. 버전 본문은 DB 가드로 보존하고, 새 Practice 세션에만 최근 확인한 제출본을 고정합니다. 이전 세션을 소급 변경하지 않습니다. 웹 API는 API 주소·토큰 제공자·갱신 처리를 주입받으며 Router와 분리합니다. 세션 변경 시 진행 응답과 탭 내 관찰 메모리만 비우고 서버 녹음 삭제를 호출하지 않습니다.
+
+[검증 기록](validation/2026-11-06-usability-results.md), [팀 이식 안내](integration/team-repository-handoff.md), [활성화·롤백](practice-insights-rollout.md)에 배포 전제와 검증 경계를 기록합니다.

@@ -1,6 +1,7 @@
+import { createArtifact, downloadArtifacts, EXPORT_NOTICE, faceMetrics } from "../validation/artifact";
 import { useState } from "react";
 import type { PracticeAnswer } from "../types";
-import { clearSessionVideo, combineSummaries, getVideoSegments, videoDiagnostics, type SegmentSummary } from "../video/metrics";
+import { clearSessionVideo, combineSummaries, getVideoSegments, getVideoRunId, getVideoSegmentMetadata, videoDiagnostics, type SegmentSummary } from "../video/metrics";
 
 const sec = (ms: number) => {
   const s = Math.round(ms / 1000);
@@ -11,6 +12,7 @@ const pct = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / 
 /** 회고 화면: 이 탭에서 잰 카메라 자세 분석 결과. 카메라를 켜지 않았거나 새로고침했으면 보이지 않는다 */
 export default function VideoReportCard({ sessionId, answers, onCleared }: { sessionId: string; answers: PracticeAnswer[]; onCleared?:()=>void }) {
   const [removed,setRemoved] = useState(false);
+  const [condition,setCondition]=useState("unspecified");
   if (removed) return null;
   const rows = answers.map((a, i) => ({ a, i, s: a.recorded_at ? getVideoSegments(sessionId,a.id,a.recorded_at) : undefined })).filter((r): r is { a: PracticeAnswer; i: number; s: SegmentSummary } => !!r.s);
   if(!rows.length) return null;
@@ -61,6 +63,9 @@ export default function VideoReportCard({ sessionId, answers, onCleared }: { ses
         <li>시선 추적이 아니에요. 화면을 보는지, 카메라를 보는지는 알 수 없어요. 글로 답한 답변은 측정하지 않아요.</li>
         <li>조명, 카메라 위치, 안경 등에 따라 값이 달라질 수 있어요. 자신감·감정·합격 가능성은 판단하지 않아요.</li>
       </ul>
+      <label>검증 조건 <select value={condition} onChange={e=>setCondition(e.target.value)}><option value="unspecified">기록하지 않음</option><option value="face-in-frame">정면·프레임 안</option><option value="face-edge">얼굴 프레임 경계</option><option value="face-pose">고개 돌림·숙임</option><option value="low-light">저조도</option><option value="glasses">안경 조건</option></select></label>
+      <p className="small muted">{EXPORT_NOTICE}</p>
+      <button onClick={()=>downloadArtifacts(rows.map(({s,a})=>createArtifact("face",faceMetrics(s),{attempts:1,samples:s.samples,answerMs:s.answerMs,analyzedMs:s.analyzedMs},{runId:getVideoRunId(sessionId,a.id,a.recorded_at!),condition,delegate:getVideoSegmentMetadata(sessionId,a.id,a.recorded_at!)?.delegate,methodVersion:getVideoSegmentMetadata(sessionId,a.id,a.recorded_at!)?.methodVersion,cameraWidth:getVideoSegmentMetadata(sessionId,a.id,a.recorded_at!)?.cameraWidth,cameraHeight:getVideoSegmentMetadata(sessionId,a.id,a.recorded_at!)?.cameraHeight,verdicts:{quality:s.analyzedMs>0?"pass":"fail"}})))}>익명 얼굴 집계 내보내기(JSON)</button>
       <button onClick={() => { clearSessionVideo(sessionId); setRemoved(true); onCleared?.(); }}>이 결과 지우기</button>
     </section>
   );

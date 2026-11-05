@@ -102,10 +102,21 @@ test("a star rating cannot be sent again while the first one is saving", async (
     await route.continue();
   });
   await page.goto(`/practice/sessions/${session.id}`);
-  await page.getByRole("button", { name: "4점" }).click();
-  await page.getByRole("button", { name: "2점" }).click({ force: true, timeout: 2000 }).catch(() => {});
-  await page.waitForTimeout(200);
+  const four = page.getByRole("radio", { name: "4점", exact: true });
+  const two = page.getByRole("radio", { name: "2점", exact: true });
+  await four.click();
+  try {
+    await expect(four).toBeDisabled();
+    await expect(two).toBeDisabled();
+    await two.evaluate(element => (element as HTMLButtonElement).click());
+    expect(patches).toBe(1);
+  } finally {
+    release();
+  }
+  await expect(four).toBeChecked();
+  await expect(four).toBeEnabled();
+  await expect(two).not.toBeChecked();
   expect(patches).toBe(1);
-  release();
-  await expect(page.locator(".stars button.on")).toHaveCount(4);
+  const saved = await (await request.get(`${API}/practice/sessions/${session.id}`)).json();
+  expect(saved.answers[0].self_rating).toBe(4);
 });

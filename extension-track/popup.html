@@ -11,7 +11,8 @@
       <a href="options.html" target="_blank" class="muted small" id="settings">설정</a>
     </header>
 
-    <p id="error" class="err" hidden></p>
+    <p id="error" class="err" role="alert" hidden></p>
+    <button id="relogin" hidden>다시 로그인</button>
 
     <section id="posting">
       <h2>이 공고 저장</h2>
@@ -24,9 +25,11 @@
         <div class="row">
           <button id="ex-open">상세 보기</button>
           <button id="ex-practice">면접 질문 만들기</button>
+          <button id="ex-submit">지원 완료로 표시</button>
         </div>
       </div>
       <form id="save-form" hidden>
+        <button id="read-posting" type="button">페이지 제목으로 채우기</button>
         <label>회사<input id="company" required maxlength="100" /></label>
         <label>직무(포지션)<input id="position" required maxlength="100" /></label>
         <div class="row">
